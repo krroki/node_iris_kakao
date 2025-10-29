@@ -12,7 +12,7 @@
   - `src/services/index.ts`: 공용 싱글턴을 제공해 컨트롤러에서 서비스 재사용.
 - 컨트롤러는 템플릿 구조(`CustomMessageController`, `CustomBatchController`, `CustomBootstrapController` 등)를 유지하고, 브로드캐스트/관리 명령어가 작성되어 있음.
 - Vitest 단위 테스트(`npm run test`)가 메시지 저장/브로드캐스트 스케줄러를 검증하도록 구성됨.
-- `.env`는 `IRIS_URL`, `MOCK_IRIS`, 로그 경로 등 핵심 값을 포함하고, MOCK 모드로 오프라인 개발 가능.
+- `.env`는 `IRIS_URL`, `MOCK_IRIS`, 로그 경로 등 핵심 값을 포함하고, MOCK 모드로 오프라인 개발 가능. `.env.example`을 추가해 기본 값을 공유.
 - MCP `fetch_browser` 서버가 설치되어 있어 웹 검색을 자동화에 활용 가능.
 
 ## 주요 결정 / 이유
@@ -21,7 +21,7 @@
 - 향후 모노레포/Prisma/대시보드 확장 로드맵이 확정되어 있으므로, 현재는 봇 기능 안정화와 데이터 영속화 정리부터 진행한다.
 
 ## 남은 일 / Blocker
-- [ ] **환경 정비**: `node-iris-app/.env.example`을 최신화하고 Python 환경 변수와 키 이름을 통일한다. (`docs/analysis/node-iris-migration.md` 4.1)
+- [x] **환경 정비**: `node-iris-app/.env.example`을 최신화하고 Python 환경 변수와 키 이름을 통일한다. (`docs/analysis/node-iris-migration.md` 4.1)
 - [ ] **메시지 저장 영속화**: 현재 파일 기반인 `messageStore`를 SQLite 이상으로 전환할 설계 초안을 작성한다. (`docs/analysis/node-iris-migration.md` 3, 4.2)
 - [ ] **브로드캐스트 복원**: 재시작 시 스케줄 복원이 가능하도록 `CustomBootstrapController`에서 큐를 로드하도록 구현한다. (`docs/analysis/node-iris-migration.md` 3)
 - [ ] **명령어 이식 검증**: Python 명령어 세트를 Node 컨트롤러에 대응시키고, 요구사항을 `docs/implementation_tasks.md`와 싱크한다.
