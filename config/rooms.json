@@ -1,0 +1,43 @@
+{
+  "rooms": [
+    {
+      "id": 1001,
+      "name": "메인 채팅방",
+      "settings": {
+        "auto_welcome": true,
+        "welcome_template": "default",
+        "logging_enabled": true,
+        "commands_enabled": true,
+        "max_message_length": 1000
+      }
+    },
+    {
+      "id": 1002,
+      "name": "공지사항 방",
+      "settings": {
+        "auto_welcome": false,
+        "read_only": true,
+        "logging_enabled": false,
+        "commands_enabled": false
+      }
+    },
+    {
+      "id": 1003,
+      "name": "질문/답변 방",
+      "settings": {
+        "auto_welcome": true,
+        "welcome_template": "qa_room",
+        "logging_enabled": true,
+        "commands_enabled": true,
+        "auto_response": true
+      }
+    }
+  ],
+  "global_settings": {
+    "default_welcome_template": "default",
+    "enable_auto_detection": true,
+    "max_rooms": 50,
+    "backup_enabled": true
+  },
+  "last_updated": "2025-10-27T00:00:00Z"
+}

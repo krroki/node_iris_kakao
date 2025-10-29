@@ -1,0 +1,7 @@
+﻿irispy-client
+gemini_webapi
+google-genai
+pytz
+python-dotenv
+playwright
+pytest # 개발용 (추후 dev-requirements로 분리 예정)

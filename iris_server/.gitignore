@@ -1,0 +1,17 @@
+venv
+temp.py
+res/env
+res/temp.py
+res/ipy.db
+res/test.db
+res/help.png
+__pycache__
+helper/__pycache__
+bots/__pycache__
+pyproject.toml
+uv.lock
+.python-version
+.idea
+.venv
+.env
+iris.db

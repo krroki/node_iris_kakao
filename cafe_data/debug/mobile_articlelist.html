@@ -1,0 +1,346 @@
+<!doctype html><html lang="ko"><head><title>네이버 카페</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,target-densitydpi=medium-dpi,viewport-fit=cover"><meta name="robots" content="noindex, nofollow"><meta name="referrer" content="always"><meta name="theme-color" id="metaThemeColor"><link rel="shortcut icon" type="image/x-icon" href="https://ca-fe.pstatic.net/web-mobile/favicon.ico"><link rel="apple-touch-icon-precomposed" sizes="120x120" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/iOS_iPhone@2x_120X120.png"><link rel="apple-touch-icon-precomposed" sizes="152x152" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/iOS_iPad_152X152.png"><link rel="apple-touch-icon-precomposed" sizes="167x167" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/iOS_iPadPro@2x_167X167.png"><link rel="apple-touch-icon-precomposed" sizes="180x180" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/iOS_iPhone@3x_180X180.png"><link rel="apple-touch-icon-precomposed" sizes="192x192" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/android_legacy_xxxhpdi_192x192.png"><link rel="apple-touch-icon-precomposed" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/android_legacy_xhdpi_96x96.png"><link rel="apple-touch-icon-precomposed" sizes="144x144" href="https://ca-fe.pstatic.net/web-mobile/static/favicon/android_legacy_xxhpdi_144x144.png"><script src="https://ca-fe.pstatic.net/web-mobile/static/web-crash-logger-1.0.3.min.js"></script><script>var traceQueue = [];
+      var maxSize = 100;
+
+      function trace(log) {
+        while (traceQueue.length >= maxSize) {
+          traceQueue.shift();
+        }
+        traceQueue.push(log);
+      }</script><script>var logQueue = [];
+      window.cafe &&
+        window.cafe.crashLogger &&
+        window.cafe.crashLogger.init({
+          host: "nelo2-col.navercorp.com/_store",
+          projectName: "web-mobile",
+          projectVersion: "-",
+          browser: navigator.userAgent,
+          uuid: localStorage && localStorage.getItem("CAFE_UUID"),
+        });
+
+      const ignoreErrors = ["ResizeObserver loop limit exceeded"];
+      window.addEventListener(
+        "error",
+        function (e) {
+          var sources = ["SCRIPT", "LINK"];
+          var el = e.target;
+          var url = "";
+          if (el) {
+            url = el.tagName == "LINK" ? el.href : el.src;
+          }
+          if (sources.indexOf(el.tagName) != -1) {
+            logQueue.push(url);
+          } else if (ignoreErrors.includes(e.message)) {
+            // ignore
+          } else if (el.tagName !== "IMG") {
+            const message = e.error || e.message || e.name || e.target;
+            console.error(
+              "[simple-crash-logger] runtime error:" +
+                message +
+                "\n filename:" +
+                e.filename +
+                "\n url:" +
+                url +
+                "\n e:" +
+                e +
+                "\n e.error:" +
+                e.error +
+                "\n e.message:" +
+                e.message
+            );
+            window.cafe.crashLogger.captureMessage(
+              "[simple-crash-logger] runtime error:" +
+                message +
+                "\n filename:" +
+                e.filename +
+                "\n url:" +
+                url +
+                "\n e:" +
+                e +
+                "\n e.error:" +
+                e.error +
+                "\n e.message:" +
+                e.message +
+                "\n trace:" +
+                window.traceQueue.join("\n") +
+                "\n errorResources:" +
+                window.logQueue.join("\n"),
+              "ERROR"
+            );
+          }
+          return true;
+        },
+        true
+      );
+
+      window.addEventListener("DOMContentLoaded", function () {
+        if (logQueue.length > 0) {
+          for (var i in logQueue) {
+            console.error(
+              "[simple-crash-logger] static resource load fail:" + logQueue[i]
+            );
+            window.cafe.crashLogger.captureMessage(
+              "[simple-crash-logger] static resource load fail:" + logQueue[i],
+              "ERROR"
+            );
+          }
+          setTimeout(function () {
+            if (!document.querySelector("#app").hasChildNodes()) {
+              document.querySelector(".EmptyMessageBox").style.display = "flex";
+            }
+          }, 3000);
+        }
+      });</script><script src="https://ca-fe.pstatic.net/web-mobile/static/cafe.inapp.a755136c.js"></script><style>/* base.scss */
+      body,
+      p,
+      h1,
+      h2,
+      h3,
+      h4,
+      h5,
+      h6,
+      ul,
+      ol,
+      li,
+      dl,
+      dt,
+      dd,
+      table,
+      th,
+      td,
+      form,
+      fieldset,
+      legend,
+      input,
+      textarea,
+      button,
+      select {
+        margin: 0;
+        padding: 0;
+      }
+      body,
+      h1,
+      h2,
+      h3,
+      h4,
+      h5,
+      h6,
+      input,
+      textarea,
+      select,
+      button,
+      table {
+        font-size: 14px;
+        line-height: 1.25em;
+        font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue",
+          "Apple SD Gothic Neo", Arial, sans-serif;
+      }
+      textarea {
+        -webkit-appearance: none;
+      }
+      html,
+      body {
+        background-color: #f5f6f8;
+      }
+      body {
+        position: relative;
+        color: #000;
+        -webkit-text-size-adjust: none;
+        padding-bottom: constant(safe-area-inset-bottom);
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      em,
+      address {
+        font-style: normal;
+      }
+      a {
+        color: #000;
+        text-decoration: none;
+      }
+
+      .EmptyMessageBox {
+        display: flex;
+        align-items: center;
+        text-align: center;
+        background-color: #fff;
+        box-sizing: border-box;
+      }
+      .EmptyMessageBox__content {
+        margin: 0 auto;
+        padding: 0 16px;
+      }
+      .EmptyMessageBox__content .message_area {
+        padding: 0 20px;
+      }
+      .EmptyMessageBox__content .ButtonBaseFrame {
+        margin-top: 16px;
+      }
+
+      .EmptyMessageBox--app {
+        flex: 1;
+        min-height: 667px;
+        height: 100vh;
+      }
+      @media all and (min-width: 320px) {
+        .EmptyMessageBox--app {
+          min-height: 568px;
+        }
+      }
+
+      .EmptyMessageText {
+        text-align: center;
+      }
+      .EmptyMessageText--main {
+        font-size: 17px;
+        line-height: 1.29;
+        color: #000;
+      }
+      .EmptyMessageText--main + .EmptyMessageText--sub {
+        margin-top: 8px;
+      }
+      .EmptyMessageText--sub {
+        font-size: 15px;
+        line-height: 1.3;
+        color: #979797;
+      }
+
+      .ButtonBaseFrame {
+        text-align: center;
+      }
+      .ButtonBaseFrame__area {
+        display: inline-block;
+        min-width: 150px;
+        vertical-align: top;
+      }
+      .ButtonBaseFrame .ButtonBase + .ButtonBase {
+        margin-top: 10px;
+      }
+
+      .ButtonBase {
+        display: block;
+        height: 40px;
+        padding: 0 15px;
+        line-height: 40px;
+        box-sizing: border-box;
+        font-size: 15px;
+        border-radius: 6px;
+        text-align: center;
+        vertical-align: top;
+      }
+      .ButtonBase--green {
+        background: rgba(3, 199, 90, 0.12);
+        color: #009f47;
+      }
+      .ButtonBase--gray {
+        background: #f5f6f8;
+        color: #676767;
+      }
+
+      .IndexArticleLoading {
+        min-height: 667px;
+        height: 100%;
+        height: 100vh;
+      }
+      @media all and (min-width: 320px) {
+        .IndexArticleLoading {
+          min-height: 568px;
+        }
+      }
+      .IndexArticleLoading .ispinner {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: 20px;
+        height: 20px;
+        margin: auto;
+      }
+      .IndexArticleLoading .ispinner .ispinner-blade {
+        position: absolute;
+        left: 44.5%;
+        top: 37%;
+        width: 10%;
+        height: 25%;
+        border-radius: 50%/20%;
+        -webkit-animation: ispinner-fade 1s linear infinite;
+        animation: ispinner-fade 1s linear infinite;
+        -webkit-animation-play-state: paused;
+        animation-play-state: paused;
+      }
+      .IndexArticleLoading .ispinner .ispinner-blade:nth-child(1) {
+        -webkit-animation-delay: -1.66667s;
+        animation-delay: -1.66667s;
+        -webkit-transform: rotate(90deg) translate(0, -150%);
+        transform: rotate(90deg) translate(0, -150%);
+      }
+      .IndexArticleLoading .ispinner .ispinner-blade:nth-child(2) {
+        -webkit-animation-delay: -1.58334s;
+        animation-delay: -1.58334s;
+        -webkit-transform: rotate(180deg) translate(0, -150%);
+        transform: rotate(180deg) translate(0, -150%);
+      }
+      .IndexArticleLoading .ispinner .ispinner-blade:nth-child(3) {
+        -webkit-animation-delay: -1.50001s;
+        animation-delay: -1.50001s;
+        -webkit-transform: rotate(270deg) translate(0, -150%);
+        transform: rotate(270deg) translate(0, -150%);
+      }
+      .IndexArticleLoading .ispinner .ispinner-blade:nth-child(4) {
+        -webkit-animation-delay: -1.41668s;
+        animation-delay: -1.41668s;
+        -webkit-transform: rotate(360deg) translate(0, -150%);
+        transform: rotate(360deg) translate(0, -150%);
+      }
+      .IndexArticleLoading .ispinner.animating .ispinner-blade {
+        -webkit-animation-play-state: running;
+        animation-play-state: running;
+      }
+      .IndexArticleLoading .ispinner.gray .ispinner-blade {
+        background-color: #8c8c8c;
+      }
+      @-webkit-keyframes ispinner-fade {
+        0% {
+          opacity: 0.85;
+        }
+        50% {
+          opacity: 0.25;
+        }
+        100% {
+          opacity: 0.25;
+        }
+      }
+      @keyframes ispinner-fade {
+        0% {
+          opacity: 0.85;
+        }
+        50% {
+          opacity: 0.25;
+        }
+        100% {
+          opacity: 0.25;
+        }
+      }</style><style media="(prefers-color-scheme: dark)" id="inapp_darkmode_style">html,
+      body {
+        background-color: #1b1b1b;
+      }</style><script>try {
+        const isInApp =
+          location.pathname.indexOf("/app/") !== -1 ||
+          (window.cafeApp && window.cafeApp.getAppInfo);
+
+        // 인앱이 아닌 경우 다크모드용 스타일 제거
+        if (!isInApp) {
+          document.getElementById("inapp_darkmode_style").remove();
+        }
+      } catch {}</script><link href="https://ca-fe.pstatic.net/web-mobile/css/app.225fc4068b07.css" rel="stylesheet" crossorigin="anonymous"></head><body><noscript><strong>We're sorry but mobile doesn't work properly without JavaScript enabled. Please enable it to continue.</strong></noscript><div class="IndexArticleLoading" style="display: none"><span class="blind">로딩중입니다.</span><div class="ispinner gray animating"><div class="ispinner-blade"></div><div class="ispinner-blade"></div><div class="ispinner-blade"></div><div class="ispinner-blade"></div></div></div><div class=""><div class="EmptyMessageBox EmptyMessageBox--app" style="display: none"><div class="EmptyMessageBox__content"><div class="message_area"><p class="EmptyMessageText EmptyMessageText--main">네트워크 문제로 연결되지 않습니다.</p><p class="EmptyMessageText EmptyMessageText--sub">잠시 후에 다시 시도해주세요.</p></div><div class="ButtonBaseFrame"><div class="ButtonBaseFrame__area"><a href="#" role="button" class="ButtonBase ButtonBase--green" onclick="location.reload(); return false;"><span class="ButtonBase__txt">다시 시도</span></a></div></div></div></div></div><div id="app"></div><script>var linkNodes = document.querySelectorAll("link");
+      Array.prototype.forEach.call(linkNodes, function (linkNode) {
+        linkNode.onload = function (e) {
+          trace("loaded link " + e.target.href);
+        };
+      });
+
+      var scriptNodes = document.querySelectorAll("script");
+      Array.prototype.forEach.call(scriptNodes, function (scriptNode) {
+        scriptNode.onload = function (e) {
+          trace("loaded script " + e.target.src);
+        };
+      });</script><script src="https://ca-fe.pstatic.net/web-mobile/js/chunk-vendors.9ab57ad12d8c.js" crossorigin="anonymous"></script><script src="https://ca-fe.pstatic.net/web-mobile/js/app.5245dabff052.js" crossorigin="anonymous"></script></body><script src="https://ca-fe.pstatic.net/web-mobile/static/phup.js"></script></html>

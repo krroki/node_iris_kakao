@@ -1,0 +1,1903 @@
+참고
+본 게시글은
+@tsuki-chat/node-iris@1.6.39 (2025-10-04) 버전
+을 기준으로 작성되었습니다.
+​
+이전에 소스 공유 [중급] 에서
+node-iris
+및
+create-node-iris-app
+관련 게시글을 작성했으나,
+새롭게
+데코레이터, 컨트롤러 추가 및 개선 작업
+을 진행하는 과정에서 일부 레퍼런스가 변경되었습니다.
+​
+이에 따라 기존 글과는 별도로,
+레퍼런스 전용 게시글
+을 다시 작성하게 되었으며,
+또한, 추후
+node-iris가 업데이트될 경우
+본 게시글 역시 변경 사항을 반영하여 업데이트할 예정입니다.
+​
+버그나 수정이 필요한 부분이 있다면 댓글 또는 GitHub 이슈를 통해 알려주시면,
+최대한 빠르게 반영하도록 하겠습니다.
+​
+감사합니다.
+개요
+node-iris
+는 Python으로 작성된
+irispy-client
+모듈의 Node.js(TypeScript) 포팅 버전(구현체)이며
+더 확장된 데코레이터, 컨트롤러 기반 개발 방식을 제공하는 패키지(라이브러리) 입니다.
+​
+그리고
+create-node-iris-app
+은
+node-iris
+를 사용하여 TypeScript 기반의 카카오톡 봇을 빠르게 구축할 수 있도록 도와주는 CLI 도구입니다.
+node-iris 사용법
+irispy-client 호환 방식
+// irispy-client 호환 방식 봇 예제
+import
+{
+Bot
+,
+ChatContext
+}
+from
+'@tsuki-chat/node-iris'
+;
+const
+bot
+=
+new
+Bot
+(
+"appName"
+,
+process
+.
+env
+.
+IRIS_URL
+,
+{
+maxWorkers
+:
+4
+}
+)
+;
+// 이벤트
+// chat : 모든 메시지
+// message : 일반 메시지
+// new_member : 새 멤버 참여
+// del_member : 멤버 퇴장
+// unknown : 알 수 없는 이벤트
+// error : 오류 발생
+bot
+.
+on
+(
+'message'
+,
+async
+(
+context: ChatContext
+)
+=>
+{
+if
+(
+context
+.
+message
+.
+command
+===
+'안녕'
+)
+{
+await
+context
+.
+reply
+(
+'안녕하세요!'
+)
+;
+}
+}
+)
+;
+await
+bot
+.
+run
+(
+)
+;
+// irispy-client 호환 방식 카카오링크 예제
+import
+{
+IrisLink
+,
+KakaoLinkException
+,
+KakaoLinkReceiverNotFoundException
+,
+KakaoLinkLoginException
+,
+KakaoLinkSendException
+,
+}
+from
+'@tsuki-chat/node-iris'
+;
+const
+link
+=
+new
+IrisLink
+(
+process
+.
+env
+.
+IRIS_URL
+,
+process
+.
+env
+.
+KAKAOLINK_APP_KEY
+,
+process
+.
+env
+.
+KAKAOLINK_ORIGIN
+)
+;
+try
+{
+await
+link
+.
+send
+(
+'내 채팅방'
+,
+// receiver_name
+12345
+,
+// template_id
+{
+key
+:
+'value'
+}
+// template_args
+)
+;
+}
+catch
+(
+error
+)
+{
+if
+(
+error
+instanceof
+KakaoLinkSendException
+)
+{
+console
+.
+error
+(
+'메시지 전송 실패'
+)
+;
+}
+}
+컨트롤러 방식 (권장)
+import
+Bot
+,
+{
+BatchController
+,
+BotCommand
+,
+ChatContext
+,
+FeedController
+,
+HasParam
+,
+IsAdmin
+,
+KakaoLink
+,
+Logger
+,
+MessageController
+,
+OnInviteUserFeed
+,
+OnPromoteManagerFeed
+,
+Prefix
+,
+Schedule
+,
+ScheduleMessage
+,
+type LogLevel
+,
+// type ScheduledMessage
+}
+from
+"@tsuki-chat/node-iris"
+;
+// ScheduledMessage 타입은 @tsuki-dev/node-iris 패키지에서 바로 export 할 수 있도록 수정될 예정
+import
+type
+{
+ScheduledMessage
+}
+from
+"@tsuki-chat/node-iris/dist/services/core/BatchScheduler"
+;
+@MessageController
+@
+Prefix
+(
+"!"
+)
+export
+class
+CustomMessageController
+{
+private
+kakaoLink
+?
+:
+KakaoLink
+;
+constructor
+(
+)
+{
+this
+.
+kakaoLink
+=
+new
+KakaoLink
+(
+process
+.
+env
+.
+IRIS_HOST
+||
+""
+,
+process
+.
+env
+.
+KAKAOLINK_APP_KEY
+||
+""
+,
+process
+.
+env
+.
+KAKAOLINK_ORIGIN
+||
+""
+)
+;
+}
+@
+BotCommand
+(
+"안녕"
+,
+"인사 명령어"
+)
+async
+hello
+(
+context: ChatContext
+)
+{
+await
+context
+.
+reply
+(
+"안녕하세요!"
+)
+;
+}
+@
+BotCommand
+(
+"카카오링크"
+,
+"카카오링크 전송 테스트"
+)
+async
+linkCommand
+(
+context: ChatContext
+)
+{
+if
+(
+!
+this
+.
+kakaoLink
+)
+{
+await
+context
+.
+reply
+(
+"카카오링크가 설정되지 않았습니다."
+)
+;
+return
+;
+}
+try
+{
+await
+this
+.
+kakaoLink
+.
+send
+(
+context
+.
+room
+.
+name
+,
+123417
+,
+{
+TEXT
+:
+"테스트"
+,
+}
+)
+;
+}
+catch
+(
+error
+)
+{
+console
+.
+error
+(
+"카카오링크 전송 실패:"
+,
+error
+)
+;
+await
+context
+.
+reply
+(
+"카카오링크 전송에 실패했습니다."
+)
+;
+}
+}
+@
+BotCommand
+(
+"반복"
+,
+"메시지 반복"
+)
+@HasParam
+async
+echo
+(
+context: ChatContext
+)
+{
+await
+context
+.
+reply
+(
+`
+반복:
+${
+context.message.param
+}
+`
+)
+;
+}
+@
+BotCommand
+(
+"관리자"
+,
+"관리자 전용 명령어"
+)
+@IsAdmin
+async
+adminOnly
+(
+context: ChatContext
+)
+{
+await
+context
+.
+reply
+(
+"관리자만 사용할 수 있는 명령어입니다!"
+)
+;
+}
+}
+@BatchController
+class
+CustomBatchController
+{
+@
+Schedule
+(
+60000
+)
+// 1분마다
+async
+periodicTask
+(
+)
+{
+console
+.
+log
+(
+"주기적 작업 실행 중..."
+)
+;
+}
+@
+ScheduleMessage
+(
+"reminder"
+)
+async
+handleReminder
+(
+scheduledMessage: ScheduledMessage
+)
+{
+console
+.
+log
+(
+"리마인더:"
+,
+scheduledMessage
+.
+message
+)
+;
+}
+}
+@FeedController
+class
+CustomFeedController
+{
+@OnInviteUserFeed
+async
+onUserJoin
+(
+context: ChatContext
+)
+{
+await
+context
+.
+reply
+(
+"새로운 멤버를 환영합니다! 🎉"
+)
+;
+}
+@OnPromoteManagerFeed
+async
+onManagerPromote
+(
+context: ChatContext
+)
+{
+await
+context
+.
+reply
+(
+"새로운 관리자가 임명되었습니다! 👑"
+)
+;
+}
+}
+const
+appName
+=
+"Node-Iris"
+;
+const
+controllers
+=
+[
+CustomMessageController
+,
+CustomBatchController
+,
+CustomFeedController
+,
+]
+;
+class
+App
+{
+private
+bot
+:
+Bot
+;
+private
+logger
+:
+Logger
+;
+constructor
+(
+)
+{
+if
+(
+!
+process
+.
+env
+.
+IRIS_URL
+)
+{
+throw
+new
+Error
+(
+"Need IRIS_URL environment variable"
+)
+;
+}
+this
+.
+logger
+=
+new
+Logger
+(
+"Bootstrap"
+)
+;
+this
+.
+bot
+=
+new
+Bot
+(
+appName
+,
+process
+.
+env
+.
+IRIS_URL
+,
+{
+saveChatLogs
+:
+process
+.
+env
+.
+SAVE_CHAT_LOGS
+===
+"true"
+,
+autoRegisterControllers
+:
+false
+,
+// true로 설정하면 모든 컨트롤러가 데코레이터를 통해 자동 등록
+logLevel
+:
+(
+process
+.
+env
+.
+LOG_LEVEL
+as
+LogLevel
+)
+||
+"debug"
+,
+httpMode
+:
+true
+,
+// 웹소켓 모드 사용 시엔 Webhook과 관련된 옵션 값을 모두 주석 처리
+webhookPort
+:
+3022
+,
+webhookPath
+:
+"/webhook/message"
+,
+}
+)
+;
+// autoRegisterControllers가 false일 때 수동으로 컨트롤러 등록
+this
+.
+bot
+.
+registerControllers
+(
+controllers
+)
+;
+}
+public
+async
+start
+(
+)
+{
+try
+{
+if
+(
+!
+process
+.
+env
+.
+IRIS_URL
+)
+{
+throw
+new
+Error
+(
+"Need IRIS_URL environment variable"
+)
+;
+}
+this
+.
+logger
+.
+info
+(
+`
+${
+this.bot.name
+}
+is starting...
+`
+)
+;
+await
+this
+.
+bot
+.
+run
+(
+)
+;
+}
+catch
+(
+error
+)
+{
+this
+.
+logger
+.
+error
+(
+`
+${
+this.bot.name
+}
+failed to start:
+`
+,
+error
+)
+;
+process
+.
+exit
+(
+1
+)
+;
+}
+}
+public
+async
+stop
+(
+)
+{
+try
+{
+this
+.
+bot
+.
+stop
+(
+)
+;
+}
+catch
+(
+error
+)
+{
+this
+.
+logger
+.
+error
+(
+`
+${
+this.bot.name
+}
+failed to stop:
+`
+,
+error
+)
+;
+}
+}
+}
+const
+logger
+=
+new
+Logger
+(
+"Main"
+)
+;
+async
+function
+main
+(
+)
+{
+const
+app
+=
+new
+App
+(
+)
+;
+process
+.
+on
+(
+"SIGINT"
+,
+async
+(
+)
+=>
+{
+logger
+.
+info
+(
+"Received SIGINT, shutting down..."
+)
+;
+await
+app
+.
+stop
+(
+)
+;
+process
+.
+exit
+(
+0
+)
+;
+}
+)
+;
+process
+.
+on
+(
+"SIGTERM"
+,
+async
+(
+)
+=>
+{
+logger
+.
+info
+(
+"Received SIGTERM, shutting down..."
+)
+;
+await
+app
+.
+stop
+(
+)
+;
+process
+.
+exit
+(
+0
+)
+;
+}
+)
+;
+await
+app
+.
+start
+(
+)
+;
+}
+if
+(
+require
+.
+main
+===
+module
+)
+{
+main
+(
+)
+.
+catch
+(
+(
+error
+)
+=>
+{
+console
+.
+error
+(
+`
+Failed to start:
+`
+,
+error
+)
+;
+process
+.
+exit
+(
+1
+)
+;
+}
+)
+;
+}
+create-node-iris-app 사용법
+Interactive 모드
+npx create
+-
+node
+-
+iris
+-
+app@latest
+직접 프로젝트 이름 지정
+npx create
+-
+node
+-
+iris
+-
+app@latest my
+-
+bot
+템플릿 지정
+npx create
+-
+node
+-
+iris
+-
+app@latest my
+-
+bot
+--
+template simple
+API 참조
+Bot 클래스
+- 생성자
+new
+Bot
+(
+appName
+:
+string
+,
+irisUrl
+:
+string
+,
+options
+?
+:
+{
+maxWorkers
+?
+:
+number
+}
+)
+- 메서드
+on
+(
+event
+:
+string
+,
+handler
+:
+Function
+)
+:
+이벤트 핸들러 등록
+run
+(
+)
+:
+Promise
+<
+void
+>
+:
+봇
+실행
+(
+비동기
+)
+stop
+(
+)
+:
+void
+:
+봇 중지
+ChatContext 클래스
+- 속성
+room
+:
+Room
+:
+채팅방 정보
+sender
+:
+User
+:
+발신자 정보
+message
+:
+Message
+:
+메시지 정보
+raw
+:
+any
+:
+원시 데이터
+api
+:
+IIrisAPI
+:
+API
+인스턴스
+- 메서드
+reply
+(
+message
+:
+string
+,
+roomId
+?
+:
+string
+|
+number
+)
+:
+Promise
+<
+any
+>
+:
+답장 보내기
+replyMedia
+(
+files
+:
+Buffer
+[
+]
+,
+roomId
+?
+:
+string
+|
+number
+)
+:
+Promise
+<
+any
+>
+:
+미디어 파일 보내기
+getSource
+(
+)
+:
+Promise
+<
+ChatContext
+|
+null
+>
+:
+답장 원본 메시지 반환
+getNextChat
+(
+n
+?
+:
+number
+)
+:
+Promise
+<
+ChatContext
+|
+null
+>
+:
+다음 메시지 반환
+getPreviousChat
+(
+n
+?
+:
+number
+)
+:
+Promise
+<
+ChatContext
+|
+null
+>
+:
+이전 메시지 반환
+Message 클래스
+- 속성
+id
+:
+string
+|
+bigint
+:
+메시지
+ID
+type
+:
+number
+:
+메시지 타입
+msg
+:
+string
+:
+메시지 내용
+attachment
+:
+any
+:
+첨부 파일
+v
+:
+any
+:
+추가 데이터
+command
+:
+string
+:
+명령어
+(
+첫 단어
+)
+param
+:
+string
+:
+매개변수
+(
+나머지 부분
+)
+hasParam
+:
+boolean
+:
+매개변수 존재 여부
+image
+:
+ChatImage
+|
+null
+:
+이미지 정보
+User 클래스
+- 속성
+id
+:
+string
+|
+bigint
+:
+사용자
+ID
+avatar
+:
+Avatar
+:
+아바타 객체
+- 메서드
+getName
+(
+)
+:
+Promise
+<
+string
+>
+:
+사용자 이름 조회
+getType
+(
+)
+:
+Promise
+<
+string
+>
+:
+사용자 권한 조회
+- 사용자 권한
+HOST
+:
+방장
+MANAGER
+:
+관리자
+NORMAL
+:
+일반 사용자
+BOT
+:
+봇
+Room 클래스
+- 속성
+id
+:
+string
+|
+bigint
+:
+방
+ID
+name
+:
+string
+:
+방 이름
+- 메서드
+getType
+(
+)
+:
+Promise
+<
+string
+>
+:
+방 타입 조회
+Avatar 클래스
+- 속성
+id
+:
+string
+:
+아바타
+ID
+- 메서드
+getUrl
+(
+)
+:
+Promise
+<
+string
+>
+:
+이미지
+URL
+조회
+getImg
+(
+)
+:
+Promise
+<
+Buffer
+>
+:
+이미지 데이터 조회
+ChatImage 클래스
+- 속성
+url
+:
+string
+[
+]
+:
+이미지
+URL
+목록
+- 메서드
+getImg
+(
+)
+:
+Promise
+<
+Buffer
+[
+]
+>
+:
+이미지 데이터 조회
+IrisLink 클래스
+- 생성자
+new
+IrisLink
+(
+irisUrl
+:
+string
+,
+defaultAppKey
+?
+:
+string
+,
+defaultOrigin
+?
+:
+string
+)
+- 메서드
+send
+(
+receiverName
+:
+string
+,
+templateId
+:
+number
+,
+templateArgs
+:
+Record
+<
+string
+,
+any
+>
+,
+options
+?
+:
+object
+)
+:
+Promise
+<
+void
+>
+init
+(
+)
+:
+Promise
+<
+void
+>
+예외 클래스
+KakaoLinkException
+:
+일반 오류
+KakaoLinkReceiverNotFoundException
+:
+받는 사람 없음
+KakaoLinkLoginException
+:
+로그인 오류
+KakaoLink2FAException
+:
+2
+단계 인증 오류
+KakaoLinkSendException
+:
+전송 오류
+데코레이터
+irispy-client 호환 함수형 데코레이터
+import
+{
+decorators
+}
+from
+'@tsuki-chat/node-iris'
+;
+// 파라미터가 있는 경우에만 실행
+const
+echoHandler
+=
+decorators
+.
+hasParam
+(
+async
+(
+context: ChatContext
+)
+=>
+{
+await
+context
+.
+reply
+(
+`
+에코:
+${
+context.message.param
+}
+`
+)
+;
+}
+)
+;
+// 관리자만 실행 가능
+const
+adminHandler
+=
+decorators
+.
+isAdmin
+(
+async
+(
+context: ChatContext
+)
+=>
+{
+await
+context
+.
+reply
+(
+'관리자 명령어입니다.'
+)
+;
+}
+)
+;
+// 답장인 경우에만 실행
+const
+replyHandler
+=
+decorators
+.
+isReply
+(
+async
+(
+context: ChatContext
+)
+=>
+{
+await
+context
+.
+reply
+(
+'답장을 확인했습니다!'
+)
+;
+}
+)
+;
+// 차단되지 않은 사용자만 실행
+const
+notBannedHandler
+=
+decorators
+.
+isNotBanned
+(
+async
+(
+context: ChatContext
+)
+=>
+{
+await
+context
+.
+reply
+(
+'실행 가능합니다.'
+)
+;
+}
+)
+;
+클래스 데코레이터
+-
+@BootstrapController
+:
+봇 앱 시작시 우선적으로 실행
+-
+@BatchController
+:
+스케줄
+,
+배치 처리
+-
+@ChatController
+/
+@Controller
+:
+모든 채팅 이벤트 처리
+-
+@MessageController
+:
+메시지 이벤트 처리
+-
+@NewMemberController
+:
+새 멤버 입장 이벤트 처리
+-
+@DeleteMemberController
+:
+멤버 퇴장 이벤트 처리
+-
+@FeedController
+:
+피드 이벤트 처리
+-
+@UnknownController
+:
+알 수 없는 명령어 처리
+-
+@ErrorController
+:
+에러 이벤트 처리
+메소드 데코레이터
+명령어 등록:
+@
+BotCommand
+(
+'명령어'
+,
+'설명'
+)
+// 봇 명령어 등록
+@
+HelpCommand
+(
+'도움말'
+)
+// 도움말 명령어
+@Command
+// 해당 컨트롤러에서 이벤트 수신 시 무조건 호출하는 명령어
+Prefix 설정:
+@
+Prefix
+(
+'!'
+)
+// 컨트롤러의 기본 prefix 설정
+@
+MethodPrefix
+(
+'특정메소드!'
+)
+// 특정 메소드에만 prefix 설정
+조건부 실행:
+@HasParam
+// 파라미터 필수
+@IsAdmin
+// 관리자만
+@
+HasRole
+(
+[
+'HOST'
+,
+'MANAGER'
+]
+,
+await
+(
+context: ChatContext
+)
+=>
+context
+.
+reply
+(
+'관리자만 사용할 수 있는 기능입니다'
+)
+)
+// 특정 역할만
+@IsNotBanned
+// 차단되지 않은 사용자
+@IsReply
+// 답장 메시지만
+@
+AllowedRoom
+(
+[
+'1234567890'
+,
+'방 ID'
+]
+)
+// 특정 방에서만
+@
+Throttle
+(
+3
+,
+60000
+)
+// 사용 빈도 제한 (횟수, 시간ms)
+메세지 타입별:
+@OnMessage
+// 모든 메시지
+@OnNormalMessage
+// 일반 텍스트 메시지
+@OnPhotoMessage
+// 사진 메시지
+@OnImageMessage
+// 이미지 메시지
+@OnVideoMessage
+// 비디오 메시지
+@OnAudioMessage
+// 오디오 메시지
+@OnFileMessage
+// 파일 메시지
+@OnMapMessage
+// 지도 메시지
+@OnEmoticonMessage
+// 이모티콘 메시지
+@OnProfileMessage
+// 프로필 메시지
+@OnMultiPhotoMessage
+// 다중 사진 메시지
+@OnNewMultiPhotoMessage
+// 새로운 다중 사진 메시지
+@OnReplyMessage
+// 답장 메시지
+피드 타입별:
+@OnFeedMessage
+// 피드 메시지
+@OnInviteUserFeed
+// 사용자 초대 피드
+@OnLeaveUserFeed
+// 사용자 퇴장 피드
+@OnDeleteMessageFeed
+// 메시지 삭제 피드
+@OnHideMessageFeed
+// 메시지 숨김 피드
+@OnPromoteManagerFeed
+// 관리자 승급 피드
+@OnDemoteManagerFeed
+// 관리자 강등 피드
+@OnHandOverHostFeed
+// 방장 위임 피드
+@OnOpenChatJoinUserFeed
+// 오픈채팅 사용자 입장 피드
+@OnOpenChatKickedUserFeed
+// 오픈채팅 사용자 추방 피드
+배치(스케줄링) 및 부트스트랩:
+@
+Schedule
+(
+5000
+)
+// 주기적 실행 (밀리초)
+@
+ScheduleMessage
+(
+'key'
+)
+// 스케줄된 메시지 처리
+@
+Bootstrap
+(
+1
+)
+// 부트스트랩 실행 (낮은 숫자 우선)
+유틸리티 함수
+스케줄링 관련:
+-
+addContextToSchedule
+(
+context
+,
+delay
+,
+key
+)
+:
+컨텍스트를 스케줄에 추가
+-
+scheduleMessage
+(
+id
+,
+roomId
+,
+message
+,
+time
+,
+metadata
+)
+:
+메시지 스케줄링
+스로틀링 관리:
+-
+clearUserThrottle
+(
+userId
+,
+commandName
+)
+:
+특정 사용자의 스로틀 해제
+-
+clearAllThrottle
+(
+commandName
+)
+:
+모든 사용자의 스로틀 해제
+디버깅 및 데코레이터 메타데이터:
+-
+debugDecoratorMetadata
+(
+)
+:
+데코레이터 메타데이터 디버깅
+-
+debugRoomRestrictions
+(
+)
+:
+방 제한 설정 디버깅
+정보 조회:
+-
+getRegisteredCommands
+(
+)
+:
+등록된 명령어 목록 조회
+-
+getRegisteredControllers
+(
+)
+:
+등록된 컨트롤러 목록 조회
+-
+getBatchControllers
+(
+)
+:
+배치 컨트롤러 목록 조회
+-
+getBootstrapControllers
+(
+)
+:
+부트스트랩 컨트롤러 목록 조회
+-
+getBootstrapMethods
+(
+)
+:
+부트스트랩 메소드 목록 조회
+-
+getScheduleMethods
+(
+)
+:
+스케줄 메소드 목록 조회
+-
+getScheduleMessageMethods
+(
+)
+:
+스케줄 메시지 메소드 목록 조회
+참조
+node-iris
+and
+create-node-iris-app
+by
+@Tsuki-Chat
+IrisPy2
+and
+kakaolink-py
+by
+@ye-seola
+irispy-client
+by
+@dolidolih
+LunaticaLuna
+님의 게시글 더보기
+좋아요
+3
+이 글을 '좋아요'한 멤버 리스트
+댓글
+11
+공유
+신고
+클린봇
+이 악성 댓글을 감지합니다.
+설정
+댓글
+등록순
+최신순
+새로고침
+관심글 댓글 알림
+등록
+이 글에 새 댓글이 등록되면 내소식에서 알림을 받을 수 있습니다.
+훈이
+2025.09.25. 07:21
+답글쓰기
+1
+인천l콴도
+ㄷㄷ이렇게 다 퍼주시면 남는게 있나요? 감삽하니다
+2025.09.25. 09:54
+답글쓰기
+1
+로미
+남는건 명예죠
+2025.09.25. 11:33
+답글쓰기
+1
+LunaticaLuna
+곧 Deprecated 될 레퍼런스 입니다. 깔깔
+2025.09.25. 18:52
+답글쓰기
+0
+도리도리ㅎ
+역시 ts보단 js지
+2025.09.25. 10:57
+답글쓰기
+1
+LunaticaLuna
+역시 js보단 go지
+2025.09.25. 11:02
+답글쓰기
+0
+nolbo
+당장쓰러갑니다
+2025.09.25. 23:05
+답글쓰기
+1
+LunaticaLuna
+문서를 적으러 가시는...건가요...
+2025.09.25. 23:07
+답글쓰기
+0
+LunaticaLuna
+뜻이 두개로 들려서 무서워요
+2025.09.25. 23:08
+답글쓰기
+0
+쿠보타
+너무 잘 쓰고 있습니다. 감사합니다.
+2025.09.30. 13:11
+답글쓰기
+1
+LunaticaLuna
+저야말로 감사합니다.
+2025.09.30. 13:11
+답글쓰기
+0
+댓글을 입력하세요
+나물쓰
+등록

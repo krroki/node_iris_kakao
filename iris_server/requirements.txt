@@ -1,0 +1,4 @@
+irispy-client
+gemini_webapi
+google-genai
+pytz

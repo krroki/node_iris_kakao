@@ -1,0 +1,257 @@
+아래는 요청하신 유튜브 영상(“Iris를 이용한 봇 만들기”, H43VTOsKDXY)에 맞춰 **Iris 기반 카카오톡 봇**을 구축하는 **상세 구현 지시서**입니다. 영상 진행 흐름(개요 → Hyper-V로 Linux 설치 → Iris 설치 → `irispy-client` → 샘플 봇 실행)을 그대로 따르되, 운영에 필요한 보안/서비스화/트러블슈팅까지 보강했습니다.
+
+---
+
+# Iris 카카오톡 봇 구현 지시서 (H43VTOsKDXY 기준)
+
+## 0) 개요 & 아키텍처
+
+* **Iris(안드로이드 앱)**: 루팅된 안드로이드 기기에서 카카오톡 DB 변화를 감시하고, HTTP(또는 WebSocket)로 이벤트를 전달하며, API로 **메시지 전송/DB 조회/복호화** 등을 처리하는 *게이트웨이* 역할을 합니다. ([GitHub][1])
+* **봇 서버(리눅스 VM)**: `irispy-client`(Python)로 Iris와 연결하여 **이벤트 핸들러**를 실행하고 자동 응답/업무 로직을 수행합니다. ([GitHub][2])
+* 영상 구성: 0:00 개요, 7:46 Hyper-V로 Linux 설치, 21:20 Iris 설치, 48:02 `irispy-client`, 56:29 샘플 봇 실행. ([YouTube][3])
+
+---
+
+## 1) 준비물 / 전제조건
+
+1. **안드로이드 스마트폰** (카카오톡 설치, **루팅 필수**)
+2. **Windows 10/11** 호스트 + **Hyper-V** 활성화 (리눅스 VM 용)
+3. **동일 네트워크(또는 라우팅 가능)** 에서 안드로이드 ↔ 리눅스 VM 간 통신 가능
+4. **ADB** 설치(Windows) – 안드로이드에 APK/스크립트 전송용
+5. **보안/약관**: 카카오 서비스 약관 및 관련 법령을 반드시 확인하세요. 루팅/비공식 자동화는 계정 제재/보안 위험이 있을 수 있습니다.
+
+---
+
+## 2) Hyper-V로 리눅스 VM 준비 (영상 7:46~ 흐름)
+
+1. Hyper-V에서 **External vSwitch(브리지)** 생성 → VM이 **실제 LAN IP**를 받도록 구성
+2. **Ubuntu 22.04 LTS** 설치(권장), 고정 IP 또는 DHCP로 LAN IP 확보
+3. 방화벽 설정(예: UFW) – 봇 HTTP 포트(기본 5000 가정) 허용:
+
+```bash
+sudo ufw allow 5000/tcp
+sudo ufw reload
+```
+
+> External vSwitch를 쓰면 **안드로이드(또는 같은 Wi-Fi)** 에서 VM의 IP:포트로 직접 접근 가능해 ‘Web Server Endpoint’가 안정적으로 동작합니다.
+
+---
+
+## 3) 안드로이드에 Iris 설치 및 실행 (영상 21:20~)
+
+### 3.1 파일 다운로드
+
+* **Iris.apk**와 **iris_control**(Windows는 `iris_control.ps1`)을 **GitHub Releases**에서 다운로드. ([kbotdocs][4])
+
+### 3.2 ADB로 파일 푸시
+
+```bash
+adb push Iris.apk /data/local/tmp
+```
+
+* 플랫폼별 실행 스크립트:
+
+  * **Windows**:
+
+    ```powershell
+    ./iris_control.ps1 install
+    ./iris_control.ps1 start
+    ```
+  * **Mac/Linux**:
+
+    ```bash
+    chmod +x iris_control
+    ./iris_control install
+    ./iris_control start
+    ```
+  * `iris_control`은 `status`, `stop`, `install_redroid`도 제공(필요 시). ([kbotdocs][4])
+
+### 3.3 대시보드 접속 & 기본 설정
+
+* 브라우저에서 `http://[ANDROID_IP]:3000/dashboard` 접속 → 설정 적용. ([GitHub][1])
+
+  * **Bot Name**: 식별명
+  * **Web Server Endpoint**: **리눅스 VM**의 봇 엔드포인트(ex: `http://[VM_IP]:5000/db`) – IrisPy용 예시가 문서에 명시되어 있습니다. ([kbotdocs][4])
+  * **DB Polling Rate**(예: 200ms): 낮출수록 CPU↑/지연↓
+  * **Message Send Rate**(예: 100ms)
+  * **Bot Port**: 3000(기본)
+
+> Iris는 `/reply`, `/query`, `/decrypt`, `/aot`, `/config`, `/dashboard` 등 **HTTP API**를 제공합니다. 추후 디버깅/운영에 매우 유용합니다. ([GitHub][1])
+
+---
+
+## 4) 리눅스 VM에 봇 서버 구현 (`irispy-client`) (영상 48:02~)
+
+### 4.1 파이썬 런타임 & 가상환경
+
+```bash
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+python3 -m venv ~/iris-bot-venv
+source ~/iris-bot-venv/bin/activate
+pip install -U pip
+```
+
+### 4.2 라이브러리 설치
+
+```bash
+pip install irispy-client
+```
+
+* `irispy-client`는 **Iris 카카오톡 봇용 Python 클라이언트**로 `iris.Bot`, 이벤트, 카카오링크 모듈 등을 제공합니다. ([piwheels.org][5])
+
+### 4.3 최소 샘플 코드 (이벤트 핸들러)
+
+`app.py`:
+
+```python
+from iris.bot import Bot
+from iris.bot.models import ChatContext
+
+IRIS_URL = "http://[ANDROID_IP]:3000"  # 안드로이드 기기의 Iris 포트(기본 3000)
+
+bot = Bot(IRIS_URL)
+
+@bot.on_event("message")
+def on_message(ctx: ChatContext):
+    text = (ctx.message.msg or "").strip()
+
+    if text.startswith("/핑"):
+        ctx.reply("pong")
+        return
+
+    if text.startswith("/이미지"):
+        # URL/파일경로/PIL.Image/bytes/BufferedReader 모두 지원
+        ctx.reply_media("https://picsum.photos/512")
+        return
+
+    if "안녕" in text:
+        ctx.reply(f"{ctx.sender.name}님, 안녕하세요!")
+
+# 블로킹 실행
+bot.run()
+```
+
+* `Bot.run()`은 **Iris에 연결**하고 이벤트 루프를 시작합니다. 이벤트명: `chat`, `message`, `new_member`, `del_member`, `unknown`, `error`. ([GitHub][2])
+
+### 4.4 (선택) 데코레이터로 권한/상태 제어
+
+```python
+from iris.decorators import is_admin, has_param, is_reply
+
+@bot.on_event("message")
+@is_admin              # 관리자만
+def admin_only(ctx):
+    if ctx.message.command == "/공지":
+        ctx.reply("관리자 전용 공지입니다.")
+```
+
+* 제공 데코레이터: `@has_param`, `@is_reply`, `@is_admin`, `@is_not_banned`. ([GitHub][2])
+
+### 4.5 (선택) 카카오링크 발송
+
+```python
+from iris.kakaolink import IrisLink
+
+link = IrisLink("http://[ANDROID_IP]:3000")
+link.send(
+    receiver_name="내 채팅방",
+    template_id=12345,
+    template_args={"key": "value"},
+)
+```
+
+* `IrisLink(iris_url)`로 템플릿 기반 카카오링크를 전송할 수 있습니다. ([GitHub][2])
+
+---
+
+## 5) 실행 & 서비스화 (영상 56:29~)
+
+### 5.1 직접 실행
+
+```bash
+source ~/iris-bot-venv/bin/activate
+python app.py
+```
+
+### 5.2 `iris_bot` 샘플 저장소 활용(권장)
+
+* 샘플 리포지토리에는 **CLI**(`iris init`, `iris admin add`, `iris service create`, `iris service start/stop/status`)와 예제 코드/요구사항이 정리되어 있습니다. 운영 자동화에 유리합니다. ([GitHub][6])
+
+  ```bash
+  git clone https://github.com/dolidolih/iris_bot
+  cd iris_bot
+  python -m venv venv && source venv/bin/activate
+  pip install -U pip && pip install -r requirements.txt
+  iris init
+  iris admin add <YOUR_USER_ID>
+  # (선택) 카카오링크 설정
+  iris kakaolink <APP_KEY> <ORIGIN>
+  # (선택) systemd 서비스 생성/시작
+  iris service create
+  iris service start
+  ```
+
+---
+
+## 6) 네트워킹 체크리스트
+
+* **Iris 대시보드** 접근: `http://[ANDROID_IP]:3000/dashboard` 접속 확인. ([GitHub][1])
+* **Web Server Endpoint**에서 **봇 서버로 콜백**이 들어오는지(방화벽/라우팅/포트) 확인. ([kbotdocs][4])
+* Hyper-V는 **External vSwitch**를 사용해 리눅스 VM이 **LAN IP**를 갖도록 구성(안드로이드에서 접근 가능).
+
+---
+
+## 7) 운영/보안 베스트 프랙티스
+
+* **대시보드/HTTP 포트 노출 최소화**: 모바일 기기 포트 3000은 내부망 한정으로 두세요. 필요 시 WireGuard 등으로 터널링.
+* **Iris 속도 파라미터**(DB Polling/Send Rate)는 서버/배터리/자원에 맞춰 보수적으로. ([kbotdocs][4])
+* **로그/에러 처리**: `@bot.on_event("error")`로 예외 로깅, 재시도 전략 설계. ([GitHub][2])
+* **약관 준수**: 비공식/자동화 사용에 따른 제재 리스크 고지.
+
+---
+
+## 8) 트러블슈팅
+
+* **루팅/권한 문제**: Iris는 카카오톡 DB 및 일부 시스템 서비스 접근에 **루트 권한**이 필요합니다. 루팅이 불완전하면 이벤트가 오지 않거나 `/query` 복호화가 실패할 수 있습니다. ([GitHub][1])
+* **Iris가 안 떠요**: `iris_control(ps1)`로 `status` 확인, 필요 시 `stop` 후 `start`. ([kbotdocs][4])
+* **연결 실패**: `IRIS_URL`(예: `http://[ANDROID_IP]:3000`) 오타/포트/방화벽 확인.
+* **엔드포인트 미수신**: 대시보드의 **Web Server Endpoint**가 VM에서 접근 가능한 주소인지 재확인. NAT/포트포워딩 이슈면 브리지로 전환. ([kbotdocs][4])
+* **API 확인**: `GET /config`, `GET /aot` 호출로 기초 동작 점검. ([GitHub][1])
+
+---
+
+## 9) 확장 옵션
+
+* **TypeScript 선호 시**: `node-iris`(TS 포팅)로 동일 개념 구현 가능. ([Npm][7])
+* **고급 샘플/툴체인**: `iris_bot` 저장소의 갱신 내역 및 CLI 흐름을 참조해 배포 자동화. ([GitHub][6])
+
+---
+
+## 10) 레퍼런스
+
+* 유튜브(영상 타임라인): Iris 개요/설치/`irispy-client`/샘플 실행 흐름 확인. ([YouTube][3])
+* **Iris(안드로이드 앱) GitHub**: 설치, 대시보드, HTTP API( `/reply`, `/query`, `/decrypt`, `/config`, `/dashboard` ). ([GitHub][1])
+* **Iris 시작하기(KBotDocs)**: 설치/구성, `iris_control(ps1)` 사용법, Web Server Endpoint 예시. ([kbotdocs][4])
+* **irispy-client 문서/레포**: `Bot`, 이벤트, 데코레이터, `IrisLink`(카카오링크). ([kbotdocs][8])
+* **샘플 봇(iris_bot)**: 초기화/관리 CLI와 운영 가이드. ([GitHub][6])
+
+---
+
+### 빠른 점검(핵심 5단계)
+
+1. **Hyper-V 리눅스 VM** 준비(브리지 네트워크/IP 확보)
+2. **Iris 설치 & 실행**(`iris_control(ps1)`), 대시보드 접속 확인
+3. 대시보드 **Web Server Endpoint**를 `http://[VM_IP]:5000/db`로 설정
+4. 리눅스 VM에 `irispy-client` 설치 → 샘플 `app.py` 실행
+5. 카카오톡 채팅에서 `/핑` → `pong` 응답 확인
+
+필요하면 위 스펙을 기반으로 **운영 스크립트**, **systemd 서비스 파일**, **핵심 커맨드만 모은 치트시트**도 바로 만들어 드릴게요.
+
+[1]: https://github.com/dolidolih/Iris "GitHub - dolidolih/Iris: An Android native db observer / message broker / reply sender for Kakaotalk bot"
+[2]: https://github.com/dolidolih/irispy-client "GitHub - dolidolih/irispy-client"
+[3]: https://www.youtube.com/watch?v=H43VTOsKDXY&utm_source=chatgpt.com "Iris를 이용한 봇 만들기"
+[4]: https://kbotdocs.dev/reference/iris/get-started "시작하기 - Iris | KBotDocs"
+[5]: https://www.piwheels.org/project/irispy-client/?utm_source=chatgpt.com "irispy-client"
+[6]: https://github.com/dolidolih/iris_bot "GitHub - dolidolih/iris_bot"
+[7]: https://www.npmjs.com/package/%40racla-dev/node-iris/v/1.6.9?utm_source=chatgpt.com "racla-dev/node-iris"
+[8]: https://kbotdocs.dev/reference/irispy-client "irispy-client | KBotDocs"

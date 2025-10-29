@@ -1,0 +1,36 @@
+﻿# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor directories
+.vscode/
+.idea/
+
+# Logs and temp
+logs/
+*.log
+*.tmp
+test_logs/
+
+# LDPlayer / emulator images
+*.vdi
+*.qcow2
+
+# Local config
+config/*.env
+config/.env
+.env
+
+# OS files
+Thumbs.db
+.DS_Store
+
+infra/iris/
+data/

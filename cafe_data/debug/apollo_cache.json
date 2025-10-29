@@ -1,0 +1,1 @@
+{"ROOT_QUERY":{"__typename":"Query","homeHealthStatus":{"controlValue":1},"cafeApiHealthStatus":{"controlValue":1}}}
