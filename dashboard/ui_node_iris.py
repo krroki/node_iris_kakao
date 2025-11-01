@@ -522,73 +522,160 @@ def page_dashboard():
 
             st.markdown("</div>", unsafe_allow_html=True)
         i += 1
+
+    # Recent Activity (All Rooms) section
+    st.markdown("---")
+    st.markdown("### Recent Activity (All Rooms)")
+    live_log_widget(room_id=None, limit=80, include="", exclude="", height=260, interval_ms=1000)
     # 대시보드는 전체 rerun을 사용하지 않음(깜빡임 방지)
 
 
 def page_templates():
     st.markdown("<div class='page-title'>템플릿 관리</div>", unsafe_allow_html=True)
-    base = APP_BASE / "config" / "templates" / "welcome"
-    base.mkdir(parents=True, exist_ok=True)
-    files = sorted(p for p in base.glob("*.json")) if base.exists() else []
-    if not files:
-        st.info("템플릿이 없습니다.")
+
+    # Editor panel first if editing
+    if st.session_state.get("edit_template"):
+        st.markdown("← Back to Templates", unsafe_allow_html=True)
+        if st.button("← Back to Templates", key="back_to_templates"):
+            st.session_state.pop("edit_template", None)
+            st.rerun()
+
+        tpl_info = st.session_state["edit_template"]
+        category = tpl_info.get("category", "welcome")
+        name = tpl_info.get("name", "")
+        base = APP_BASE / "config" / "templates" / category
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / f"{name}.json"
+
+        st.markdown(f"## Edit Template: {name}")
+
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
+            st.markdown("### 템플릿 이름")
+            tpl_name = st.text_input("이름", value=name, key=f"name_{name}")
+
+            st.markdown("### 카테고리")
+            cat_options = ["자동 응답", "브로드캐스트", "스케줄"]
+            cat_map = {"자동 응답": "welcome", "브로드캐스트": "broadcast", "스케줄": "schedule"}
+            cat_reverse = {v: k for k, v in cat_map.items()}
+            selected_cat = st.selectbox("카테고리", cat_options, index=cat_options.index(cat_reverse.get(category, "자동 응답")), key=f"cat_{name}")
+
+            st.markdown("### 메시지 내용")
+            raw = path.read_text(encoding="utf-8") if path.exists() else json.dumps({"title": name, "content": "", "category": category}, ensure_ascii=False, indent=2)
+            try:
+                tpl_data = json.loads(raw)
+            except:
+                tpl_data = {"title": name, "content": "", "category": category}
+
+            content = st.text_area("메시지 내용", value=tpl_data.get("content", ""), height=200, key=f"content_{name}")
+
+            st.markdown("### 사용 가능한 변수")
+            vars_tags = ["{{userName}}", "{{roomName}}", "{{time}}", "{{date}}", "{{memberCount}}"]
+            st.markdown(" ".join([f"<span class='pill'>{v}</span>" for v in vars_tags]), unsafe_allow_html=True)
+
+        with col_right:
+            st.markdown("### 카카오톡 미리보기")
+            # 카카오톡 스타일 미리보기
+            preview_html = f"""
+            <div style="background:#b2c7d9;padding:20px;border-radius:12px;font-family:sans-serif;">
+                <div style="text-align:center;color:#555;font-size:12px;margin-bottom:10px;">관리봇</div>
+                <div style="background:white;padding:12px 16px;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.1);margin-bottom:8px;">
+                    <div style="color:#333;font-size:14px;line-height:1.5;white-space:pre-wrap;">{content.replace('{{userName}}', 'UserName').replace('{{roomName}}', 'RoomName').replace('{{time}}', '5:09 PM').replace('{{date}}', '2025-11-01').replace('{{memberCount}}', '42')}</div>
+                </div>
+                <div style="text-align:right;color:#666;font-size:11px;">5:09 PM</div>
+                <div style="display:flex;align-items:center;justify-content:flex-end;margin-top:16px;padding:8px;background:#fff;border-radius:8px;">
+                    <input type="text" placeholder="메시지를 입력하세요" disabled style="flex:1;border:none;padding:6px;color:#999;" />
+                    <span style="margin-left:8px;color:#999;">😊</span>
+                    <span style="margin-left:8px;color:#999;">#</span>
+                </div>
+            </div>
+            """
+            components.html(preview_html, height=400)
+
+            st.markdown("---")
+            st.warning("⚠️ SAFE_MODE: Test Send는 실제로 메시지를 보내지 않습니다. (미리보기만)")
+
+        st.markdown("---")
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            if st.button("💾 Save", key=f"save_{name}", use_container_width=True):
+                new_cat = cat_map[selected_cat]
+                new_base = APP_BASE / "config" / "templates" / new_cat
+                new_base.mkdir(parents=True, exist_ok=True)
+                new_path = new_base / f"{tpl_name}.json"
+                tpl_data["title"] = tpl_name
+                tpl_data["content"] = content
+                tpl_data["category"] = new_cat
+                new_path.write_text(json.dumps(tpl_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                if new_path != path and path.exists():
+                    path.unlink()
+                st.success("저장되었습니다")
+                st.session_state.pop("edit_template", None)
+                st.rerun()
+        with cc2:
+            if st.button("📤 Test Send", key=f"test_{name}", use_container_width=True):
+                st.info("SAFE_MODE: 실제 전송은 비활성화되어 있습니다. 위 미리보기를 확인하세요.")
+        with cc3:
+            if st.button("❌ Cancel", key=f"cancel_{name}", use_container_width=True):
+                st.session_state.pop("edit_template", None)
+                st.rerun()
+        return
+
+    # Template list view
     query = st.text_input("검색", "", placeholder="Search templates...")
-    if st.button("New Template"):
+    if st.button("+ New Template", type="primary"):
         import uuid
         name = f"template_{uuid.uuid4().hex[:6]}"
-        (base / f"{name}.json").write_text(json.dumps({"title": name, "content": ""}, ensure_ascii=False, indent=2), encoding="utf-8")
+        base = APP_BASE / "config" / "templates" / "welcome"
+        base.mkdir(parents=True, exist_ok=True)
+        (base / f"{name}.json").write_text(json.dumps({"title": name, "content": "", "category": "welcome"}, ensure_ascii=False, indent=2), encoding="utf-8")
         st.success(f"생성됨: {name}.json")
         st.rerun()
-    items = [p for p in files if (query.lower() in p.stem.lower())]
-    cols = st.columns(2)
-    for idx, p in enumerate(items):
-        with cols[idx % 2]:
-            st.markdown("<div class='template-card'>", unsafe_allow_html=True)
-            st.subheader(p.stem)
-            st.caption(f"파일: {p.name}")
-            with st.expander("미리보기", expanded=False):
-                st.code(p.read_text(encoding="utf-8")[:800])
-            c1, c2 = st.columns([1,1])
-            with c1:
-                if st.button("Edit", key=f"edit_{p.stem}"):
-                    st.session_state["edit_template"] = p.stem
-            with c2:
-                if st.button("기본 템플릿으로", key=f"default_{p.stem}"):
-                    lines = []
-                    if ENV_PATH.exists():
-                        lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
-                    has = False
-                    for i, ln in enumerate(lines):
-                        if ln.startswith("WELCOME_TEMPLATE="):
-                            lines[i] = f"WELCOME_TEMPLATE={p.stem}"
-                            has = True
-                            break
-                    if not has:
-                        lines.append(f"WELCOME_TEMPLATE={p.stem}")
-                    ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-                    st.success(".env에 반영되었습니다")
-            st.markdown("</div>", unsafe_allow_html=True)
 
-    # Editor panel (single)
-    if st.session_state.get("edit_template"):
-        name = st.session_state["edit_template"]
-        path = base / f"{name}.json"
-        st.markdown("---")
-        st.subheader(f"Edit: {name}")
-        raw = path.read_text(encoding="utf-8")
-        edited = st.text_area("내용(JSON)", value=raw, height=260, key=f"ed_{name}")
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            if st.button("저장", key=f"save_{name}"):
+    # Category sections
+    categories = [
+        ("자동 응답", "welcome", ["환영 메시지", "퇴장 메시지"]),
+        ("브로드캐스트", "broadcast", ["공지사항"]),
+        ("스케줄", "schedule", ["일일 요약"])
+    ]
+
+    for cat_name, cat_key, subcats in categories:
+        st.markdown(f"### {cat_name}")
+        base = APP_BASE / "config" / "templates" / cat_key
+        base.mkdir(parents=True, exist_ok=True)
+        files = sorted(p for p in base.glob("*.json")) if base.exists() else []
+        items = [p for p in files if (query.lower() in p.stem.lower())]
+
+        if not items:
+            st.caption(f"아직 {cat_name} 템플릿이 없습니다.")
+
+        cols = st.columns(2)
+        for idx, p in enumerate(items):
+            with cols[idx % 2]:
+                st.markdown("<div class='template-card'>", unsafe_allow_html=True)
                 try:
-                    json.loads(edited)
-                    path.write_text(edited, encoding="utf-8")
-                    st.success("저장되었습니다")
-                except Exception as e:
-                    st.error(f"유효하지 않은 JSON: {e}")
-        with cc2:
-            if st.button("닫기", key=f"close_{name}"):
-                st.session_state.pop("edit_template", None)
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    title = data.get("title", p.stem)
+                    content_preview = data.get("content", "")[:100]
+                except:
+                    title = p.stem
+                    content_preview = ""
+
+                st.markdown(f"**{title}**")
+                st.caption(content_preview + ("..." if len(content_preview) >= 100 else ""))
+
+                c1, c2 = st.columns([1,1])
+                with c1:
+                    if st.button("Edit", key=f"edit_{cat_key}_{p.stem}"):
+                        st.session_state["edit_template"] = {"name": p.stem, "category": cat_key}
+                        st.rerun()
+                with c2:
+                    if st.button("🗑️ 삭제", key=f"del_{cat_key}_{p.stem}"):
+                        p.unlink()
+                        st.success(f"삭제됨: {p.stem}")
+                        st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
 
 def page_logs():
