@@ -8,6 +8,12 @@ __pycache__/
 .venv/
 venv/
 env/
+.venv_*/
+*/.venv_*/
+dashboard/.venv_ui/
+node-iris-app/.venv_dashboard/
+.venv_dashboard/
+.venv_wsl/
 
 # Editor directories
 .vscode/
@@ -16,6 +22,7 @@ env/
 # Logs and temp
 logs/
 *.log
+Downloads/
 *.tmp
 test_logs/
 
@@ -27,6 +34,7 @@ test_logs/
 config/*.env
 config/.env
 .env
+env.local
 
 # OS files
 Thumbs.db
