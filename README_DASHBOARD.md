@@ -1,6 +1,6 @@
 # IRIS 봇 관리 대시보드 🤖
 
-일반인을 위한 **가장 친숙하고 사용하기 쉬운** IRIS 봇 관리 인터페이스입니다.
+IRIS + 카카오 오픈채팅 연동 봇을 운영하기 위한 웹 대시보드입니다. 1초 주기의 실시간 로그(페이지 전체 깜빡임 없이 부분 갱신), 방 카드/썸네일, 기능 토글(환영/브로드캐스트/스케줄), 전역 설정을 제공합니다. 기본은 SAFE_MODE=true로 메시지 발송이 차단된 수신 전용 모드입니다.
 
 ## ✨ 주요 특징
 
@@ -23,25 +23,33 @@
 - 스마트폰에서도 완벽하게 작동
 - 반응형 디자인으로 최적화
 
-## 🚀 시작 방법
+## 🚀 시작 방법 (Quick Start)
 
-### 방법 1: 간단 실행 (가장 쉬움)
-```
-run_dashboard.bat
-```
-더블클릭만으로 바로 시작됩니다!
+사전 조건(Windows + WSL2):
+- 관리자 PowerShell에서 IRIS HTTP 포트를 프록시/열기 (예: 5050)
+  ```powershell
+  windows/setup_iris_port.ps1 -LocalPort 5050
+  # 정상: Probe http://127.0.0.1:5050/config -> HTTP 200
+  ```
+- WSL에서 봇 실행(.env 자동 생성: `IRIS_URL=<Windows_IP>:5050`, `SAFE_MODE=true`)
+  ```bash
+  scripts/start_bot_wsl.sh
+  # 로그: logs/bot_wsl.log
+  ```
 
-### 방법 2: Python 실행
-```bash
-python scripts/start_dashboard.py
-```
+대시보드(UI) 실행(WSL):
+- 권장: 스크립트 실행 (로그 API 8510 자동 기동)
+  ```bash
+  scripts/serve_ui.sh
+  # 브라우저: http://localhost:8501
+  ```
+- 직접 실행(선택):
+  ```bash
+  export NODE_IRIS_APP_DIR="$(pwd)/node-iris-app"
+  python -m streamlit run dashboard/ui_node_iris.py --server.address 0.0.0.0 --server.port 8501
+  ```
 
-### 방법 3: 직접 실행
-```bash
-python -m streamlit run dashboard/streamlit_dashboard.py
-```
-
-## 🖥️ 사용 화면
+## 🖥️ 주요 화면
 
 ### 🏠 방 관리 탭
 - **방 목록**: 현재 등록된 모든 방의 상태 확인
@@ -65,51 +73,34 @@ python -m streamlit run dashboard/streamlit_dashboard.py
 
 ## 🌐 접속 주소
 
-대시보드 실행 후 웹 브라우저에서 다음 주소로 접속:
+- 로컬: http://localhost:8501
+  - 첫 진입 시 상단 카드에서 IRIS Connection이 “Connected”로 표시되면 정상
+  - 연결이 안되면 아래 트러블슈팅 참고
 
-- **로컬 접속**: http://localhost:8501
-- **네트워크 접속**: http://[IP주소]:8501
+## 📋 시스템 요구사항 / 설치
 
-## 📋 시스템 요구사항
+- Python 3.10+
+- `scripts/serve_ui.sh`가 `dashboard/.venv_ui` 가상환경을 만들고 필요한 패키지(streamlit 등)를 자동 설치합니다.
 
-- **Python**: 3.8 이상
-- **라이브러리**: streamlit, pandas, plotly
-- **브라우저**: Chrome, Firefox, Safari, Edge 등
+## 🔧 트러블슈팅
 
-## 📦 라이브러리 설치
+### UI가 Disconnected로 뜰 때
+1) Windows(Admin)에서 다시 프록시 설정: `windows/setup_iris_port.ps1 -LocalPort 5050`
+2) `HTTP 200`이 확인되면 WSL에서 `scripts/start_bot_wsl.sh` 재실행
+3) `logs/bot_wsl.log`에서 probe 결과 확인 (예: `probe http://<winIP>:5050/config -> HTTP 200`)
 
-```bash
-pip install -r dashboard/requirements.txt
-```
+### 로그가 갱신되지 않을 때
+- `node-iris-app/data/logs/<roomId>/*.log`가 생성/갱신되는지 확인
+- 로그 API(8510) 헬스: `curl http://127.0.0.1:8510/logs?limit=5`
 
-## 🔧 문제 해결
-
-### 대시보드가 열리지 않을 때
-1. Python이 설치되어 있는지 확인
-2. 필요한 라이브러리가 설치되어 있는지 확인
-3. 포트 8501이 다른 프로그램에서 사용 중인지 확인
-
-### 방이 자동으로 등록되지 않을 때
-1. '자동 방 감지' 설정이 활성화되어 있는지 확인
-2. 봇이 해당 방에 메시지를 보냈는지 확인
-
-### 데이터 백업 방법
-1. 설정 탭으로 이동
-2. '데이터 관리' 섹션에서 '설정 내보내기' 클릭
-3. backup 파일이 생성된 것을 확인
+### 깜빡임/새로고침 느낌
+- 이 대시보드는 내부 JS 위젯으로 부분 갱신(1초)합니다. 전체 리런(페이지 깜빡임)은 일어나지 않습니다.
 
 ## 💡 사용 팁
 
-### 🔄 자동 새로고침
-- 대시보드 왼쪽에서 '자동 새로고침'을 활성화하면 5초마다 데이터가 자동으로 업데이트됩니다
-
-### 📱 모바일에서 사용
-- 스마트폰 브라우저에서도 동일한 주소로 접속 가능
-- 화면 크기에 맞춰 자동으로 최적화됩니다
-
-### 🔍 빠른 검색
-- 방 목록에서 원하는 방을 빠르게 찾을 수 있습니다
-- 설정 변경 즉시 적용됩니다
+- 상단 카드: IRIS URL, 활성 방 수, Messages/sec, 오류 수(24h)를 빠르게 확인
+- 각 방 카드: 최근 메시지 실시간(스크롤 영역), 기능 토글 후 “저장”
+- Logs 탭: 필터(포함/제외), 최대 행 선택, 방별 상세 보기 가능
 
 ## 🆘 지원
 
@@ -120,3 +111,9 @@ pip install -r dashboard/requirements.txt
 ---
 
 **IRIS 봇 관리 대시보드** - 복잡한 봇 관리를 단순하고 친숙하게! 🎉
+
+### 참고
+- UI 엔트리: `dashboard/ui_node_iris.py`
+- 로그 API: `scripts/log_api.py` (포트 8510, `scripts/serve_ui.sh`에서 자동 실행)
+- 봇/런타임 설정: `node-iris-app/config/runtime.json`, `.env` (예시: `node-iris-app/.env.example`)
+- UI 레퍼런스 이미지: `a3/1031/{1,2,3,4}.png`
