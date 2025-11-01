@@ -413,16 +413,259 @@ def render_css():
     st.markdown(
         """
         <style>
-        .metric-card {background:#0f172a;border-radius:12px;padding:14px;color:#e2e8f0;border:1px solid #1f2937}
-        .room-card {background:#0b1220;border:1px solid #1f2937;border-radius:12px;padding:12px;margin-bottom:16px}
-        .template-card {background:#0b1220;border:1px solid #1f2937;border-radius:12px;padding:12px;margin-bottom:12px}
-        .pill {display:inline-block;padding:2px 8px;border-radius:999px;background:#1f2937;color:#cbd5e1;margin-right:6px;font-size:12px}
-        .pill.on {background:#14532d;color:#bbf7d0}
-        .pill.off {background:#3f2d20;color:#fed7aa}
-        .logbox {background:#0a0f1a;border:1px solid #1f2937;border-radius:8px;padding:8px;height:100px;overflow:auto;color:#93c5fd;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;font-size:12px}
-        .logbox-lg {height:260px}
-        .caption {color:#94a3b8}
-        .page-title {font-size:24px;font-weight:700;color:#e2e8f0;margin:4px 0 10px}
+        /* Global Styles */
+        .stApp {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        }
+
+        /* Improved Metric Cards */
+        .metric-card {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border-radius: 16px;
+            padding: 20px;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 12px rgba(0, 0, 0, 0.4);
+            border-color: #475569;
+        }
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+        }
+
+        /* Enhanced Room Cards */
+        .room-card {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s ease;
+        }
+        .room-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 12px rgba(0, 0, 0, 0.4);
+            border-color: #475569;
+        }
+        .room-card-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .room-card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 12px;
+            font-size: 20px;
+        }
+        .room-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .room-badge.active {
+            background: #14532d;
+            color: #bbf7d0;
+        }
+        .room-badge.inactive {
+            background: #3f2d20;
+            color: #fed7aa;
+        }
+
+        /* Enhanced Template Cards */
+        .template-card {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 18px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .template-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
+            border-color: #475569;
+        }
+        .template-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .template-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+        }
+
+        /* Improved Pills/Tags */
+        .pill {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: #334155;
+            color: #cbd5e1;
+            margin-right: 8px;
+            margin-bottom: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        .pill:hover {
+            background: #475569;
+            transform: scale(1.05);
+        }
+        .pill.clickable {
+            background: #1e40af;
+            color: #bfdbfe;
+        }
+        .pill.clickable:hover {
+            background: #2563eb;
+        }
+
+        /* Enhanced Log Box */
+        .logbox {
+            background: #0a0f1a;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 12px;
+            height: 100px;
+            overflow: auto;
+            color: #93c5fd;
+            font-family: 'JetBrains Mono', 'Consolas', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        .logbox::-webkit-scrollbar {
+            width: 8px;
+        }
+        .logbox::-webkit-scrollbar-track {
+            background: #1e293b;
+            border-radius: 4px;
+        }
+        .logbox::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+        .logbox::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+
+        /* Better Typography */
+        .page-title {
+            font-size: 28px;
+            font-weight: 700;
+            color: #f1f5f9;
+            margin: 8px 0 16px;
+            letter-spacing: -0.5px;
+        }
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin: 20px 0 12px;
+            display: flex;
+            align-items: center;
+        }
+        .section-title::before {
+            content: '';
+            display: inline-block;
+            width: 4px;
+            height: 20px;
+            background: linear-gradient(180deg, #3b82f6, #8b5cf6);
+            margin-right: 10px;
+            border-radius: 2px;
+        }
+
+        /* Improved Buttons */
+        .stButton button {
+            border-radius: 10px !important;
+            font-weight: 500 !important;
+            transition: all 0.2s ease !important;
+            border: none !important;
+        }
+        .stButton button:hover {
+            transform: translateY(-1px) !important;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3) !important;
+        }
+
+        /* Info boxes */
+        .info-box {
+            background: rgba(59, 130, 246, 0.1);
+            border-left: 4px solid #3b82f6;
+            padding: 12px 16px;
+            border-radius: 8px;
+            color: #bfdbfe;
+            margin: 12px 0;
+        }
+        .warning-box {
+            background: rgba(251, 191, 36, 0.1);
+            border-left: 4px solid #fbbf24;
+            padding: 12px 16px;
+            border-radius: 8px;
+            color: #fde68a;
+            margin: 12px 0;
+        }
+        .success-box {
+            background: rgba(34, 197, 94, 0.1);
+            border-left: 4px solid #22c55e;
+            padding: 12px 16px;
+            border-radius: 8px;
+            color: #bbf7d0;
+            margin: 12px 0;
+        }
+
+        /* Character counter */
+        .char-counter {
+            text-align: right;
+            color: #94a3b8;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        .char-counter.warning {
+            color: #fbbf24;
+        }
+        .char-counter.error {
+            color: #ef4444;
+        }
+
+        /* Divider */
+        hr {
+            border: none;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #334155, transparent);
+            margin: 24px 0;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -465,39 +708,97 @@ def page_dashboard():
     mps = calc_messages_per_sec(60)
     errs = count_errors_24h()
 
+    # Improved metric cards with icons and status colors
     colm = st.columns([1,1,1,1])
     with colm[0]:
-        st.markdown(f"<div class='metric-card'><b>IRIS Connection</b><br><h3>{status}</h3><span class='caption'>{detail}</span></div>", unsafe_allow_html=True)
+        status_icon = "🟢" if status == "Connected" else "🔴"
+        status_color = "#22c55e" if status == "Connected" else "#ef4444"
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                <span style='font-size:24px;margin-right:10px;'>{status_icon}</span>
+                <b style='font-size:14px;color:#94a3b8;'>IRIS Connection</b>
+            </div>
+            <h3 style='margin:8px 0;color:{status_color};'>{status}</h3>
+            <span style='font-size:12px;color:#64748b;'>{detail[:40]}...</span>
+        </div>
+        """, unsafe_allow_html=True)
     with colm[1]:
-        st.markdown(f"<div class='metric-card'><b>Active Rooms</b><br><h3>{active_rooms}</h3></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                <span style='font-size:24px;margin-right:10px;'>💬</span>
+                <b style='font-size:14px;color:#94a3b8;'>Active Rooms</b>
+            </div>
+            <h3 style='margin:8px 0;color:#3b82f6;'>{active_rooms}</h3>
+            <span style='font-size:12px;color:#64748b;'>Total conversations</span>
+        </div>
+        """, unsafe_allow_html=True)
     with colm[2]:
-        st.markdown(f"<div class='metric-card'><b>Messages/sec</b><br><h3>{mps}</h3></div>", unsafe_allow_html=True)
+        mps_color = "#22c55e" if mps > 1 else "#64748b"
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                <span style='font-size:24px;margin-right:10px;'>⚡</span>
+                <b style='font-size:14px;color:#94a3b8;'>Messages/sec</b>
+            </div>
+            <h3 style='margin:8px 0;color:{mps_color};'>{mps}</h3>
+            <span style='font-size:12px;color:#64748b;'>Last 60 seconds</span>
+        </div>
+        """, unsafe_allow_html=True)
     with colm[3]:
-        st.markdown(f"<div class='metric-card'><b>Errors (24h)</b><br><h3>{errs}</h3></div>", unsafe_allow_html=True)
+        err_color = "#ef4444" if errs > 5 else ("#fbbf24" if errs > 0 else "#22c55e")
+        err_icon = "⚠️" if errs > 5 else ("⚡" if errs > 0 else "✅")
+        st.markdown(f"""
+        <div class='metric-card'>
+            <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                <span style='font-size:24px;margin-right:10px;'>{err_icon}</span>
+                <b style='font-size:14px;color:#94a3b8;'>Errors (24h)</b>
+            </div>
+            <h3 style='margin:8px 0;color:{err_color};'>{errs}</h3>
+            <span style='font-size:12px;color:#64748b;'>System health</span>
+        </div>
+        """, unsafe_allow_html=True)
 
     # Debug info: show resolved IRIS_URL from .env
     st.caption(f"IRIS_URL from .env: {envv.get('IRIS_URL','(unset)')}")
     # 대시보드 자동 새로고침 제거(깜빡임 방지). 필요한 경우 카드별 미니 라이브 사용.
-    st.markdown("### Rooms")
+    st.markdown("<div class='section-title'>📚 Rooms</div>", unsafe_allow_html=True)
     rooms = discover_rooms()
     cfg = load_runtime()
     features: Dict[str, Any] = dict(cfg.get("features") or {})
     if not rooms:
-        st.info("아직 수집된 방이 없습니다. 봇이 메시지를 한 번이라도 수신하면 자동으로 나타납니다.")
+        st.markdown("<div class='info-box'>💡 아직 수집된 방이 없습니다. 봇이 메시지를 한 번이라도 수신하면 자동으로 나타납니다.</div>", unsafe_allow_html=True)
         return
 
     cols = st.columns(2)
     i = 0
     for rid, info in rooms.items():
         with cols[i % 2]:
-            st.markdown("<div class='room-card'>", unsafe_allow_html=True)
-            st.subheader(f"{info.get('roomName')}")
             last_ts, today_cnt = room_stats(rid)
+            # Determine if room is active
+            fl = features.get(rid, {})
+            is_active = any(bool(v) for v in fl.values())
+            badge_class = "active" if is_active else "inactive"
+            badge_text = "활성" if is_active else "비활성"
+
+            st.markdown(f"""
+            <div class='room-card'>
+                <div class='room-card-header'>
+                    <div class='room-card-icon'>💬</div>
+                    <div style='flex:1;'>
+                        <h3 style='margin:0;color:#f1f5f9;font-size:18px;'>{info.get('roomName')}</h3>
+                        <span class='room-badge {badge_class}'>{badge_text}</span>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
             meta = []
             if last_ts:
-                meta.append(f"최근: {last_ts}")
-            meta.append(f"오늘: {today_cnt}건")
+                meta.append(f"🕐 {last_ts[:16]}")
+            meta.append(f"📊 오늘: {today_cnt}건")
             st.caption(f"ID: {rid}  |  " + "  ·  ".join(meta))
+
             thumb = APP_BASE / "data" / "room_avatars" / f"{rid}.jpg"
             if thumb.exists():
                 st.image(str(thumb), use_column_width=True)
@@ -525,7 +826,7 @@ def page_dashboard():
 
     # Recent Activity (All Rooms) section
     st.markdown("---")
-    st.markdown("### Recent Activity (All Rooms)")
+    st.markdown("<div class='section-title'>📊 Recent Activity (All Rooms)</div>", unsafe_allow_html=True)
     live_log_widget(room_id=None, limit=80, include="", exclude="", height=260, interval_ms=1000)
     # 대시보드는 전체 rerun을 사용하지 않음(깜빡임 방지)
 
@@ -568,11 +869,33 @@ def page_templates():
             except:
                 tpl_data = {"title": name, "content": "", "category": category}
 
-            content = st.text_area("메시지 내용", value=tpl_data.get("content", ""), height=200, key=f"content_{name}")
+            # Initialize session state for content if not exists
+            if f"tpl_content_{name}" not in st.session_state:
+                st.session_state[f"tpl_content_{name}"] = tpl_data.get("content", "")
 
-            st.markdown("### 사용 가능한 변수")
-            vars_tags = ["{{userName}}", "{{roomName}}", "{{time}}", "{{date}}", "{{memberCount}}"]
-            st.markdown(" ".join([f"<span class='pill'>{v}</span>" for v in vars_tags]), unsafe_allow_html=True)
+            content = st.text_area("메시지 내용", value=st.session_state[f"tpl_content_{name}"], height=200, key=f"content_area_{name}")
+            st.session_state[f"tpl_content_{name}"] = content
+
+            # Character counter
+            char_count = len(content)
+            char_class = "error" if char_count > 1000 else ("warning" if char_count > 500 else "")
+            st.markdown(f"<div class='char-counter {char_class}'>{char_count} / 1000 자</div>", unsafe_allow_html=True)
+
+            st.markdown("### 변수 삽입")
+            st.caption("클릭하여 메시지에 변수를 삽입하세요")
+            var_cols = st.columns(5)
+            vars_list = [
+                ("{{userName}}", "사용자명", "👤"),
+                ("{{roomName}}", "방이름", "💬"),
+                ("{{time}}", "시간", "🕐"),
+                ("{{date}}", "날짜", "📅"),
+                ("{{memberCount}}", "인원수", "👥")
+            ]
+            for idx, (var_syntax, var_label, var_icon) in enumerate(vars_list):
+                with var_cols[idx]:
+                    if st.button(f"{var_icon} {var_label}", key=f"var_{name}_{idx}", use_container_width=True):
+                        st.session_state[f"tpl_content_{name}"] = content + var_syntax
+                        st.rerun()
 
         with col_right:
             st.markdown("### 카카오톡 미리보기")
@@ -622,60 +945,76 @@ def page_templates():
                 st.rerun()
         return
 
-    # Template list view
-    query = st.text_input("검색", "", placeholder="Search templates...")
-    if st.button("+ New Template", type="primary"):
-        import uuid
-        name = f"template_{uuid.uuid4().hex[:6]}"
-        base = APP_BASE / "config" / "templates" / "welcome"
-        base.mkdir(parents=True, exist_ok=True)
-        (base / f"{name}.json").write_text(json.dumps({"title": name, "content": "", "category": "welcome"}, ensure_ascii=False, indent=2), encoding="utf-8")
-        st.success(f"생성됨: {name}.json")
-        st.rerun()
+    # Template list view - Improved search and controls
+    col1, col2, col3 = st.columns([3, 1, 1])
+    with col1:
+        query = st.text_input("🔍 검색 템플릿", "", placeholder="Search templates...", label_visibility="collapsed")
+    with col2:
+        sort_order = st.selectbox("정렬", ["최신순", "이름순"], label_visibility="collapsed")
+    with col3:
+        if st.button("➕ 새 템플릿", type="primary", use_container_width=True):
+            import uuid
+            name = f"template_{uuid.uuid4().hex[:6]}"
+            base = APP_BASE / "config" / "templates" / "welcome"
+            base.mkdir(parents=True, exist_ok=True)
+            (base / f"{name}.json").write_text(json.dumps({"title": name, "content": "", "category": "welcome"}, ensure_ascii=False, indent=2), encoding="utf-8")
+            st.markdown("<div class='success-box'>✅ 새 템플릿이 생성되었습니다!</div>", unsafe_allow_html=True)
+            st.rerun()
 
-    # Category sections
+    # Category sections with icons
     categories = [
-        ("자동 응답", "welcome", ["환영 메시지", "퇴장 메시지"]),
-        ("브로드캐스트", "broadcast", ["공지사항"]),
-        ("스케줄", "schedule", ["일일 요약"])
+        ("자동 응답", "welcome", ["환영 메시지", "퇴장 메시지"], "👋"),
+        ("브로드캐스트", "broadcast", ["공지사항"], "📢"),
+        ("스케줄", "schedule", ["일일 요약"], "⏰")
     ]
 
-    for cat_name, cat_key, subcats in categories:
-        st.markdown(f"### {cat_name}")
+    for cat_name, cat_key, subcats, cat_icon in categories:
+        st.markdown(f"<div class='section-title'>{cat_icon} {cat_name}</div>", unsafe_allow_html=True)
         base = APP_BASE / "config" / "templates" / cat_key
         base.mkdir(parents=True, exist_ok=True)
-        files = sorted(p for p in base.glob("*.json")) if base.exists() else []
+        files = sorted((p for p in base.glob("*.json")), key=lambda x: x.stat().st_mtime, reverse=(sort_order == "최신순")) if base.exists() else []
         items = [p for p in files if (query.lower() in p.stem.lower())]
 
         if not items:
-            st.caption(f"아직 {cat_name} 템플릿이 없습니다.")
+            st.markdown(f"<div class='info-box'>💡 아직 {cat_name} 템플릿이 없습니다. 새 템플릿을 만들어보세요!</div>", unsafe_allow_html=True)
+            continue
 
         cols = st.columns(2)
         for idx, p in enumerate(items):
             with cols[idx % 2]:
-                st.markdown("<div class='template-card'>", unsafe_allow_html=True)
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
                     title = data.get("title", p.stem)
-                    content_preview = data.get("content", "")[:100]
+                    content_preview = data.get("content", "")[:80]
+                    char_count = len(data.get("content", ""))
                 except:
                     title = p.stem
                     content_preview = ""
+                    char_count = 0
 
-                st.markdown(f"**{title}**")
-                st.caption(content_preview + ("..." if len(content_preview) >= 100 else ""))
+                st.markdown(f"""
+                <div class='template-card'>
+                    <div class='template-card-header'>
+                        <div>
+                            <span class='template-icon'>{cat_icon}</span>
+                            <strong style='font-size:16px;'>{title}</strong>
+                        </div>
+                        <span style='font-size:11px;color:#64748b;'>{char_count}자</span>
+                    </div>
+                    <p style='color:#94a3b8;font-size:13px;margin:8px 0;'>{content_preview}{"..." if len(content_preview) >= 80 else ""}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
                 c1, c2 = st.columns([1,1])
                 with c1:
-                    if st.button("Edit", key=f"edit_{cat_key}_{p.stem}"):
+                    if st.button("✏️ 편집", key=f"edit_{cat_key}_{p.stem}", use_container_width=True):
                         st.session_state["edit_template"] = {"name": p.stem, "category": cat_key}
                         st.rerun()
                 with c2:
-                    if st.button("🗑️ 삭제", key=f"del_{cat_key}_{p.stem}"):
+                    if st.button("🗑️ 삭제", key=f"del_{cat_key}_{p.stem}", use_container_width=True):
                         p.unlink()
-                        st.success(f"삭제됨: {p.stem}")
+                        st.markdown("<div class='success-box'>✅ 템플릿이 삭제되었습니다.</div>", unsafe_allow_html=True)
                         st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
 
 
 def page_logs():
