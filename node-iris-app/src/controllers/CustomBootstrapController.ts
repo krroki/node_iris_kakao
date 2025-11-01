@@ -4,6 +4,7 @@ import {
   BootstrapController,
   Logger,
 } from "@tsuki-chat/node-iris";
+import { isSafeMode } from "../utils/guard";
 
 @BootstrapController
 class CustomBootstrapController {
@@ -75,6 +76,10 @@ class CustomBootstrapController {
    */
   @Bootstrap(50) // 낮은 우선순위 (나중에 실행)
   async setupPeriodicTasks() {
+    if (await isSafeMode()) {
+      this.logger.warn("SAFE_MODE on: skip scheduling periodic tasks");
+      return;
+    }
     this.logger.info("Setting up periodic tasks...");
 
     try {
@@ -194,6 +199,7 @@ class CustomBootstrapController {
     // 예시로 빈 배열 반환
 
     try {
+      if (await isSafeMode()) return [];
       // const schedules = await db.query('SELECT * FROM scheduled_messages WHERE active = true');
       // return schedules.map(schedule => ({
       //   id: schedule.id,

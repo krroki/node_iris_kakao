@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "templateName": "default",
+  "messages": {
+    "text": "안녕하세요! {userName}님, 환영합니다! 🎉\n\n이 채팅방에 오신 것을 환영합니다.\n\n• 명령어 도움말: >>help\n• 현재 시간: >>time\n• 봇 정보: >>botinfo\n\n궁금한 사항이 있으시면 언제든 문의해 주세요!",
+    "image": null
+  },
+  "settings": {
+    "sendDelay": 1000,
+    "sendImage": false,
+    "logWelcome": true
+  }
+}

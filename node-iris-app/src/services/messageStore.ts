@@ -26,6 +26,7 @@ export class MessageStore {
   private readonly baseDir: string;
   private readonly bufferSize: number;
   private readonly buffer = new Map<string, RecordedEvent[]>();
+  private readonly lastKey = new Map<string, string>();
 
   constructor(baseDir?: string, bufferSize = 100) {
     this.baseDir = baseDir ?? process.env.MESSAGE_LOG_DIR ?? "data/logs";
@@ -55,6 +56,19 @@ export class MessageStore {
   }
 
   private async persist(roomId: string, record: RecordedEvent): Promise<void> {
+    // Deduplicate immediate duplicates (same ts/sender/message) per room
+    const k = JSON.stringify([
+      record.timestamp,
+      record.snapshot.senderId,
+      record.snapshot.messageId,
+      record.snapshot.messageText,
+    ]);
+    const prev = this.lastKey.get(roomId);
+    if (prev && prev === k) {
+      return; // skip duplicate write
+    }
+    this.lastKey.set(roomId, k);
+
     const roomDir = path.join(this.baseDir, roomId);
     await fs.mkdir(roomDir, { recursive: true });
     const filePath = path.join(roomDir, `${record.timestamp.slice(0, 10)}.log`);

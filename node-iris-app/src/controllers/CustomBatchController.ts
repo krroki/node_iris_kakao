@@ -8,6 +8,7 @@ import Bot, {
 } from "@tsuki-chat/node-iris";
 import { ScheduledMessage } from "@tsuki-chat/node-iris/dist/services/core/BatchScheduler";
 import { broadcastService } from "../services";
+import { isSafeMode, isFeatureEnabledForContext, isFeatureEnabledForRoomId } from "../utils/guard";
 
 @BatchController
 class CustomBatchController {
@@ -49,6 +50,7 @@ class CustomBatchController {
   @Schedule(30000, "daily-summary") // 30초마다 실행, 커스텀 ID
   async generateDailySummary(contexts: ChatContext[]) {
     if (contexts.length === 0) return;
+    if (await isSafeMode()) return;
 
     const uniqueUsers = new Set<string>();
     const messagesByRoom = new Map<string, number>();
@@ -82,6 +84,10 @@ class CustomBatchController {
    */
   @ScheduleMessage("reminder")
   async handleReminderMessages(scheduledMessage: ScheduledMessage) {
+    if (await isSafeMode()) return;
+    if (!(await isFeatureEnabledForRoomId(String(scheduledMessage.roomId), "schedules"))) {
+      return;
+    }
     this.logger.info(
       `Processing reminder message: ${scheduledMessage.message}`
     );
@@ -132,6 +138,7 @@ class CustomBatchController {
    */
   @Schedule(5000, "broadcast-dispatcher")
   async dispatchBroadcasts() {
+    if (await isSafeMode()) return;
     const tasks = await broadcastService.fetchDue(5);
     if (tasks.length === 0) {
       return;
@@ -147,6 +154,10 @@ class CustomBatchController {
           const message = String(task.payload?.message ?? "");
           if (!message) {
             throw new Error("Empty broadcast payload");
+          }
+          if (!(await isFeatureEnabledForRoomId(String(channel), "broadcast"))) {
+            this.logger.warn("Broadcast feature off or room not allowed; skip", { channel });
+            continue;
           }
           await bot.api.reply(channel, message);
           this.logger.info("Broadcast sent", { taskId: task.id, channel });
@@ -180,6 +191,10 @@ class CustomBatchController {
    */
   @ScheduleMessage("notification")
   async handleNotificationMessages(scheduledMessage: ScheduledMessage) {
+    if (await isSafeMode()) return;
+    if (!(await isFeatureEnabledForRoomId(String(scheduledMessage.roomId), "schedules"))) {
+      return;
+    }
     this.logger.info(`Processing notification: ${scheduledMessage.message}`);
 
     // 알림 관련 추가 처리 로직
@@ -267,9 +282,11 @@ class CustomBatchController {
    */
   @Schedule("0 9 * * *", "daily-report")
   async dailyReport(contexts: ChatContext[]) {
+    if (await isSafeMode()) return;
     this.logger.info(`Processing daily report for ${contexts.length} contexts`);
 
     for (const context of contexts) {
+      if (!(await isFeatureEnabledForContext(context, "schedules"))) continue;
       const reportMessage = `
 📊 **일일 리포트** (${new Date().toLocaleDateString("ko-KR")})
 • 처리된 메시지: ${contexts.length}개
@@ -286,11 +303,13 @@ class CustomBatchController {
    */
   @Schedule("0 10 * * 1", "weekly-report")
   async weeklyReport(contexts: ChatContext[]) {
+    if (await isSafeMode()) return;
     this.logger.info(
       `Processing weekly report for ${contexts.length} contexts`
     );
 
     for (const context of contexts) {
+      if (!(await isFeatureEnabledForContext(context, "schedules"))) continue;
       await context.reply("📈 주간 리포트가 생성되었습니다!");
     }
   }
@@ -300,11 +319,13 @@ class CustomBatchController {
    */
   @Schedule("0 11 1 * *", "monthly-cleanup")
   async monthlyCleanup(contexts: ChatContext[]) {
+    if (await isSafeMode()) return;
     this.logger.info("Starting monthly cleanup process");
 
     // 실제 정리 작업 수행 (예: 오래된 로그 삭제, 통계 정리 등)
 
     for (const context of contexts) {
+      if (!(await isFeatureEnabledForContext(context, "schedules"))) continue;
       await context.reply("🧹 월간 정리 작업이 완료되었습니다!");
     }
   }

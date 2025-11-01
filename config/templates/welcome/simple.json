@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "templateName": "simple",
+  "messages": {
+    "text": "{userName}님 환영합니다! >>help 명령어로 사용법을 확인하세요.",
+    "image": null
+  },
+  "settings": {
+    "sendDelay": 500,
+    "sendImage": false,
+    "logWelcome": true
+  }
+}

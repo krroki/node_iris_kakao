@@ -14,7 +14,7 @@ import CustomUnknownController from "./controllers/CustomUnknownController";
 
 const appName = "Create-Node-Iris-App";
 
-// Controller configuration
+// Controller configuration (등록은 런타임에서 SAFE_MODE에 따라 조정)
 const controllers = [
   CustomChatController,
   CustomNewMemberController,
@@ -48,11 +48,21 @@ class App {
       // webhookPath: "/webhook/message",
     });
 
-    // Register controllers manually
-    this.bot.registerControllers(controllers);
+    // Register controllers manually (SAFE_MODE일 때 명령어 컨트롤러 비등록)
+    const safeMode = (process.env.SAFE_MODE || "").toLowerCase() === "true";
+    const toRegister = safeMode
+      ? controllers.filter(
+          (c) =>
+            c !== (CustomMessageController as any) &&
+            c !== (CustomNewMemberController as any) &&
+            c !== (CustomBatchController as any) &&
+            c !== (CustomBootstrapController as any)
+        )
+      : controllers;
+    this.bot.registerControllers(toRegister);
   }
 
-  public async start() {
+  public async start(): Promise<void> {
     try {
       if (process.env.MOCK_IRIS === "true") {
         this.logger.warn(
@@ -67,7 +77,11 @@ class App {
       await this.bot.run();
     } catch (error) {
       this.logger.error(`${this.bot.name} failed to start:`, error);
-      process.exit(1);
+      // Keep process alive and retry periodically instead of exiting
+      const delay = Number(process.env.RESTART_DELAY_MS || 5000);
+      this.logger.warn(`Retrying start in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+      return this.start();
     }
   }
 
