@@ -414,7 +414,16 @@ def render_css():
         """
         <style>
         /* Global Styles */
-        header[data-testid="stHeader"], div[data-testid="stToolbar"] {
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            box-shadow: none !important;
+            height: 56px !important;
+            min-height: 56px !important;
+            padding: 0 24px !important;
+            border-bottom: none !important;
+            pointer-events: none !important;
+        }
+        div[data-testid="stToolbar"] {
             display: none !important;
         }
         .stApp {
@@ -477,6 +486,24 @@ def render_css():
             align-items: center;
             gap: 16px;
         }
+        .topbar-toggle {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #3c68a7, #264a82);
+            color: #f8fafc;
+            font-size: 18px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 12px 22px rgba(15, 32, 65, 0.45);
+        }
+        .topbar-toggle:hover {
+            background: linear-gradient(135deg, #5084d4, #2f5fb0);
+        }
+
         .brand-icon {
             width: 46px;
             height: 46px;
@@ -600,19 +627,27 @@ def render_css():
             border-bottom: 2px solid #60a5fa !important;
         }
         button[data-testid="stSidebarCollapseButton"], button[data-testid="stBaseButton-headerNoPadding"] {
-            background: linear-gradient(135deg, #1f2d47, #111b31) !important;
-            color: #e2e8f0 !important;
-            border: 1px solid rgba(148, 163, 184, 0.25) !important;
-            box-shadow: 0 6px 12px rgba(6, 14, 32, 0.35) !important;
+            background: linear-gradient(135deg, #3c68a7, #264a82) !important;
+            color: #f8fafc !important;
+            border: 1px solid rgba(148, 181, 255, 0.45) !important;
+            box-shadow: 0 10px 22px rgba(15, 32, 65, 0.4) !important;
+            border-radius: 12px !important;
+            visibility: visible !important;
+            opacity: 1 !important;
         }
         button[data-testid="stSidebarCollapseButton"]:hover, button[data-testid="stBaseButton-headerNoPadding"]:hover {
-            background: linear-gradient(135deg, #2a3d63, #16223c) !important;
-            border-color: rgba(148, 163, 184, 0.45) !important;
+            background: linear-gradient(135deg, #5084d4, #2f5fb0) !important;
+            border-color: rgba(148, 181, 255, 0.65) !important;
+        }
+        button[data-testid="stSidebarCollapseButton"] svg, button[data-testid="stBaseButton-headerNoPadding"] svg {
+            fill: #f8fafc !important;
         }
         [data-testid="stSidebarHeader"] {
-            padding-bottom: 14px;
+            padding: 14px 14px 16px;
             margin-bottom: 16px;
             border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 14px;
+            background: linear-gradient(135deg, rgba(59,130,246,0.18), rgba(99,102,241,0.12));
         }
         [data-testid="stSidebarHeader"] h2 {
             color: #f8fafc !important;
@@ -827,6 +862,15 @@ def render_css():
             transform: translateY(-1px) !important;
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3) !important;
         }
+        button[data-testid="stFormSubmitButton"], button[kind="secondary"] {
+            background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+            color: #f8fafc !important;
+            border: none !important;
+            box-shadow: 0 6px 12px rgba(15, 23, 42, 0.35) !important;
+        }
+        button[data-testid="stFormSubmitButton"]:hover, button[kind="secondary"]:hover {
+            background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+        }
 
         /* Info boxes */
         .info-box {
@@ -876,6 +920,26 @@ def render_css():
             margin: 24px 0;
         }
         </style>
+        <script>
+        (function(){
+            if(window.__irisSidebarFix){return;}
+            window.__irisSidebarFix=true;
+            const wire=()=>{
+                const toggle=document.getElementById('irisSidebarToggle');
+                if(toggle && !toggle.dataset.bound){
+                    toggle.dataset.bound='1';
+                    toggle.addEventListener('click', ()=>{
+                        const btn=document.querySelector('button[data-testid="stSidebarCollapseButton"]') || document.querySelector('button[data-testid="stBaseButton-headerNoPadding"]');
+                        if(btn){ btn.click(); }
+                    });
+                }
+            };
+            wire();
+            const obs=new MutationObserver(()=>wire());
+            obs.observe(document.body,{childList:true,subtree:true});
+        })();
+        </script>
+        
         """,
         unsafe_allow_html=True,
     )
@@ -1312,6 +1376,7 @@ def main():
         f"""
         <div class="top-bar">
             <div class="top-brand">
+                <button class="topbar-toggle" id="irisSidebarToggle">☰</button>
                 <div class="brand-icon">🤖</div>
                 <div>
                     <div class="brand-title">디하클·카카오봇</div>
