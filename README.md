@@ -37,6 +37,7 @@ LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 안전모드)의 코
 - 실행 스크립트(Windows/Admin PowerShell):
   - 포트프록시/ADB: `windows/setup_iris_port.ps1 -LocalPort 5050`
   - 상태 점검: `windows/probe_iris.ps1`
+ - Redroid + Hyper-V IRIS 재기동: `docs/runbook_redroid_iris.md`
 
 **트러블슈팅**
 - UI 연결 끊김(Disconnected)
