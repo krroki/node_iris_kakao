@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Node-Iris 대시보드 (이미지 시안 유사 스타일)
-- 상단 상태 카드(IRIS 연결, 활성 방 수, Messages/sec, Errors)
+- 상단 상태 카드(IRIS 연결, 활성 방 수, 초당 메시지, Errors)
 - 방 카드 그리드 + 썸네일 + 기능 토글(환영/브로드캐스트/스케줄) + 최근 로그
 - 안전모드/허용방 + 브로드캐스트 큐 + .env 미리보기
 - Windows 봇 실행/중지/상태 버튼
@@ -421,8 +421,7 @@ def render_css():
             min-height: 56px !important;
             padding: 0 24px !important;
             border-bottom: none !important;
-            pointer-events: none !important;
-        }
+            }
         div[data-testid="stToolbar"] {
             display: none !important;
         }
@@ -486,23 +485,6 @@ def render_css():
             align-items: center;
             gap: 16px;
         }
-        .topbar-toggle {
-            width: 44px;
-            height: 44px;
-            border-radius: 12px;
-            border: none;
-            background: linear-gradient(135deg, #3c68a7, #264a82);
-            color: #f8fafc;
-            font-size: 18px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            box-shadow: 0 12px 22px rgba(15, 32, 65, 0.45);
-        }
-        .topbar-toggle:hover {
-            background: linear-gradient(135deg, #5084d4, #2f5fb0);
-        }
 
         .brand-icon {
             width: 46px;
@@ -520,12 +502,6 @@ def render_css():
             font-weight: 700;
             color: #f8fafc;
             letter-spacing: -0.3px;
-        }
-        .brand-sub {
-            font-size: 12px;
-            color: #94a3b8;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
         }
         .top-status {
             display: flex;
@@ -626,7 +602,7 @@ def render_css():
             background: rgba(59, 130, 246, 0.2) !important;
             border-bottom: 2px solid #60a5fa !important;
         }
-        button[data-testid="stSidebarCollapseButton"], button[data-testid="stBaseButton-headerNoPadding"] {
+        button[data-testid="stBaseButton-headerNoPadding"], button[data-testid="stExpandSidebarButton"] {
             background: linear-gradient(135deg, #3c68a7, #264a82) !important;
             color: #f8fafc !important;
             border: 1px solid rgba(148, 181, 255, 0.45) !important;
@@ -635,11 +611,11 @@ def render_css():
             visibility: visible !important;
             opacity: 1 !important;
         }
-        button[data-testid="stSidebarCollapseButton"]:hover, button[data-testid="stBaseButton-headerNoPadding"]:hover {
+        button[data-testid="stBaseButton-headerNoPadding"]:hover, button[data-testid="stExpandSidebarButton"]:hover {
             background: linear-gradient(135deg, #5084d4, #2f5fb0) !important;
             border-color: rgba(148, 181, 255, 0.65) !important;
         }
-        button[data-testid="stSidebarCollapseButton"] svg, button[data-testid="stBaseButton-headerNoPadding"] svg {
+        button[data-testid="stBaseButton-headerNoPadding"] svg, button[data-testid="stExpandSidebarButton"] svg {
             fill: #f8fafc !important;
         }
         [data-testid="stSidebarHeader"] {
@@ -982,56 +958,57 @@ def page_dashboard():
     errs = count_errors_24h()
 
     # Improved metric cards with icons and status colors
-    colm = st.columns([1,1,1,1])
-    with colm[0]:
-        status_icon = "🟢" if status == "Connected" else "🔴"
-        status_color = "#22c55e" if status == "Connected" else "#ef4444"
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div style='display:flex;align-items:center;margin-bottom:8px;'>
-                <span style='font-size:24px;margin-right:10px;'>{status_icon}</span>
-                <b style='font-size:14px;color:#94a3b8;'>IRIS Connection</b>
+    with st.expander("상태 카드", expanded=True):
+        colm = st.columns([1,1,1,1])
+        with colm[0]:
+            status_icon = "🟢" if status == "Connected" else "🔴"
+            status_color = "#22c55e" if status == "Connected" else "#ef4444"
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                    <span style='font-size:24px;margin-right:10px;'>{status_icon}</span>
+                    <b style='font-size:14px;color:#94a3b8;'>연결 상태</b>
+                </div>
+                <h3 style='margin:8px 0;color:{status_color};'>{status}</h3>
+                <span style='font-size:12px;color:#64748b;'>{detail[:40]}...</span>
             </div>
-            <h3 style='margin:8px 0;color:{status_color};'>{status}</h3>
-            <span style='font-size:12px;color:#64748b;'>{detail[:40]}...</span>
-        </div>
-        """, unsafe_allow_html=True)
-    with colm[1]:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div style='display:flex;align-items:center;margin-bottom:8px;'>
-                <span style='font-size:24px;margin-right:10px;'>💬</span>
-                <b style='font-size:14px;color:#94a3b8;'>Active Rooms</b>
+            """, unsafe_allow_html=True)
+        with colm[1]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                    <span style='font-size:24px;margin-right:10px;'>💬</span>
+                    <b style='font-size:14px;color:#94a3b8;'>활성 방 수</b>
+                </div>
+                <h3 style='margin:8px 0;color:#3b82f6;'>{active_rooms}</h3>
+                <span style='font-size:12px;color:#64748b;'>총 대화 수</span>
             </div>
-            <h3 style='margin:8px 0;color:#3b82f6;'>{active_rooms}</h3>
-            <span style='font-size:12px;color:#64748b;'>Total conversations</span>
-        </div>
-        """, unsafe_allow_html=True)
-    with colm[2]:
-        mps_color = "#22c55e" if mps > 1 else "#64748b"
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div style='display:flex;align-items:center;margin-bottom:8px;'>
-                <span style='font-size:24px;margin-right:10px;'>⚡</span>
-                <b style='font-size:14px;color:#94a3b8;'>Messages/sec</b>
+            """, unsafe_allow_html=True)
+        with colm[2]:
+            mps_color = "#22c55e" if mps > 1 else "#64748b"
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                    <span style='font-size:24px;margin-right:10px;'>⚡</span>
+                    <b style='font-size:14px;color:#94a3b8;'>초당 메시지</b>
+                </div>
+                <h3 style='margin:8px 0;color:{mps_color};'>{mps}</h3>
+                <span style='font-size:12px;color:#64748b;'>최근 60초</span>
             </div>
-            <h3 style='margin:8px 0;color:{mps_color};'>{mps}</h3>
-            <span style='font-size:12px;color:#64748b;'>Last 60 seconds</span>
-        </div>
-        """, unsafe_allow_html=True)
-    with colm[3]:
-        err_color = "#ef4444" if errs > 5 else ("#fbbf24" if errs > 0 else "#22c55e")
-        err_icon = "⚠️" if errs > 5 else ("⚡" if errs > 0 else "✅")
-        st.markdown(f"""
-        <div class='metric-card'>
-            <div style='display:flex;align-items:center;margin-bottom:8px;'>
-                <span style='font-size:24px;margin-right:10px;'>{err_icon}</span>
-                <b style='font-size:14px;color:#94a3b8;'>Errors (24h)</b>
+            """, unsafe_allow_html=True)
+        with colm[3]:
+            err_color = "#ef4444" if errs > 5 else ("#fbbf24" if errs > 0 else "#22c55e")
+            err_icon = "⚠️" if errs > 5 else ("⚡" if errs > 0 else "✅")
+            st.markdown(f"""
+            <div class='metric-card'>
+                <div style='display:flex;align-items:center;margin-bottom:8px;'>
+                    <span style='font-size:24px;margin-right:10px;'>{err_icon}</span>
+                    <b style='font-size:14px;color:#94a3b8;'>24시간 오류</b>
+                </div>
+                <h3 style='margin:8px 0;color:{err_color};'>{errs}</h3>
+                <span style='font-size:12px;color:#64748b;'>시스템 상태</span>
             </div>
-            <h3 style='margin:8px 0;color:{err_color};'>{errs}</h3>
-            <span style='font-size:12px;color:#64748b;'>System health</span>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
     # Debug info: show resolved IRIS_URL from .env
     st.caption(f"IRIS_URL from .env: {envv.get('IRIS_URL','(unset)')}")
@@ -1376,12 +1353,8 @@ def main():
         f"""
         <div class="top-bar">
             <div class="top-brand">
-                <button class="topbar-toggle" id="irisSidebarToggle">☰</button>
                 <div class="brand-icon">🤖</div>
-                <div>
-                    <div class="brand-title">디하클·카카오봇</div>
-                    <div class="brand-sub">Node IRIS Control Center</div>
-                </div>
+                <div class="brand-title">디하클·카카오봇</div>
             </div>
             <div class="top-status">
                 <span class="status-chip status-{status_slug}">{status_icon} {status_text}</span>
