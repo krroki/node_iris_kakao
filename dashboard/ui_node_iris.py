@@ -415,37 +415,71 @@ def render_css():
         <style>
         /* Global Styles */
         .stApp {
-            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-            color: #e2e8f0;
+            background: linear-gradient(135deg, #111c33 0%, #1d2d4a 100%);
+            color: #f1f5f9;
             font-family: 'Inter', 'Segoe UI', sans-serif;
+        }
+        .stApp table {
+            color: #f8fafc;
+            background-color: #16233c;
+        }
+        .stApp th, .stApp td {
+            color: #e2e8f0 !important;
+            border-color: #334e7a !important;
         }
         .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
         .stApp p, .stApp span, .stApp label, .stApp li, .stApp div, .stApp button {
-            color: #e2e8f0;
+            color: #f8fafc;
         }
         .stApp a {
-            color: #60a5fa;
+            color: #93c5fd;
         }
         .stApp .stSelectbox label, .stApp .stMultiSelect label {
-            color: #cbd5f5;
+            color: #dbeafe;
+        }
+        .stApp input, .stApp textarea, .stApp select {
+            background-color: #1e293b !important;
+            color: #f8fafc !important;
+            border: 1px solid #475569 !important;
+        }
+        .stApp .stButton>button {
+            background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+            color: #f8fafc !important;
+            border: none;
+        }
+        .stApp .stButton>button:hover {
+            background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+        }
+        .stApp div[data-testid="stExpander"] {
+            background: linear-gradient(135deg, #1c2d4d 0%, #16233c 100%);
+            border: 1px solid #334e7a;
+            border-radius: 12px;
+        }
+        .stTabs [role="tab"] {
+            color: #e2e8f0 !important;
+        }
+        .stTabs [role="tab"][aria-selected="true"] {
+            color: #fefefe !important;
+            background: rgba(59, 130, 246, 0.2) !important;
+            border-bottom: 2px solid #60a5fa !important;
         }
 
         /* Improved Metric Cards */
         .metric-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            background: linear-gradient(135deg, #1e2a44 0%, #152238 100%);
             border-radius: 16px;
             padding: 20px;
-            color: #e2e8f0;
-            border: 1px solid #334155;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            color: #f8fafc;
+            border: 1px solid #334e7a;
+            box-shadow: 0 20px 45px rgba(15, 23, 42, 0.35);
             transition: all 0.3s ease;
             position: relative;
             overflow: hidden;
         }
         .metric-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 12px rgba(0, 0, 0, 0.4);
-            border-color: #475569;
+            box-shadow: 0 18px 32px rgba(15, 23, 42, 0.45);
+            border-color: #4f6fa5;
         }
         .metric-card::before {
             content: '';
@@ -456,21 +490,27 @@ def render_css():
             height: 3px;
             background: linear-gradient(90deg, #3b82f6, #8b5cf6);
         }
+        .metric-card h3, .metric-card h4, .metric-card p {
+            color: #f8fafc !important;
+        }
 
         /* Enhanced Room Cards */
         .room-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid #334155;
+            background: linear-gradient(135deg, #1c2d4d 0%, #16233c 100%);
+            border: 1px solid #334e7a;
             border-radius: 16px;
             padding: 20px;
             margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 16px 30px rgba(15, 23, 42, 0.35);
             transition: all 0.3s ease;
         }
         .room-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 12px rgba(0, 0, 0, 0.4);
-            border-color: #475569;
+            box-shadow: 0 22px 36px rgba(15, 23, 42, 0.45);
+            border-color: #4f6fa5;
+        }
+        .room-card h3, .room-card h4, .room-card p, .room-card span {
+            color: #f1f5f9 !important;
         }
         .room-card-header {
             display: flex;
