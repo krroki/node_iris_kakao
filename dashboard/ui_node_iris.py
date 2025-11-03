@@ -414,6 +414,9 @@ def render_css():
         """
         <style>
         /* Global Styles */
+        header[data-testid="stHeader"], div[data-testid="stToolbar"] {
+            display: none !important;
+        }
         .stApp {
             background: radial-gradient(circle at 10% 20%, #172742 0%, #111c30 45%, #081325 100%);
             color: #f1f5f9;
