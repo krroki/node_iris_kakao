@@ -4,8 +4,8 @@
 
 - **목적**: Hyper-V VM + Redroid(루팅 안드로이드) + IRIS 서버를 다시 기동하여 WSL에서 Node-Iris 봇과 UI를 연결하기
 - **구성 요약**
-  - Hyper-V VM 이름: `redroid`
-  - VM IP(기준): `192.168.66.34`
+- Hyper-V VM 이름: `redroid`
+- VM IP 예시: `172.28.135.200` (재부팅 시 변경될 수 있으므로 `ip addr show`로 확인)
   - VM 계정: `kakao / dhfl.$9909`
   - Redroid 컨테이너 ADB 포트: `localhost:5555`
   - IRIS HTTP 포트(안드로이드 내부): `3000`
@@ -67,27 +67,27 @@ IRIS가 비정상 종료되면 `./iris_control stop` 후 `start`로 재기동합
 
 ```powershell
 # 관리자 PowerShell
-adb disconnect
-adb connect 192.168.66.34:5555
-C:\Users\Public\forward_iris_port.ps1
-C:\Users\Public\setup_iris_port.ps1 -LocalPort 5050
+C:\Users\Public\quickstart_windows_5050.ps1
 ```
 
-- `forward_iris_port.ps1` → VM 내부 3000 포트를 Redroid 3000에 매핑
-- `setup_iris_port.ps1` → Windows 5050 ↔ 127.0.0.1:5050 portproxy (WSL 접근용)
-- 성공 시 `Probe http://127.0.0.1:5050/config -> HTTP 200` 출력
+스크립트가 다음을 자동으로 수행합니다.
+- `adb connect <Device>` (기본: `172.28.135.200:5555`)
+- ADB 포워드 `tcp:5050 -> tcp:3000`
+- `netsh interface portproxy`로 5050 → VM:3000 포트 매핑
+- `http://127.0.0.1:5050/config` 응답 확인 (HTTP 200 기대)
+
+필요 시 `-Device`, `-ConnectAddress`, `-LocalPort`를 인자로 지정할 수 있습니다.
 
 ## 6. WSL에서 봇/대시보드 실행
 
 ```bash
 cd /home/glemfkcl/dev/12.kakao
-IRIS_LOCAL_PORT=5050 ./scripts/start_bot_wsl.sh
-./scripts/serve_ui.sh
+./scripts/quickstart_wsl.sh           # IRIS_LOCAL_PORT 환경변수로 포트 변경 가능
 ```
 
+- 내부적으로 `IRIS_LOCAL_PORT=5050 ./scripts/start_bot_wsl.sh`, `./scripts/serve_ui.sh`를 호출합니다.
 - `.env`가 자동으로 `IRIS_URL=<윈도우 게이트웨이>:5050`으로 갱신됩니다.
 - UI: http://localhost:8501 → 상단 카드에 `IRIS Connection: Connected` 확인
-- 빠른 시작 스크립트: `C:\Users\\Public\quickstart_wsl_5050.ps1`
 
 ## 7. 연결 확인
 
@@ -120,8 +120,8 @@ curl http://127.0.0.1:5050/config
 
 1. **Hyper-V VM 시작** → `Start-VM -Name redroid`
 2. **VM SSH 접속** → `./iris_control start`, `curl http://localhost:3000/config`
-3. **Windows 포트 셋업** → `forward_iris_port.ps1`, `setup_iris_port.ps1 -LocalPort 5050`
-4. **WSL 봇/대시보드 실행** → `IRIS_LOCAL_PORT=5050 ./scripts/start_bot_wsl.sh`, `./scripts/serve_ui.sh`
-5. **연결 확인** → http://localhost:8501 + `bash scripts/probe_iris.sh 5050`
+3. **Windows 포트 셋업** → `C:\Users\Public\quickstart_windows_5050.ps1`
+4. **WSL 봇/대시보드 실행** → `./scripts/quickstart_wsl.sh`
+5. **연결 확인** → http://localhost:8501 + `bash scripts/probe_iris.sh 172.19.192.1:5050`
 
 모든 단계 후에도 문제가 지속되면 `/mnt/c/Users/Public/node-iris-setup-progress.md`와 `IRIS_CONNECTION_SOLUTION.txt`의 트러블슈팅 섹션을 참고하세요.
