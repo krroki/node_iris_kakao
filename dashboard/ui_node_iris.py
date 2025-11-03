@@ -427,6 +427,29 @@ def render_css():
             color: #e2e8f0 !important;
             border-color: #334e7a !important;
         }
+        /* Sidebar */
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(135deg, #0f172a 0%, #1a2641 100%) !important;
+            border-right: 1px solid #1f2d4a;
+        }
+        section[data-testid="stSidebar"] * {
+            color: #f8fafc !important;
+        }
+        section[data-testid="stSidebar"] input,
+        section[data-testid="stSidebar"] select,
+        section[data-testid="stSidebar"] textarea {
+            background-color: #1e293b !important;
+            color: #f8fafc !important;
+            border: 1px solid #3f4f6d !important;
+        }
+        section[data-testid="stSidebar"] button {
+            background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+            border: none !important;
+            color: #f8fafc !important;
+        }
+        section[data-testid="stSidebar"] button:hover {
+            background: linear-gradient(135deg, #1d4ed8, #4338ca) !important;
+        }
         .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
         .stApp p, .stApp span, .stApp label, .stApp li, .stApp div, .stApp button {
             color: #f8fafc;
