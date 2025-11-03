@@ -416,6 +416,18 @@ def render_css():
         /* Global Styles */
         .stApp {
             background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #e2e8f0;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+        }
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+        .stApp p, .stApp span, .stApp label, .stApp li, .stApp div, .stApp button {
+            color: #e2e8f0;
+        }
+        .stApp a {
+            color: #60a5fa;
+        }
+        .stApp .stSelectbox label, .stApp .stMultiSelect label {
+            color: #cbd5f5;
         }
 
         /* Improved Metric Cards */
