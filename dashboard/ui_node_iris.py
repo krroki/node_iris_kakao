@@ -415,9 +415,24 @@ def render_css():
         <style>
         /* Global Styles */
         .stApp {
-            background: linear-gradient(135deg, #111c33 0%, #1d2d4a 100%);
+            background: radial-gradient(circle at 10% 20%, #172742 0%, #111c30 45%, #081325 100%);
             color: #f1f5f9;
             font-family: 'Inter', 'Segoe UI', sans-serif;
+        }
+        .stApp a {
+            color: #93c5fd;
+        }
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+        .stApp p, .stApp span, .stApp label, .stApp li, .stApp div, .stApp button {
+            color: #f8fafc;
+        }
+        .stApp .stSelectbox label, .stApp .stMultiSelect label {
+            color: #dbeafe;
+        }
+        .stApp input, .stApp textarea, .stApp select {
+            background-color: #1e293b !important;
+            color: #f8fafc !important;
+            border: 1px solid #475569 !important;
         }
         .stApp table {
             color: #f8fafc;
@@ -427,13 +442,130 @@ def render_css():
             color: #e2e8f0 !important;
             border-color: #334e7a !important;
         }
+        .main .block-container {
+            padding: 38px 52px 58px;
+            background: rgba(13, 22, 40, 0.82);
+            border-radius: 30px;
+            box-shadow: 0 32px 48px rgba(6, 14, 32, 0.5);
+            margin-top: 128px;
+        }
+        .main .block-container > div:first-child {
+            margin-top: 0 !important;
+        }
+
+        /* Top Header */
+        .top-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 999;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 58px;
+            backdrop-filter: blur(14px);
+            background: linear-gradient(135deg, rgba(8, 16, 32, 0.92), rgba(10, 20, 36, 0.88));
+            border-bottom: 1px solid rgba(96, 165, 250, 0.22);
+            box-shadow: 0 26px 42px rgba(4, 10, 24, 0.55);
+        }
+        .top-brand {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .brand-icon {
+            width: 46px;
+            height: 46px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            box-shadow: 0 12px 22px rgba(59, 130, 246, 0.35);
+        }
+        .brand-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #f8fafc;
+            letter-spacing: -0.3px;
+        }
+        .brand-sub {
+            font-size: 12px;
+            color: #94a3b8;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .top-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .status-chip {
+            padding: 8px 16px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            border: 1px solid transparent;
+        }
+        .status-connected {
+            background: rgba(34, 197, 94, 0.18);
+            color: #bbf7d0;
+            border-color: rgba(34, 197, 94, 0.35);
+        }
+        .status-disconnected {
+            background: rgba(248, 113, 113, 0.18);
+            color: #fecaca;
+            border-color: rgba(248, 113, 113, 0.35);
+        }
+        .chip-on {
+            background: rgba(59, 130, 246, 0.22);
+            color: #bfdbfe;
+            border-color: rgba(59, 130, 246, 0.4);
+        }
+        .chip-off {
+            background: rgba(248, 113, 113, 0.22);
+            color: #fecaca;
+            border-color: rgba(248, 113, 113, 0.4);
+        }
+
         /* Sidebar */
         section[data-testid="stSidebar"] {
-            background: linear-gradient(135deg, #0f172a 0%, #1a2641 100%) !important;
-            border-right: 1px solid #1f2d4a;
+            background: linear-gradient(180deg, #050b16 0%, #0b1628 100%) !important;
+            border-right: 1px solid #141f32;
+            box-shadow: 12px 0 28px rgba(5, 11, 24, 0.55);
+            padding: 28px 24px 34px !important;
         }
         section[data-testid="stSidebar"] * {
-            color: #f8fafc !important;
+            color: #f1f5f9 !important;
+        }
+        section[data-testid="stSidebar"] .sidebar-title {
+            font-size: 13px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #93c5fd !important;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+        section[data-testid="stSidebar"] [role="radiogroup"] > label {
+            border: 1px solid transparent;
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin: 4px 0;
+            background: transparent;
+            transition: all 0.2s ease;
+        }
+        section[data-testid="stSidebar"] [role="radiogroup"] > label:hover {
+            background: rgba(96, 165, 250, 0.12);
+            border-color: rgba(96, 165, 250, 0.25);
+        }
+        section[data-testid="stSidebar"] [role="radiogroup"] > label[aria-checked="true"] {
+            background: rgba(59, 130, 246, 0.24) !important;
+            border-color: rgba(96, 165, 250, 0.45) !important;
+            box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.2);
         }
         section[data-testid="stSidebar"] input,
         section[data-testid="stSidebar"] select,
@@ -450,34 +582,12 @@ def render_css():
         section[data-testid="stSidebar"] button:hover {
             background: linear-gradient(135deg, #1d4ed8, #4338ca) !important;
         }
-        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
-        .stApp p, .stApp span, .stApp label, .stApp li, .stApp div, .stApp button {
-            color: #f8fafc;
+        section[data-testid="stSidebar"] .sidebar-meta {
+            font-size: 11px;
+            color: #94a3b8 !important;
+            line-height: 1.6;
         }
-        .stApp a {
-            color: #93c5fd;
-        }
-        .stApp .stSelectbox label, .stApp .stMultiSelect label {
-            color: #dbeafe;
-        }
-        .stApp input, .stApp textarea, .stApp select {
-            background-color: #1e293b !important;
-            color: #f8fafc !important;
-            border: 1px solid #475569 !important;
-        }
-        .stApp .stButton>button {
-            background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
-            color: #f8fafc !important;
-            border: none;
-        }
-        .stApp .stButton>button:hover {
-            background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
-        }
-        .stApp div[data-testid="stExpander"] {
-            background: linear-gradient(135deg, #1c2d4d 0%, #16233c 100%);
-            border: 1px solid #334e7a;
-            border-radius: 12px;
-        }
+
         .stTabs [role="tab"] {
             color: #e2e8f0 !important;
         }
@@ -1166,14 +1276,55 @@ def main():
     st.set_page_config(page_title="Node-Iris 대시보드", page_icon="🤖", layout="wide")
     render_css()
 
+    env_preview = load_env_preview()
+    status_text, status_detail = iris_status(env_preview)
+    status_slug = status_text.lower().replace(" ", "-")
+    status_icon = "🟢" if status_text.lower() == "connected" else "🔴"
+    safe_mode_flag = str(env_preview.get("SAFE_MODE", "")).lower() in {"true", "1", "yes", "on"}
+    safe_label = "ON" if safe_mode_flag else "OFF"
+    safe_class = "chip-on" if safe_mode_flag else "chip-off"
+
+    st.markdown(
+        f"""
+        <div class="top-bar">
+            <div class="top-brand">
+                <div class="brand-icon">🤖</div>
+                <div>
+                    <div class="brand-title">디하클·카카오봇</div>
+                    <div class="brand-sub">Node IRIS Control Center</div>
+                </div>
+            </div>
+            <div class="top-status">
+                <span class="status-chip status-{status_slug}">{status_icon} {status_text}</span>
+                <span class="status-chip {safe_class}">SAFE MODE {safe_label}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     with st.sidebar:
-        st.title("디하클·카카오봇")
-        page = st.radio("", ["Dashboard", "Templates", "Logs", "Global Settings", "Bot Control"], label_visibility="collapsed")
+        st.markdown("<div class='sidebar-title'>Navigation</div>", unsafe_allow_html=True)
+        page = st.radio(
+            "Navigation",
+            ["Dashboard", "Templates", "Logs", "Global Settings", "Bot Control"],
+            label_visibility="collapsed",
+        )
         try:
-            st.caption(f"App Path: {(APP_BASE).resolve()}")
-            st.caption(f"Logs: {(APP_BASE / 'data' / 'logs').resolve()}")
+            app_path = APP_BASE.resolve()
+            log_path = (APP_BASE / "data" / "logs").resolve()
         except Exception:
-            st.caption(f"App Path: {APP_BASE}")
+            app_path = APP_BASE
+            log_path = APP_BASE / "data" / "logs"
+        st.markdown(
+            f"""
+            <div class='sidebar-meta'>
+                <strong>App Path</strong><br>{app_path}<br><br>
+                <strong>Logs</strong><br>{log_path}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     if page == "Dashboard":
         page_dashboard()
