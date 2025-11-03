@@ -599,6 +599,27 @@ def render_css():
             background: rgba(59, 130, 246, 0.2) !important;
             border-bottom: 2px solid #60a5fa !important;
         }
+        button[data-testid="stSidebarCollapseButton"], button[data-testid="stBaseButton-headerNoPadding"] {
+            background: linear-gradient(135deg, #1f2d47, #111b31) !important;
+            color: #e2e8f0 !important;
+            border: 1px solid rgba(148, 163, 184, 0.25) !important;
+            box-shadow: 0 6px 12px rgba(6, 14, 32, 0.35) !important;
+        }
+        button[data-testid="stSidebarCollapseButton"]:hover, button[data-testid="stBaseButton-headerNoPadding"]:hover {
+            background: linear-gradient(135deg, #2a3d63, #16223c) !important;
+            border-color: rgba(148, 163, 184, 0.45) !important;
+        }
+        [data-testid="stSidebarHeader"] {
+            padding-bottom: 14px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+        }
+        [data-testid="stSidebarHeader"] h2 {
+            color: #f8fafc !important;
+            font-size: 17px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+        }
 
         /* Improved Metric Cards */
         .metric-card {
