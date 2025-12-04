@@ -1,0 +1,470 @@
+{
+  "cafe_id": 30819883,
+  "cafe_url": "https://cafe.naver.com/dinohighclass",
+  "captured_at": "2025-11-24T15:13:53.958726+00:00",
+  "menus": [
+    {
+      "menu_id": 11,
+      "name": "✅ 출석 체크하기",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 84,
+      "name": "🏅 개근상",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 192,
+      "name": "📍 디하클 이용 가이드",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 1,
+      "name": "📡 회원 대상 전체 공지",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 47,
+      "name": "디하클 이벤트 공지",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 134,
+      "name": "💙 디하클 & 운영진 소개",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 116,
+      "name": "👑 명예의 전당",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 245,
+      "name": "수강생 인터뷰",
+      "collect": true,
+      "profile": "community"
+    },
+    {
+      "menu_id": 23,
+      "name": "📖 무료 특강 신청",
+      "collect": true,
+      "profile": "free"
+    },
+    {
+      "menu_id": 32,
+      "name": "무료 특강 후기",
+      "collect": true,
+      "profile": "free"
+    },
+    {
+      "menu_id": 42,
+      "name": "정규 강의 신청",
+      "collect": true,
+      "profile": "paid"
+    },
+    {
+      "menu_id": 165,
+      "name": "질문 게시판",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 33,
+      "name": "자유 게시판",
+      "collect": true,
+      "profile": "community"
+    },
+    {
+      "menu_id": 206,
+      "name": "개인 수익 인증 게시판",
+      "collect": true,
+      "profile": "community"
+    },
+    {
+      "menu_id": 255,
+      "name": "정모 후기 게시판",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 31,
+      "name": "가입 인사 (글 + 댓글 3개 자동 등업)",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 77,
+      "name": "비즈니스 전용 VOD&꿀팁",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 24,
+      "name": "[제이J] 페고리즘 강의",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 251,
+      "name": "시크릿방 입장용 자기소개",
+      "collect": false,
+      "profile": null
+    },
+    {
+      "menu_id": 48,
+      "name": "💡 주차별 하이라이트",
+      "collect": true,
+      "profile": "tips"
+    },
+    {
+      "menu_id": 136,
+      "name": "디하클 회원의 꿀팁!",
+      "collect": true,
+      "profile": "tips"
+    },
+    {
+      "menu_id": 51,
+      "name": "카페 운영자의 꿀팁!",
+      "collect": true,
+      "profile": "tips"
+    },
+    {
+      "menu_id": 172,
+      "name": "강사들의 꿀팁!",
+      "collect": true,
+      "profile": "tips"
+    },
+    {
+      "menu_id": 62,
+      "name": "디하클 성장 일기",
+      "collect": true,
+      "profile": "community"
+    },
+    {
+      "menu_id": 36,
+      "name": "마케터 제이J 칼럼",
+      "collect": false
+    },
+    {
+      "menu_id": 43,
+      "name": "마케터 제이J 유튜브",
+      "collect": false
+    },
+    {
+      "menu_id": 103,
+      "name": "[한다해] 이지롱폼 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 270,
+      "name": "[텍사스홀X] 1황의 사고 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 263,
+      "name": "[링밥] 폰편집월천쿠팡 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 110,
+      "name": "[유쾌한케로로] AI뮤직자동화 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 268,
+      "name": "[라옴] 금광롱폼 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 252,
+      "name": "[데헷이] 초효율쇼츠 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 274,
+      "name": "[더퓨처] 제로공구 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 257,
+      "name": "[솔라리움] 탑티어쇼츠 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 266,
+      "name": "[아모르] 천상계영드 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 113,
+      "name": "[빠대] 탑클래스쿠팡 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 107,
+      "name": "[테일러] 월억쇼츠 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 246,
+      "name": "[룰루랄라릴리] 쇼츠투벤츠 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 249,
+      "name": "[꿍디순디] 셀럽팬튜브 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 91,
+      "name": "[레민] 쇼츠쇼핑, 하프라인챌린지 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 264,
+      "name": "[타로] 데시벨쇼츠 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 64,
+      "name": "[그라운드]  실버버튼 챌린지 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 97,
+      "name": "[위쏭] 이베이 이스타터 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 101,
+      "name": "[크리스타스] 스레드 수익화 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 253,
+      "name": "[트립제인] 노마드트립 성과인증",
+      "collect": false
+    },
+    {
+      "menu_id": 76,
+      "name": "[용용] 나혼자만 쇼츠업, 쇼츠브레이커",
+      "collect": false
+    },
+    {
+      "menu_id": 112,
+      "name": "[쇼츠아재] 블랙시크릿, 뉴패러다임",
+      "collect": false
+    },
+    {
+      "menu_id": 104,
+      "name": "[크리스타스]AI마스터즈",
+      "collect": false
+    },
+    {
+      "menu_id": 93,
+      "name": "[유쾌한케로로]AI그림연습",
+      "collect": false
+    },
+    {
+      "menu_id": 244,
+      "name": "[조티쳐] AI 나랏돈",
+      "collect": false
+    },
+    {
+      "menu_id": 73,
+      "name": "챌린지 신청합니다!",
+      "collect": false
+    },
+    {
+      "menu_id": 74,
+      "name": "챌린지 완주 후기",
+      "collect": false
+    },
+    {
+      "menu_id": 40,
+      "name": "무료 챌린지 도전 중",
+      "collect": false
+    },
+    {
+      "menu_id": 106,
+      "name": "[테일러] 월억쇼츠 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 273,
+      "name": "[텍사스홀X] 1황의 사고 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 241,
+      "name": "[룰루랄라릴리] 쇼츠투벤츠 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 269,
+      "name": "[라옴] 금광롱폼 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 85,
+      "name": "[한다해] 이지롱폼 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 265,
+      "name": "[타로] 데시벨쇼츠 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 267,
+      "name": "[아모르] 천상계영드 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 258,
+      "name": "[솔라리움] 탑티어쇼츠 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 256,
+      "name": "[데헷이] 초효율쇼츠 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 259,
+      "name": "[링밥] 폰편집월천쿠팡 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 217,
+      "name": "[빠대] 탑클래스 쿠팡챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 99,
+      "name": "[유쾌한케로로] AI 뮤직자동화 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 115,
+      "name": "[레민] 쇼핑업 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 247,
+      "name": "[유랑] 시크릿 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 248,
+      "name": "[꿍디순디] 셀럽팬튜브 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 102,
+      "name": "[크리스타스] 스레드 수익화 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 82,
+      "name": "[위쏭] 이스타터 수강생 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 86,
+      "name": "[그라운드] 실버버튼 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 254,
+      "name": "[트립제인] 노마드트립 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 98,
+      "name": "[쇼츠아재] 수강생 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 88,
+      "name": "[선가이드] 1억숏폼 66일 챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 78,
+      "name": "✋ 제이티 세무회계",
+      "collect": false
+    },
+    {
+      "menu_id": 79,
+      "name": "세금 관련 Q&A",
+      "collect": false
+    },
+    {
+      "menu_id": 41,
+      "name": "✋ 비디오스튜",
+      "collect": false
+    },
+    {
+      "menu_id": 235,
+      "name": "✋ 튜브렌즈",
+      "collect": false
+    },
+    {
+      "menu_id": 39,
+      "name": "홍보 게시판",
+      "collect": false
+    },
+    {
+      "menu_id": 207,
+      "name": "회원글 컨펌용 게시판",
+      "collect": false
+    },
+    {
+      "menu_id": 208,
+      "name": "스탭글 컨펌용 게시판",
+      "collect": false
+    },
+    {
+      "menu_id": 18,
+      "name": "보관 게시판",
+      "collect": false
+    },
+    {
+      "menu_id": 100,
+      "name": "✋ 뮤직플렉스",
+      "collect": false
+    },
+    {
+      "menu_id": 90,
+      "name": "[안영신]구파스60일챌린지",
+      "collect": false
+    },
+    {
+      "menu_id": 96,
+      "name": "[용용] 쇼츠브레이커 수강생 챌린지",
+      "collect": false
+    }
+  ],
+  "recommended_menu_ids": [
+    23,
+    32,
+    42,
+    33,
+    206,
+    136,
+    51,
+    172,
+    48,
+    62,
+    245
+  ],
+  "note": "collect=true? KB_MENUS ?? ??"
+}
