@@ -17,6 +17,7 @@ from kb.search import vector_search
 from kb.logging_util import get_logger
 from kb.auto_login import login_and_store
 from kb.creds import save_creds, load_meta
+from kb.menu_ssot import load_ssot, get_all_menus, get_cafe_id
 from typing import List, Dict, Any, Optional
 import re
 
@@ -543,6 +544,104 @@ def list_manuals(limit: int = 50):
             """
         ), {"lim": lim}).mappings().all()
     return {"ok": True, "manuals": [dict(r) for r in rows]}
+
+
+@app.get("/menus")
+def list_menus():
+    """SSOT 메뉴 정보 반환 (ADR-0008)
+
+    config/menus_dinohighclass.json의 메뉴 목록을 반환.
+    UI에서 게시판별 수집 현황 표시에 사용.
+    """
+    try:
+        menus = get_all_menus()
+        cafe_id = get_cafe_id()
+        return {
+            "ok": True,
+            "cafe_id": cafe_id,
+            "menus": menus,
+        }
+    except FileNotFoundError as e:
+        log.error(f"/menus SSOT not found: {e}")
+        return JSONResponse(status_code=503, content={"ok": False, "error": "ssot_not_found", "detail": str(e)})
+    except Exception as e:
+        log.exception(f"/menus failed: {e}")
+        return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "detail": str(e)})
+
+
+@app.get("/posts/by_menu")
+def posts_by_menu():
+    """게시판(menu_id)별 수집된 포스트 통계 반환
+
+    UI에서 게시판별 수집 현황 표시에 사용.
+    프론트엔드 기대 형식:
+    { menus: { "23": { count, posts, oldest_at, newest_at }, ... } }
+    """
+    try:
+        with db_session() as s:
+            # 게시판별 포스트 수 및 날짜 범위 집계
+            stats_rows = s.execute(text(
+                """SELECT menu_id, COUNT(*) as count,
+                          MIN(created_at) as oldest_at,
+                          MAX(created_at) as newest_at
+                FROM sources_post
+                WHERE status = 'clean'
+                GROUP BY menu_id"""
+            )).mappings().all()
+
+            stats_by_menu = {
+                int(r["menu_id"]): {
+                    "count": int(r["count"]),
+                    "oldest_at": r["oldest_at"].isoformat() if r["oldest_at"] else None,
+                    "newest_at": r["newest_at"].isoformat() if r["newest_at"] else None,
+                }
+                for r in stats_rows
+            }
+
+            # 각 게시판별 최근 5개 글
+            recent_rows = s.execute(text(
+                """SELECT menu_id, post_id, title, url, created_at
+                FROM (
+                    SELECT menu_id, post_id, title, url, created_at,
+                           ROW_NUMBER() OVER (PARTITION BY menu_id ORDER BY created_at DESC) as rn
+                    FROM sources_post
+                    WHERE status = 'clean'
+                ) sub
+                WHERE rn <= 5
+                ORDER BY menu_id, created_at DESC"""
+            )).mappings().all()
+
+            # menu_id별로 최근 글 그룹핑
+            posts_by_menu: Dict[int, List[Dict[str, Any]]] = {}
+            for r in recent_rows:
+                mid = int(r["menu_id"])
+                if mid not in posts_by_menu:
+                    posts_by_menu[mid] = []
+                posts_by_menu[mid].append({
+                    "post_id": r["post_id"],
+                    "menu_id": mid,
+                    "title": r["title"],
+                    "url": r["url"],
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                })
+
+            # 최종 결과 조합 (프론트엔드 형식: menus: { "23": { count, posts, oldest_at, newest_at } })
+            menus_result: Dict[str, Dict[str, Any]] = {}
+            for mid, stat in stats_by_menu.items():
+                menus_result[str(mid)] = {
+                    "count": stat["count"],
+                    "oldest_at": stat["oldest_at"],
+                    "newest_at": stat["newest_at"],
+                    "posts": posts_by_menu.get(mid, []),
+                }
+
+        return {
+            "ok": True,
+            "menus": menus_result,
+        }
+    except Exception as e:
+        log.exception(f"/posts/by_menu failed: {e}")
+        return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "detail": str(e)})
 
 
 @app.get("/__whoami")
