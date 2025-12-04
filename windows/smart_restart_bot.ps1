@@ -19,7 +19,8 @@
 param(
     [switch]$Force,
     [switch]$DryRun,
-    [int]$Timeout = 3
+    [int]$Timeout = 3,
+    [string]$VmIp  # optional: 직접 VM IP를 지정해 VM 탐색을 건너뛴다
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,17 +185,22 @@ if (-not $health.Ok) {
 $currentProxyIp = Get-CurrentPortProxy
 Write-Status "Current portproxy target: $currentProxyIp"
 
-# Step 3: Find VM IP
-Write-Status "Finding VM IP..."
-$vmIp = Get-VmIpAddress
+# Step 3: Find VM IP (skip detection if -VmIp provided)
+if ($VmIp) {
+    Write-Status "Using provided VM IP: $VmIp" "Cyan"
+    $vmIp = $VmIp
+} else {
+    Write-Status "Finding VM IP..."
+    $vmIp = Get-VmIpAddress
 
-if (-not $vmIp) {
-    Write-Status "ERROR: Could not find VM IP. Is the VM running?" "Red"
-    Write-Status "Try: Get-VM -Name $VM_NAME | Select State" "Yellow"
-    exit 1
+    if (-not $vmIp) {
+        Write-Status "ERROR: Could not find VM IP. Is the VM running?" "Red"
+        Write-Status "Try: Get-VM -Name $VM_NAME | Select State" "Yellow"
+        exit 1
+    }
+
+    Write-Status "Found VM IP: $vmIp" "Green"
 }
-
-Write-Status "Found VM IP: $vmIp" "Green"
 
 # Step 4: Test IRIS direct connection
 Write-Status "Testing IRIS at ${vmIp}:$IRIS_TARGET_PORT..."
@@ -226,4 +232,3 @@ Start-Sleep -Seconds 2
 Start-Bot
 
 Write-Status "=== Done ===" "Cyan"
-

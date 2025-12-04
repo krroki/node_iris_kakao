@@ -157,6 +157,20 @@ def _get_recent_posts(menu_ids, limit=5, date_range=None):
     return [dict(r) for r in rows]
 
 
+def _keyword_search_posts(query: str, limit: int = 5):
+    # 간단한 키워드 부분일치 검색 (fallback 아님: 동일 DB에서 정 deterministically 조회)
+    q = f"%{query}%"
+    with db_session() as s:
+        rows = s.execute(text(
+            """SELECT post_id, menu_id, title, url, norm_text, author, created_at, status
+               FROM sources_post
+               WHERE status = 'clean' AND (title ILIKE :q OR norm_text ILIKE :q)
+               ORDER BY created_at DESC
+               LIMIT :lim"""
+        ), {"q": q, "lim": limit}).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def _is_lecture_query(query: str) -> bool:
     return bool(re.search(r'강의|무강|특강|수업|레슨|클래스', query.lower()))
 
@@ -216,6 +230,8 @@ def _build_prompt(query: str, manuals: List[Dict[str, Any]], posts: List[Dict[st
         "2) 항목이 하나뿐이면 첫 번째 블록만 쓰고 나머지는 생략한다. 없는 필드는 '정보 없음'으로 채운다.",
         "3) 같은 문장을 반복하거나 추가 안내/사용법/추가 질문 요청 문구를 넣지 않는다.",
         "4) 날짜·일정·가격은 자료에 있는 값만 그대로 사용하고, 없으면 '정보 없음'으로 명시한다.",
+        "5) 관련 자료가 없으면 링크/CTA/버튼을 절대 넣지 말고 '정보 없음'만 명시한다.",
+        "6) 제공된 자료(문서/게시글)에서 받은 URL만 사용할 것. 없으면 링크 줄 자체를 생략한다.",
         "5) 대괄호는 한 번만 쓰고 반드시 닫는다. 링크는 한 줄에 깔끔하게 적으며 링크가 없으면 그 줄 자체를 생략한다.",
         "6) 항목 수는 질문 요구에 맞춰 유연하게 작성한다(요청 4개면 4개, 요청 2개면 2개, 요청이 없으면 3~4개 이내). 결과가 부족하면 있는 것만 보여준다.",
         "7) 서브불릿은 반드시 '  • ' 형식만 사용하고, 다른 기호(ㄴ, 번호, 별표 등)는 쓰지 않는다.",
@@ -250,6 +266,7 @@ def _build_prompt(query: str, manuals: List[Dict[str, Any]], posts: List[Dict[st
         "--- 추가 규칙 ---",
         "- 강의 질문이 아니어도 위 틀을 유지하되 제목·구분·주제·핵심을 질문에 맞게 변환한다(공지/운영/일정 등).",
         "- 전체_링크는 가장 관련성 높은 게시글 URL을 사용하고, 없으면 아예 출력하지 않는다.",
+        "- 링크 줄들은 근거 문서에서 받은 URL이 있을 때만 출력한다. 없으면 해당 줄을 완전히 생략한다.",
         "- 절대 '질문 형식을 맞춰 달라'는 안내 문구나 사용법 안내를 덧붙이지 말 것.",
         "- 출력에는 위에 정의한 항목/불릿/링크 줄 외의 텍스트(머리말, 꼬리말, 명령어 예시)를 추가하지 말 것.",
     ])
@@ -277,6 +294,7 @@ def ask_llm(req: AskLlmRequest):
 
         search_res = vector_search(req.query, top_k=req.top_k, menu_ids=menu_ids)
         dist_threshold = SCHEDULE_DIST_THRESHOLD if use_relaxed_threshold else float(os.getenv("KB_DIST_MAX") or 0.42)
+        link_hint_dist = float(os.getenv("KB_LINK_HINT_DIST_MAX") or 0.40)  # 링크 힌트는 dist_threshold보다 조금만 낮게
 
         def _filter_hits(rows: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
             filtered = [r for r in rows if r.get("dist", 1.0) <= dist_threshold]
@@ -291,30 +309,30 @@ def ask_llm(req: AskLlmRequest):
         manuals = _load_manuals(manual_ids)
         posts = _load_posts(post_ids)
         link_hint = ""
-        if posts:
-            link_hint = posts[0].get("url") or ""
+        if posts_hit:
+            top_post = posts_hit[0]
+            if top_post.get("dist", 1.0) <= link_hint_dist:
+                link_hint = top_post.get("url") or ""
 
-        # Fallback: 강의 질문인데 결과가 없거나, 날짜 특정 쿼리면 직접 조회
+        # 추가 확보: 벡터 검색이 빈약하면 키워드 부분일치 검색으로 보강 (deterministic 검색)
+        if not posts_hit:
+            keyword_posts = _keyword_search_posts(req.query, limit=5)
+            if keyword_posts:
+                posts = keyword_posts
+                # link_hint는 키워드 검색 결과도 동일 기준(dist를 몰라서 보수적으로 미설정)
+                link_hint = ""
+
+        # Fallback: 날짜 특정 강의 쿼리만 허용, 일반 fallback(최근 글 대체)은 비활성화
         is_fallback = False
-        # 날짜 특정 강의 쿼리: vector search 결과와 무관하게 해당 날짜 게시물 직접 조회
         if is_lecture_q and date_range:
             log.info(f"[ask_llm] date-specific lecture query, fetching posts for {date_range}")
-            fallback_menu_ids = LECTURE_ALL_MENU_IDS  # 항상 모든 강의 게시판 (신청+후기)
+            fallback_menu_ids = LECTURE_ALL_MENU_IDS  # 신청+후기 전체
             date_posts = _get_recent_posts(fallback_menu_ids, limit=5, date_range=date_range)
             if date_posts:
                 posts = date_posts  # 날짜 필터된 결과로 교체
                 is_fallback = True
-                link_hint = posts[0].get("url") or ""
+                link_hint = date_posts[0].get("url") or ""
                 log.info(f"[ask_llm] date filter found {len(posts)} posts")
-        # 일반 강의 질문인데 결과가 없으면 최신 강의글 제공
-        if not manuals_hit and not posts_hit and is_lecture_q and not is_fallback:
-            log.info(f"[ask_llm] no results for lecture query, using fallback")
-            fallback_menu_ids = LECTURE_ALL_MENU_IDS if not menu_ids else menu_ids
-            posts = _get_recent_posts(fallback_menu_ids, limit=5, date_range=None)
-            is_fallback = True
-            if posts:
-                link_hint = posts[0].get("url") or ""
-                log.info(f"[ask_llm] fallback found {len(posts)} recent posts")
 
         if not manuals and not posts:
             return {
