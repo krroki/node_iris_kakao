@@ -42,3 +42,4 @@ Thumbs.db
 
 infra/iris/
 data/
+node-iris-app/dist/

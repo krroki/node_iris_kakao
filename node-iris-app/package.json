@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@tsuki-chat/node-iris": "latest",
-    "dotenv": "^17.2.2"
+    "dotenv": "^17.2.2",
+    "iconv-lite": "^0.6.3"
   },
   "devDependencies": {
     "@types/http-cache-semantics": "^4.0.4",

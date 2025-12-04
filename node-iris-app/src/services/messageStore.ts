@@ -2,6 +2,11 @@ import { ChatContext } from "@tsuki-chat/node-iris";
 import { promises as fs } from "fs";
 import path from "path";
 
+// BigInt를 문자열로 변환하는 JSON replacer
+function bigIntReplacer(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
 export interface RecordedEventPayload {
   [key: string]: unknown;
   type: string;
@@ -57,12 +62,13 @@ export class MessageStore {
 
   private async persist(roomId: string, record: RecordedEvent): Promise<void> {
     // Deduplicate immediate duplicates (same ts/sender/message) per room
+    // NOTE: BigInt 필드가 있을 수 있으므로 bigIntReplacer 사용
     const k = JSON.stringify([
       record.timestamp,
       record.snapshot.senderId,
       record.snapshot.messageId,
       record.snapshot.messageText,
-    ]);
+    ], bigIntReplacer);
     const prev = this.lastKey.get(roomId);
     if (prev && prev === k) {
       return; // skip duplicate write
@@ -72,7 +78,7 @@ export class MessageStore {
     const roomDir = path.join(this.baseDir, roomId);
     await fs.mkdir(roomDir, { recursive: true });
     const filePath = path.join(roomDir, `${record.timestamp.slice(0, 10)}.log`);
-    await fs.appendFile(filePath, JSON.stringify(record) + "\n", "utf8");
+    await fs.appendFile(filePath, JSON.stringify(record, bigIntReplacer) + "\n", "utf8");
   }
 
   private pushToBuffer(roomId: string, record: RecordedEvent): void {

@@ -57,7 +57,7 @@ export async function DELETE(req: Request) {
       'Bypass',
       '-File',
       script,
-      '-Pid',
+      '-TargetPid',  // NOTE: $Pid는 PowerShell 내장 변수와 충돌하므로 $TargetPid 사용
       pid,
     ], { timeout: 10000 });
 

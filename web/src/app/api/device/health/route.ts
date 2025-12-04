@@ -6,6 +6,8 @@ import { promises as fs } from 'fs';
 
 const ROOT = path.resolve(process.cwd(), '..');
 const DEVICE_HEALTH_CACHE = path.join(ROOT, 'windows', 'device_health_cache.json');
+// IRIS는 /health가 없으므로 200을 주는 /config를 헬스 체크로 사용한다.
+const IRIS_HEALTH_PATH = '/config';
 
 async function updateDeviceCache(ok: boolean, detail: string, extra?: Record<string, unknown>) {
   const cache = {
@@ -22,31 +24,29 @@ async function updateDeviceCache(ok: boolean, detail: string, extra?: Record<str
  * GET /api/device/health
  * 경량 디바이스 헬스 체크 (캐시 갱신용)
  *
- * IRIS /health 엔드포인트만 호출하여 빠르게 상태 확인.
- * 전체 repair 없이 캐시를 갱신할 수 있음.
+ * IRIS HTTP 응답을 확인한다. 2xx만 성공으로 간주하고, 나머지는 실패로 기록한다.
  */
 export async function GET() {
   try {
-    // IRIS URL 확인 (portproxy 경유 127.0.0.1:5050)
     const irisUrl = process.env.IRIS_URL || 'http://127.0.0.1:5050';
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
 
     try {
-      const res = await fetch(`${irisUrl}/health`, {
+      const res = await fetch(`${irisUrl}${IRIS_HEALTH_PATH}`, {
         signal: controller.signal,
         cache: 'no-store',
       });
       clearTimeout(timeout);
 
       if (res.ok) {
-        const cache = await updateDeviceCache(true, 'IRIS 단말 정상 (health check OK)');
+        const cache = await updateDeviceCache(true, 'IRIS /config 200 OK');
         return NextResponse.json(cache);
-      } else {
-        const cache = await updateDeviceCache(false, `IRIS 응답 오류: HTTP ${res.status}`);
-        return NextResponse.json(cache, { status: 503 });
       }
+
+      const cache = await updateDeviceCache(false, `IRIS 응답 오류: HTTP ${res.status}`);
+      return NextResponse.json(cache, { status: 503 });
     } catch (fetchError: any) {
       clearTimeout(timeout);
       const detail = fetchError?.name === 'AbortError'
@@ -70,3 +70,4 @@ export async function GET() {
 export async function POST() {
   return GET();
 }
+
