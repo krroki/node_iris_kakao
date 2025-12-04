@@ -9,6 +9,10 @@
   [switch]$Restart
 )
 
+# Force UTF-8 for logs/console to avoid mojibake in bot output
+chcp 65001 | Out-Null
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $botDir = Join-Path $root 'node-iris-app'
@@ -103,34 +107,48 @@ if (-not $env:REALTIME_API_BASE -or [string]::IsNullOrWhiteSpace($env:REALTIME_A
 function Start-BuildIfNeeded {
   param([switch]$Force)
   $distIndex = Join-Path (Get-Location) 'dist\index.js'
-  if ($SkipBuild -and -not $Force) {
-    Write-Host '[bot] SkipBuild set; skipping build' -ForegroundColor Yellow
-    if (-not (Test-Path $distIndex)) {
-      Write-Host '[bot] dist/index.js not found; forcing one build' -ForegroundColor Yellow
-    } else { return }
+
+  # 빌드 여부 결정: SkipBuild라도 dist가 없으면 강제 빌드
+  $shouldBuild = $Force -or -not $SkipBuild -or -not (Test-Path $distIndex)
+  if (-not $shouldBuild) {
+    Write-Host '[bot] SkipBuild set; dist/index.js exists; skip build' -ForegroundColor Yellow
+    return $true
   }
+
   $buildLog = Join-Path $LogDir ("bot.build." + (Get-Date -Format 'yyyyMMddHHmmss') + ".log")
   try { Remove-Item -Force -ErrorAction SilentlyContinue $buildLog } catch {}
-  Write-Host ("[bot] building (timeout {0}s)" -f $BuildTimeoutSec) -ForegroundColor Cyan
-  $job = Start-Job -ScriptBlock {
-    param($log)
-    & cmd.exe /c "npm run --silent build 1>> `"$log`" 2>>&1"
-    return $LASTEXITCODE
-  } -ArgumentList $buildLog
-  $done = Wait-Job -Job $job -Timeout $BuildTimeoutSec
-  if (-not $done) {
-    Write-Host '[bot] build timeout; stopping build job' -ForegroundColor Yellow
-    try { Stop-Job $job -Force | Out-Null } catch {}
+  Write-Host ("[bot] building (timeout {0}s) -> {1}" -f $BuildTimeoutSec, $buildLog) -ForegroundColor Cyan
+
+  # npm 경로 고정 (백그라운드 세션 PATH 누락 대응)
+  $npmPath = $null
+  try { $npmPath = (Get-Command npm.cmd -ErrorAction Stop).Source } catch {
+    Write-Error "[bot] npm not found in PATH"
+    return $false
   }
-  $rc = 0
-  try { $rc = Receive-Job -Job $job -ErrorAction SilentlyContinue } catch { $rc = 1 }
-  try { Remove-Job $job -Force | Out-Null } catch {}
+  # 동기 실행 (cmd를 통해 리다이렉션 처리, timeout은 Start-Process + Wait)
+  # cmd.exe /c `"C:\Program Files\nodejs\npm.cmd`" run --silent build >"log" 2>&1
+  # 동기 빌드 실행 (node-iris-app 경로에서 PATH 상의 npm 호출)
+  & $npmPath run --silent build *> $buildLog 2>&1
+  $rc = $LASTEXITCODE
+
   if ($rc -ne 0) {
-    Write-Host ("[bot] build returned code {0} (see build log)" -f $rc) -ForegroundColor Yellow
+    Write-Error ("[bot] build failed (exit {0}) - see {1}" -f $rc, $buildLog)
+    return $false
   }
+
+  if (-not (Test-Path $distIndex)) {
+    Write-Error ("[bot] build completed but dist/index.js missing (see {0})" -f $buildLog)
+    return $false
+  }
+
+  return $true
 }
 
-Start-BuildIfNeeded
+$buildOk = Start-BuildIfNeeded
+if (-not $buildOk) {
+  Write-Host '[bot] aborting start due to build failure' -ForegroundColor Red
+  exit 1
+}
 
 Write-Host "[bot] starting (timeout ${TimeoutSec}s)" -ForegroundColor Green
 try { Remove-Item -Force -ErrorAction SilentlyContinue $outLog,$errLog } catch {}

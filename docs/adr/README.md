@@ -84,3 +84,4 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0010 | Windows 전용 스택 + IRIS_URL SSOT               | Accepted           | WSL 제거, 5050 포트 표준화    |
 | 0011 | 봇 싱글톤 메커니즘                               | Accepted           | PID 락 + 프로세스 필터로 중복 응답 방지 |
 | 0012 | API 계약 정합성 및 상태 체크 경량화             | Accepted           | ok 필드 표준화, 캐시 기반 상태, 안전한 봇 종료 |
+| 0013 | 빌드 파이프라인 강화 및 명령 파서 정책         | Accepted           | 빌드 강제/검증, ?디하클 필수, UTF-8 로깅 |
