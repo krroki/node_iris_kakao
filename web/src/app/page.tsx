@@ -135,11 +135,26 @@ export default function Home() {
     }
   }, []);
 
+  // 디바이스 헬스 캐시 자동 갱신 (2분 간격)
+  // /api/device/health를 호출하여 device_health_cache.json을 최신 상태로 유지
+  const refreshDeviceHealth = useCallback(async () => {
+    try {
+      await fetch(`/api/device/health`, { cache: 'no-store' });
+    } catch {
+      // 실패해도 무시 (status에서 캐시 만료로 표시됨)
+    }
+  }, []);
+
   useEffect(() => {
     fetchPipelineStatus();
-    const id = setInterval(fetchPipelineStatus, 10_000);
-    return () => clearInterval(id);
-  }, [fetchPipelineStatus]);
+    refreshDeviceHealth(); // 최초 로드 시 헬스 체크
+    const statusId = setInterval(fetchPipelineStatus, 10_000);
+    const healthId = setInterval(refreshDeviceHealth, 2 * 60 * 1000); // 2분 간격
+    return () => {
+      clearInterval(statusId);
+      clearInterval(healthId);
+    };
+  }, [fetchPipelineStatus, refreshDeviceHealth]);
 
   const fetchWatchdog = useCallback(async () => {
     try {

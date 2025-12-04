@@ -146,6 +146,10 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
           ⚠ 봇이 {processes.length}개 실행 중입니다. 중복 응답이 발생할 수 있습니다.
         </div>
       )}
+
+      <div className="mt-3 text-xs opacity-60 border-t pt-2">
+        ℹ️ node-iris-app 프로세스만 종료됩니다. 다른 Node 앱(Codex, Claude Code 등)은 보호됩니다.
+      </div>
     </div>
   );
 }

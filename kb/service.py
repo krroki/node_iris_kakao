@@ -55,7 +55,10 @@ def ask(req: AskRequest):
     t0 = time.time()
     try:
         res = vector_search(req.query, top_k=req.top_k)
-        return {"query": req.query, **res}
+        return {"ok": True, "query": req.query, **res}
+    except Exception as e:
+        log.exception(f"/ask failed: {e}")
+        return JSONResponse(status_code=500, content={"ok": False, "code": "search_failed", "detail": str(e)})
     finally:
         log.info(f"/ask qlen={len(req.query)} took={time.time()-t0:.3f}s")
 
@@ -383,7 +386,7 @@ class ReindexRequest(BaseModel):
 
 @app.post("/reindex")
 def reindex(_: ReindexRequest):
-    return {"status": "queued"}
+    return {"ok": True, "status": "queued"}
 
 
 class RunTaskRequest(BaseModel):
@@ -403,7 +406,7 @@ def run_task(req: RunTaskRequest):
         cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", ps_runner, "-Task", task] + ([str(x) for x in (["-Pages", req.pages] if (req.pages or 0) > 0 else [])])
         log.info(f"spawn: {cmd}")
         subprocess.Popen(cmd, cwd=root, env=os.environ.copy())
-        return {"status": "started", "via": "powershell", "task": task}
+        return {"ok": True, "status": "started", "via": "powershell", "task": task}
     mapping = {
         "collect": [sys.executable, os.path.join(root, "kb", "ingest.py")],
         "embed": [sys.executable, os.path.join(root, "kb", "update_embeddings.py")],
@@ -411,7 +414,7 @@ def run_task(req: RunTaskRequest):
     }
     log.info(f"spawn: {mapping[task]}")
     subprocess.Popen((mapping[task] + ([str(req.pages)] if False else [])), cwd=root, env=os.environ.copy())
-    return {"status": "started", "via": "python", "task": task}
+    return {"ok": True, "status": "started", "via": "python", "task": task}
 
 
 class CookiesIn(BaseModel):
@@ -445,14 +448,14 @@ def run_cookie():
     try:
         proc = subprocess.Popen(["node", script], cwd=root, env=env)
         log.info(f"cookie collector spawned pid={proc.pid}")
-        return {"status": "started", "pid": proc.pid}
+        return {"ok": True, "status": "started", "pid": proc.pid}
     except Exception as e:  # pragma: no cover
         log.exception(f"cookie collector spawn failed: {e}")
-        raise HTTPException(500, "spawn_failed")
+        return JSONResponse(status_code=500, content={"ok": False, "code": "spawn_failed", "detail": str(e)})
 
 
 # --- Simple in-process scheduler (UI-togglable) ---
-_SCHED = {
+_SCHED: Dict[str, Dict[str, Any]] = {
     "collect": {"interval": 0, "next": None, "proc": None},
     "embed":   {"interval": 0, "next": None, "proc": None},
     "manual":  {"interval": 0, "next": None, "proc": None},
@@ -509,8 +512,9 @@ def set_schedule(body: ScheduleIn):
     if task not in _SCHED:
         raise HTTPException(400, "invalid task")
     minutes = max(0, int(body.interval_minutes))
-    _SCHED[task]["interval"] = minutes * 60
-    _SCHED[task]["next"] = _dt.datetime.utcnow() + _dt.timedelta(seconds=_SCHED[task]["interval"]) if minutes else None
+    interval_secs = minutes * 60
+    _SCHED[task]["interval"] = interval_secs
+    _SCHED[task]["next"] = _dt.datetime.utcnow() + _dt.timedelta(seconds=interval_secs) if minutes else None
     log.info(f"[sched] set {task} every {minutes}m")
     return {"ok": True, "task": task, "interval_minutes": minutes}
 
@@ -552,21 +556,43 @@ def list_menus():
 
     config/menus_dinohighclass.json의 메뉴 목록을 반환.
     UI에서 게시판별 수집 현황 표시에 사용.
+    groups와 names 필드도 함께 반환하여 프론트엔드 호환성 확보.
     """
     try:
         menus = get_all_menus()
         cafe_id = get_cafe_id()
+
+        # groups: { profile: { label, menuIds } } 형태로 변환
+        profile_labels = {
+            "free": "무료 특강",
+            "paid": "정규 강의",
+            "tips": "꿀팁",
+            "community": "커뮤니티",
+        }
+        groups: Dict[str, Dict[str, Any]] = {}
+        for profile, label in profile_labels.items():
+            menu_ids = [m["menu_id"] for m in menus if m.get("profile") == profile]
+            if menu_ids:
+                groups[profile] = {"label": label, "menuIds": menu_ids}
+
+        # names: { menuId: name } 형태로 변환
+        names: Dict[str, str] = {}
+        for m in menus:
+            names[str(m["menu_id"])] = m.get("name", f"메뉴 {m['menu_id']}")
+
         return {
             "ok": True,
             "cafe_id": cafe_id,
             "menus": menus,
+            "groups": groups,
+            "names": names,
         }
     except FileNotFoundError as e:
         log.error(f"/menus SSOT not found: {e}")
-        return JSONResponse(status_code=503, content={"ok": False, "error": "ssot_not_found", "detail": str(e)})
+        return JSONResponse(status_code=503, content={"ok": False, "code": "ssot_not_found", "detail": str(e)})
     except Exception as e:
         log.exception(f"/menus failed: {e}")
-        return JSONResponse(status_code=500, content={"ok": False, "error": "internal_error", "detail": str(e)})
+        return JSONResponse(status_code=500, content={"ok": False, "code": "internal_error", "detail": str(e)})
 
 
 @app.get("/posts/by_menu")
@@ -710,3 +736,66 @@ def post_creds(body: CredsIn):
     except Exception as e:
         log.exception(f"save_creds failed: {e}")
         raise HTTPException(500, "save_failed")
+
+
+# --- Backfill & Jobs Status Endpoints ---
+
+@app.get("/backfill/status")
+def backfill_status():
+    """백필 상태 조회 (프론트엔드 폴링용)
+
+    현재 백필 작업이 진행 중인지, 마지막 백필 결과를 반환.
+    """
+    try:
+        with db_session() as s:
+            # 진행 중인 백필 작업 조회
+            running = s.execute(text(
+                """SELECT job_id, job_type, status, started_at, payload
+                FROM job_log
+                WHERE job_type = 'backfill' AND status = 'running'
+                ORDER BY started_at DESC
+                LIMIT 1"""
+            )).mappings().first()
+
+            # 최근 완료된 백필 작업
+            last_completed = s.execute(text(
+                """SELECT job_id, job_type, status, started_at, finished_at, result
+                FROM job_log
+                WHERE job_type = 'backfill' AND status IN ('success', 'failed')
+                ORDER BY finished_at DESC NULLS LAST
+                LIMIT 1"""
+            )).mappings().first()
+
+        return {
+            "ok": True,
+            "running": dict(running) if running else None,
+            "last_completed": dict(last_completed) if last_completed else None,
+        }
+    except Exception as e:
+        log.exception(f"/backfill/status failed: {e}")
+        return JSONResponse(status_code=500, content={"ok": False, "code": "db_error", "detail": str(e)})
+
+
+@app.get("/jobs/running")
+def jobs_running():
+    """진행 중인 작업 목록 조회
+
+    현재 실행 중인 모든 작업(collect, embed, manual, backfill 등)을 반환.
+    """
+    try:
+        with db_session() as s:
+            rows = s.execute(text(
+                """SELECT job_id, job_type, status, started_at, payload
+                FROM job_log
+                WHERE status = 'running'
+                ORDER BY started_at DESC"""
+            )).mappings().all()
+
+        return {
+            "ok": True,
+            "jobs": [dict(r) for r in rows],
+            "count": len(rows),
+        }
+    except Exception as e:
+        log.exception(f"/jobs/running failed: {e}")
+        return JSONResponse(status_code=500, content={"ok": False, "code": "db_error", "detail": str(e)})

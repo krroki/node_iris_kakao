@@ -6,6 +6,43 @@
 
 ---
 
+## 🚨 제1원칙: FALLBACK 절대 금지 (최우선 준수)
+
+### 불변식
+**어줍잖은 fallback은 시스템을 망가뜨린다. 절대 사용 금지.**
+
+### 원칙
+1. **모든 코딩은 목적과 결과가 분명해야 한다**
+   - 입력 → 처리 → 출력의 모든 경로가 명확해야 함
+   - "혹시 모르니까" 식의 fallback 금지
+
+2. **fallback이 필요해 보이는 상황 = 엣지케이스 분석 부족**
+   - fallback을 넣고 싶다면, 그 상황이 왜 발생하는지 근본 원인을 먼저 파악
+   - 모든 엣지케이스를 열거하고 각각에 대한 명시적 처리 로직 작성
+
+3. **"일단 fallback으로 처리" 금지**
+   - ❌ `catch (e) { return defaultValue }` - 에러 원인 은폐
+   - ❌ `value ?? fallbackValue` - 왜 null인지 모르는 상태로 진행
+   - ❌ `try { ... } catch { /* 무시 */ }` - 문제 숨기기
+
+### 올바른 접근
+```typescript
+// ❌ 금지: 어줍잖은 fallback
+const result = riskyOperation() ?? "default";
+
+// ✅ 권장: 명시적 에러 처리
+const result = riskyOperation();
+if (result === null) {
+  throw new Error("riskyOperation returned null: [구체적 원인 분석]");
+}
+```
+
+### 예외 (명시적 승인 필요)
+- 사용자가 "이 경우는 fallback 써도 된다"고 명시적으로 지시한 경우에만 허용
+- 그 경우에도 로그에 fallback 발동 사실을 남겨야 함
+
+---
+
 ## ⚠️ 대상 카페 구분 (중요) - ADR-0009
 
 이 프로젝트는 **두 개의 네이버 카페**를 다루며, **도메인이 완전히 분리**된다:
