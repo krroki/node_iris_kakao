@@ -84,8 +84,8 @@
 | 2025-12-13 | `/status` 기반 watchdog 자동 재시작 도입 | `docs/adr/ADR-0023-watchdog-auto-restart.md` |
 | 2025-12-13 | Talk-API authHeader 캡처(Frida) 및 저장/반영 가드레일 | `docs/adr/ADR-0024-talkapi-authheader-capture.md` |
 | 2025-12-13 | Next.js Web 운영(prod) 고정 + web 헬스체크 재시작 | `docs/adr/ADR-0025-web-prod-mode-and-watchdog-web-health.md` |
-| 2025-10-28 | 루팅 안드로이드 + Hyper-V 리눅스 + IRIS 구조 채택 | `docs/adr/0002-adopt-rooted-android-hyperv.md` |
-| 2025-10-27 | (폐기) LDPlayer + IRIS 채택 | `docs/adr/0001-adopt-iris-ldplayer.md` |
+| 2025-10-28 | 루팅 안드로이드 + Hyper-V 리눅스 + IRIS 구조 채택 | `docs/adr/ADR-0002-adopt-rooted-android-hyperv.md` |
+| 2025-10-27 | (폐기) LDPlayer + IRIS 채택 | `docs/adr/ADR-0001-adopt-iris-ldplayer.md` |
 | 2025-10-27 | SSOT/PRD/ADR 업데이트 프로세스 정의 | 이 문서, `agents.md` |
 
 ## 미완료 사항

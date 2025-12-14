@@ -526,7 +526,7 @@ async def rooms():
 
 @app.post("/rooms/resolve")
 async def rooms_resolve(request: Request):
-    """IRIS(chat_rooms.meta) 기반으로 roomId → roomName을 best-effort로 해석한다.
+    """roomId → roomName을 best-effort로 해석한다.
 
     Body:
       { "roomIds": ["184...", ...] }
@@ -568,10 +568,28 @@ async def rooms_resolve(request: Request):
         return JSONResponse(content={"ok": True, "names": {}, "missing": []})
 
     names = _fetch_room_names(ids)
+    log_names: dict[str, str] = {}
+    try:
+        # log snapshot(last line) 기반 roomName 보정(= /rooms와 동일한 fallback)
+        # - IRIS meta(chat_rooms.meta)에 없는 방도 logs/*/last snapshot에는 roomName이 있을 수 있다.
+        for r in list_rooms():
+            if not isinstance(r, dict):
+                continue
+            rid = str(r.get("roomId") or "").strip()
+            nm = str(r.get("roomName") or "").strip()
+            if not rid or not nm:
+                continue
+            # name==rid는 정보가 없다는 뜻이므로 우선순위 낮음
+            if nm != rid:
+                log_names[rid] = nm
+    except Exception as e:
+        logger.warning("[rooms/resolve] log snapshot fallback failed: %s", str(e))
     out_names: dict[str, str] = {}
     missing: list[str] = []
     for rid in ids:
         nm = names.get(rid)
+        if not nm:
+            nm = log_names.get(rid)
         if nm:
             out_names[rid] = nm
         else:
