@@ -18,20 +18,20 @@
     {
       "menu_id": 192,
       "name": "📍 디하클 이용 가이드",
-      "collect": false,
-      "profile": null
+      "collect": true,
+      "profile": "community"
     },
     {
       "menu_id": 1,
       "name": "📡 회원 대상 전체 공지",
-      "collect": false,
-      "profile": null
+      "collect": true,
+      "profile": "community"
     },
     {
       "menu_id": 47,
       "name": "디하클 이벤트 공지",
-      "collect": false,
-      "profile": null
+      "collect": true,
+      "profile": "community"
     },
     {
       "menu_id": 134,
@@ -96,8 +96,8 @@
     {
       "menu_id": 31,
       "name": "가입 인사 (글 + 댓글 3개 자동 등업)",
-      "collect": false,
-      "profile": null
+      "collect": true,
+      "profile": "community"
     },
     {
       "menu_id": 77,
@@ -138,8 +138,7 @@
     {
       "menu_id": 172,
       "name": "강사들의 꿀팁!",
-      "collect": true,
-      "profile": "tips"
+      "collect": false
     },
     {
       "menu_id": 62,
@@ -461,7 +460,6 @@
     206,
     136,
     51,
-    172,
     48,
     62,
     245

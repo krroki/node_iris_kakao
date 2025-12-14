@@ -1,7 +1,14 @@
-﻿irispy-client
+irispy-client
 gemini_webapi
 google-genai
+openai
+PyYAML
+beautifulsoup4
 pytz
 python-dotenv
 playwright
+requests
+google-auth
+google-auth-httplib2
+google-api-python-client
 pytest # 개발용 (추후 dev-requirements로 분리 예정)

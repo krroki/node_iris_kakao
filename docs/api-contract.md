@@ -161,7 +161,7 @@ interface ReindexResponse {
 **요청**
 ```typescript
 interface RunTaskRequest {
-  task: 'collect' | 'embed' | 'manual';
+  task: 'collect' | 'embed' | 'manual' | 'backfill';
   pages?: number;
 }
 ```

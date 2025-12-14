@@ -56,7 +56,8 @@ if (result === null) {
 - **주요 게시판**:
   - 무료 특강: 신청(23), 후기(32)
   - 정규 강의: 신청(42)
-  - 꿀팁: 주차별 하이라이트(48), 회원 꿀팁(136), 운영자 꿀팁(51), 강사 꿀팁(172)
+  - 꿀팁: 주차별 하이라이트(48), 회원 꿀팁(136), 운영자 꿀팁(51)
+    - **강사들의 꿀팁(172)은 수집/조회/노출에서 완전 제외** (자료 기반 답변 불가, `disabled_board`로 종료)
   - 커뮤니티: 자유 게시판(33), 수익 인증(206), 성장일기(62), 수강생 인터뷰(245)
 
 ### 2. nameyee 카페 (기술 레퍼런스 도메인)
@@ -73,23 +74,91 @@ if (result === null) {
 
 ---
 
+## 6. RAG / KB 설계 불변식
+
+- **카페 자료 우선 + 폴백 금지**
+  - RAG 답변은 디하클 카페 데이터베이스(`sources_post`, `manual_doc`, `embeddings`)를 단일 근거로 사용한다.
+  - 검색/필터 결과가 0건이면 LLM을 호출하지 않고, “질문과 직접 관련된 카페 자료를 찾지 못했습니다.”와 같은 **명시적 없음 응답**만 반환한다.
+  - “정보 없음” 답변에 임의로 URL/CTA/버튼을 붙이지 않는다. 링크는 항상 근거 게시글의 `url`만 사용한다.
+
+- **도메인/일반 경로 분리 (ADR-0018, ADR-0021)**
+  - `?디하클 ...` 형식으로 들어오는 카카오톡 질의는 node-iris `CustomMessageController`에서만 KB로 전달하며, `askKb.ts`에서 기본 컨텍스트 태그(예: `dinohighclass`, `디하클`)를 붙여 `/ask_llm`으로 보낸다.
+  - `/ask_llm`에서 `context_tags`가 있으면 기본적으로 도메인(RAG) 경로를 시도한다. (node-iris는 접두어 제거 후 본문만 보내므로 태그가 사실상 “도메인 힌트” 역할을 함)
+  - 단, Sajulab 강제 태그(`sajulab`, `sajulab.kr`, `사주랩`)가 있으면 도메인=True를 강제하고 일반상식 예외를 타지 않는다.
+  - 일반 상식 경로 조건: Sajulab 강제 태그가 없고, `_is_general_knowledge_query` 또는 `_is_platform_usage_query`가 참인 경우에만 `_build_general_answer`를 사용한다.
+  - 일반 상식 답변은 항상 `가이드라인에는 없지만, 일반 상식으로 답변드립니다.` 로 시작하며 URL을 출력하지 않는다.
+
+- **카페 메타(회원수/멤버수)**
+  - “디하클 카페 회원수/멤버수/가입자수” 질문은 KB 수집 데이터가 아니라 **카페 홈(카페정보) HTML에서 실시간 파싱**하여 결정적으로 답한다(`diag.mode=cafe_member_count`).
+  - 파싱 실패 시 숫자를 추측/생성하지 말고 “자동 조회 실패”로 안내한다.
+
+- **카페 기본 정보/강사진(운영 편의)**
+  - `docs/cafe_profile.md`를 `[KB] 디하클 카페 기본 정보`로 upsert하여( `kb/manualize.py`) 카페 기본 정보(SSOT)를 RAG 근거로 제공한다.
+  - 신청 게시판(무료특강 23 / 정규강의 42) 기반으로 `[KB] 강의/강사 인덱스 (신청 게시판)` 매뉴얼을 자동 생성해 신규 강의/강사 표기가 바로 검색되도록 한다.
+  - “강사진/강사 목록” 질문은 LLM 없이 결정적으로 응답한다(`diag.mode=instructors_list`, 제목 끝 `(닉네임)` 표기 기준 — 누락 가능).
+
+- **링크/CTA 정책**
+  - 링크/CTA는 항상 실제 게시글/매뉴얼의 `url`에만 근거해야 한다. 임의로 URL을 구성하거나, 없는 링크를 “추측”해서는 안 된다.
+  - “정보 없음/찾지 못했/관련 정보 없음/자료 부족/다시 시도” 류 답변에는 링크를 강제로 붙이지 않는다.
+  - 일반 상식 경로에서는 링크를 절대 출력하지 않는다.
+
+- **용어/인물 SSOT (중요)**
+  - “다시보기”, “마케터제이J(대표/운영자)”, “룰루랄라릴리(강사)” 등 흔들리면 안 되는 정의는 `docs/kb_glossary.md`에 고정한다.
+  - 디하클 강의/특강은 “프로그램명(고유명)” 관행이 강하다. 고유명이 포함된 질문은 해당 고유명이 **제목/본문에 실제 포함된 글**만 근거로 사용한다(하드코딩/추측 금지).
+  - “누구야/정체/소개” 류 질문은 LLM 환각 위험이 커서 `config/entities_dinohighclass.json`(역할 정의) + 카페 글 URL 근거만으로 **결정적으로** 답한다(`diag.mode=entity_intro`).
+
+- **날짜/키워드 정합성**
+  - 일정/강의/다시보기·링크 관련 질문에서는, 제목+본문(norm_text)에 동일한 날짜·키워드가 포함된 문서만 최종 후보로 사용한다.
+  - 날짜 표현(예: `12월 3일`, `12/3`, `12.3`)은 `_extract_date_keys`처럼 **MMDD 키**로 정규화해 비교한다.
+
+- **LLM 역할 한정**
+  - LLM은 “후보 중에서 정리/요약/선택”만 수행한다. 게시글 목록에 없는 새로운 강의/이벤트/링크를 지어내면 안 된다.
+  - 재랭크 입력은 “제목 + 키워드 주변 본문 요약(최대 300자)”에 한정하며, 후보 수가 소수일 때는 LLM 재랭크를 생략한다.
+
+- **검증 도구**
+  - `scripts/verify_rag.py`와 `tests/test_rag_*.py`를 통해 대표 질문(예: “사알못 다시보기 링크”, “강의 날짜/가격/포인트”, “Sajulab 사용법”)과 완전히 무관한 일반 질문 케이스를 자동 검증한다.
+  - RAG 관련 변경 후에는 이 스크립트를 우선 실행해 회귀 여부를 확인한다.
+
+---
+
+## 7. Windows 운영 엔트리포인트 (중요)
+
+- **사용자 실행 권장**: `windows/start_all.cmd` (더블클릭/`cmd.exe` 편의용)
+- **로직 SSOT(수정 기준)**: `windows/start_all.ps1` (실제 기동 로직은 여기만 유지)
+- `start_all.cmd`는 **얇은 래퍼**로만 유지한다(항상 `start_all.ps1`를 호출, 로직 추가 금지).
+- **PowerShell 자동변수 주의**: `$PID`는 읽기 전용 자동 변수이며 대소문자 구분이 없어 `$pid`도 동일하게 취급된다. 프로세스 ID 변수는 `$workerPid/$procPid/$listenPid`처럼 충돌 없는 이름을 사용한다.
+
+### 6.1 예외적으로 허용되는 일반 상식 답변 (PM 지시 기반)
+
+- **허용 조건**
+  - 질문이 디하클/강의 도메인과 명백히 무관한 일반 상식(예: “피자 만드는 법 알려줘”, “피타고라스 정리 증명해줘”)이고,
+  - 카페 자료와의 키워드/날짜 매칭이 전혀 없다고 판정된 경우에 한해,
+  - PM이 명시적으로 요구한 형식으로 **“일반 상식 기반 답변” 경로**를 사용한다.
+- **형식 불변식**
+  - 첫 문장은 항상 정확히 다음 문장으로 시작해야 한다.  
+    `가이드라인에는 없지만, 일반 상식으로 답변드립니다.`
+  - 디하클 카페 내부 자료나 강의/다시보기 링크가 있는 것처럼 **절대 꾸미지 않는다.**
+  - 어떤 외부 사이트 URL도 출력하지 않는다(https:// 포함 금지).
+  - 3~6문장 정도의 짧은 한국어 설명으로 제한하며, 모르는 부분은 “모릅니다/추측입니다”를 명시한다.
+- **로그/검증**
+  - 일반 상식 경로가 사용되면 `diag.mode`에 `general_*` 플래그를 남겨야 한다.
+  - `scripts/verify_rag.py`에서 일반 질문 케이스는 위 프리픽스와 링크 미포함 여부를 함께 검증한다.
+
+---
+
 ## ⚠️ 프로세스 관리 금지사항 (치명적)
 
 ### 절대 금지: 전체 Node 프로세스 종료
-```powershell
-# ❌ 절대 사용 금지 - Codex/Claude Code 등 다른 Node 앱도 죽임
-Stop-Process -Name node -Force
-taskkill /F /IM node.exe
-```
+- `Stop-Process -Name node -Force`, `taskkill /F /IM node.exe` 같은 **전체 종료는 절대 금지**  
+  (Codex/Claude Code/기타 도구까지 함께 종료되어 환경이 깨짐)
 
 ### 올바른 방법: node-iris-app만 종료
-```powershell
-# ✅ 봇 프로세스만 종료
-powershell.exe -ExecutionPolicy Bypass -File "C:\Users\Public\stop_node_iris_bot.ps1"
-
-# 또는 WMI로 특정 프로세스만
-wmic process where "name='node.exe' and commandline like '%node-iris-app%'" call terminate
-```
+- **권장(부분 재기동)**:
+  - `pwsh windows/start_bot.ps1 -Restart`
+  - `pwsh windows/start_welcome_worker.ps1 -Restart`
+  - `pwsh windows/start_ai_worker.ps1 -Restart`
+  - `pwsh windows/start_broadcast_worker.ps1 -Restart`
+- 콜드 부팅/전체 복구가 필요할 때만: `windows/start_all.cmd`
 
 **이유**: Codex, Claude Code, 기타 개발 도구가 Node.js로 실행 중. 전체 kill 시 개발 환경 파괴.
 
@@ -201,6 +270,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - `docs/adr/ADR-0011-bot-singleton-mechanism.md` – 봇 싱글톤 메커니즘 (중복 응답 방지)
 - `docs/reference/project-structure.md` – 저장소 구조 및 책임 구분
 - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
+- `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
+- `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
+- `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 
 ---
 
@@ -222,7 +294,21 @@ UI 전환 지침
 - 레거시 Streamlit `dashboard/`는 보존만 하고 운영 기본에서 제외
 - SAFE_MODE는 항상 ON이며 발신 UI/엔드포인트는 노출하지 않는다
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
-- **Streamlit 대시보드**: `dashboard/`, `scripts/log_api.py` – 실시간 로그 UI와 API.  
+- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영 토글/강의톡방 배지**는 RoomCard의 **강의 운영** 섹션)  
+- **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
+
+## 3. KB/RAG 스케줄 및 신선도 불변식
+
+- KB 서비스는 **반드시 Windows 스크립트로만** 기동한다.
+  - 권장: `windows/start_all.ps1` (전체 스택), 또는 `windows/kb_service.ps1` (KB 단독).
+  - `python -m uvicorn kb.service:app ...` 같은 수동 실행은 **금지** – 이 경우 `KB_SCHED_*`가 설정되지 않아 수집/임베딩 스케줄이 멈출 수 있다.
+- 스케줄 SSOT:
+  - `KB_SCHED_COLLECT_MIN`, `KB_SCHED_EMBED_MIN`, `KB_SCHED_MANUAL_MIN`, `KB_SCHED_BACKFILL_MIN` (분 단위)
+  - `windows/start_all.ps1` 및 `windows/kb_service.ps1`는 값이 비어 있을 때만 기본값을 설정한다. (collect=30, embed=30, manual=60, backfill=60)
+  - KB 기동 시 `kb.service._init_schedule_from_env()`가 이 값들을 읽어 `/schedule` 상태를 초기화한다.
+- 신선도 체크:
+  - 중요한 변경/배포 전에는 반드시 `python scripts/kb_status.py`를 실행해 메뉴별 최신 글 날짜를 확인한다.
+  - 무료 특강(23), 정규 강의 신청(42) 등 핵심 메뉴의 최근 수집이 **2일 이상 오래되었으면** collect/embed 스케줄이나 KB 프로세스 상태를 먼저 조사한 뒤 RAG 튜닝을 진행한다.
 - **IRIS 지원 리소스**: `iris_server/`, `infra/iris/`, `windows/` – IRIS DB, PowerShell 포트프록시, 운영 도구.  
 - **문서 체계**: `docs/` – SSOT/PRD/로드맵, 세션 로그, 설정 가이드, 레퍼런스(본 핸드북 포함).  
 구조 변경 시 `docs/reference/project-structure.md`를 우선 업데이트한 뒤, 본 문서와 관련 워크플로 문서의 링크를 동기화한다.
@@ -294,7 +380,39 @@ docs/adr/ADR-<4자리 번호>-<주제-kebab>.md
 
 ## 6. 운영 가드레일
 - 기본 모드는 `SAFE_MODE=true` (발송 차단). UI/스크립트 모두 이 전제를 깨어서는 안 된다.
+- **기능 워커 분리(ADR-0027/0028/0029)**:
+  - Welcome(ADR-0027): 코어(bot)는 신규 입장 이벤트를 `member_joined`로 로그에 기록하고, welcome/후속답장은 `welcome-worker`가 담당한다.
+  - Welcome 이미지(ADR-0030): welcome 템플릿의 `images`는 welcome-worker가 `/templates/assets/...`에서 다운로드→base64 변환 후 Realtime API `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달해 발신한다(SAFE_MODE 최종 차단 유지).
+  - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
+  - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
+  - 기본값: `AI_DISPATCHER=worker` (레거시 롤백: `AI_DISPATCHER=bot`)
+  - 공지/브로드캐스트(ADR-0029): 공지 복제/브로드캐스트 큐 발신은 `broadcast-worker`가 담당한다.
+  - 기본값: `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker` (레거시 롤백: 각각 `...=bot`)
+  - **재기동 원칙(필독)**: *부분 재기동 우선*. “항상 start_all”은 모듈화(코어/워커 분리) 취지에 반한다.
+    - `windows/start_all.cmd`는 **콜드 부팅/전체 복구**(PC 재부팅 직후, 포트/프로세스 꼬임, web 404/산출물 파손, env 드리프트 등) 때만 사용한다.
+    - 평소 배포/수정은 **변경한 컴포넌트만** 재기동한다(코어는 유지).
+    - watchdog(`windows/watchdog.ps1`)가 살아있으면 대부분 자동 복구되므로, 수동 개입은 “죽은 컴포넌트만” 대상으로 한다.
+
+    | 상황 | 권장 명령 |
+    |---|---|
+    | Welcome/후속 Reply(welcome-worker)만 반영 | `windows/start_welcome_worker.ps1 -Restart` |
+    | AI 응답(`?디하클`, ai-worker)만 반영 | `windows/start_ai_worker.ps1 -Restart` |
+    | 공지/브로드캐스트(broadcast-worker)만 반영 | `windows/start_broadcast_worker.ps1 -Restart` |
+    | 코어(bot: 수신/로그)만 반영 | `windows/start_bot.ps1 -Restart` |
+    | Realtime API(server)만 반영 | `windows/start_api.ps1 -Port 8650` |
+    | Web(UI)만 반영 | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` |
+    | 전체 부팅/대규모 복구 | `windows/start_all.cmd` |
+- **Talk-API Reply(type=26) payload 타입 주의(중요)**:
+  - 오픈채팅 “답장(Reply)”은 텍스트 `@`로 구현되지 않으며, `type=26` + `attachment.src_*` 메타로 구현된다(ADR-0026).
+  - Node는 64-bit userId(2^53 초과)가 많아 `src_userId/src_linkId/src_type`를 문자열로 전달한다.
+  - Realtime API(`server/app.py:/send/talkapi/*_raw`)에서 `type=26`일 때 숫자형 문자열을 int로 강제 변환(coerce) 후 Talk-API로 전달한다. (미변환 시 `INVALID_ARGUMENT(-203)` 가능)
+- **테스트 커맨드 방 제한(중요)**:
+  - `!welcome test/!welcome:test`, `!reply test/!reply:test`는 **테스트용 오픈채팅방(18462226881291012)에서만** 수행한다.
+  - 다른 방에서 실행되면 스킵 + 로그 기록(`*_test_dry_run`, reason=`NOT_TEST_ROOM`)으로 끝낸다(운영 방 오발신 방지).
 - 환경 변수/토큰은 Git에 커밋 금지. `.env`는 `config/env.example`를 복제하여 세션 범위에서만 사용한다.
+- Google Sheets 업서트용 서비스 계정/시트 타겟은 **로컬 `data/`에서만** 관리한다(커밋 금지).
+  - 서비스 계정 키: `data/gcp_service_account.json`
+  - 시트 타겟(1회 등록): `data/openchat_members_sheets.json` (`python scripts/sync_openchat_members_to_sheets.py --init-config --spreadsheet-id <SHEET_ID_OR_URL>`)
 - IRIS 포트프록시는 `windows/setup_iris_port.ps1`(관리자 PowerShell) → `scripts/probe_iris.sh` 순으로 점검한다.
 - 데이터/로그 파일은 보관 목적일 경우 `data/`, `logs/` 하위에만 저장한다. 외부 경로에는 쓰지 않는다.
 - 경로 추측 금지: 변경 전 `ls`, `cat`으로 파일 존재를 직접 확인한다.
@@ -349,6 +467,9 @@ IRIS, node-iris-app은 외부 라이브러리 기반으로 문서화가 부족�
 - `UI_VERIFICATION_CHECKLIST.md` – 대시보드 시각 검증 포인트.
 - `docs/ops/`, `docs/setup/` – 운영, 설치, 복구 절차 모음.
 - `scripts/` 내 README/주석 – 스크립트별 요구 조건과 사용법.
+- `docs/adr/ADR-0027-core-logstore-and-feature-workers.md` – 코어(LogStore) 상시 가동 + 기능(Feature) 워커 분리(Welcome 1차) 결정(SSOT)
+- `docs/ops/core-feature-split-plan.md` – 코어/기능 워커 분리 구현계획서(Welcome 1차)
+- `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
 - 필요 시 `docs/reference/verification-commands.md`에 새 명령을 추가하고, 위 섹션들과 동기화한다.
 
 본 핸드북과 동일한 내용은 `claude.md`에도 유지하여 AI/자동화 에이전트가 같은 지침을 따르도록 한다.

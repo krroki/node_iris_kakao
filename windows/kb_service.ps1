@@ -43,20 +43,33 @@ if (Test-Path "windows\load_env.ps1") {
   if (Test-Path $EnvFile) { . "windows\load_env.ps1" -EnvFile $EnvFile }
 }
 if (-not $env:DATABASE_URL -or [string]::IsNullOrWhiteSpace($env:DATABASE_URL)) {
-  $env:DATABASE_URL = 'postgresql+psycopg://iris:iris@127.0.0.1:5433/iris'
+  # NOTE: SQLAlchemy 1.4 기본 환경 호환을 위해 psycopg2를 기본 드라이버로 사용한다.
+  $env:DATABASE_URL = 'postgresql+psycopg2://iris:iris@127.0.0.1:5433/iris'
 }
 if (-not $env:KB_LOG_STDOUT) { $env:KB_LOG_STDOUT = '1' }
+# kb_service 전용 로그 파일(작업 스크립트와 분리; WinError 32 회피)
+if (-not $env:KB_LOG_FILE) { $env:KB_LOG_FILE = 'kb_service.log' }
 $env:PYTHONPATH = $root
+
+# KB 자동화 스케줄 기본값(분) – collect: 30, embed: 30, manual: 60, backfill: 60
+# NOTE: windows/start_all.ps1에서도 동일 값을 설정한다.
+# KB_SCHED_*가 이미 설정되어 있으면 그대로 존중하고, 비어 있을 때만 기본값을 채운다.
+if (-not $env:KB_SCHED_COLLECT_MIN)  { $env:KB_SCHED_COLLECT_MIN  = '30' }
+if (-not $env:KB_SCHED_EMBED_MIN)    { $env:KB_SCHED_EMBED_MIN    = '30' }
+if (-not $env:KB_SCHED_MANUAL_MIN)   { $env:KB_SCHED_MANUAL_MIN   = '60' }
+if (-not $env:KB_SCHED_BACKFILL_MIN) { $env:KB_SCHED_BACKFILL_MIN = '60' }
 
 function Resolve-Python {
   param([string]$PreferredVenv)
   # Prefer system python; venv 생성이 막힐 수 있어 단순화
   try {
-    python -c "import fastapi,uvicorn,sqlalchemy,pgvector; print('ok')" | Out-Null
+    python -c "import fastapi,uvicorn,sqlalchemy,pgvector,psycopg2; print('ok')" | Out-Null
     return 'python'
   } catch {
-    Write-Host "[kb] python deps missing; trying to install to user site" -ForegroundColor Yellow
-    try { python -m pip install --user -r (Join-Path $root 'requirements.txt') | Out-Null } catch {}
+    Write-Host "[kb] python deps missing; installing to user site (fastapi/uvicorn/sqlalchemy/pgvector/psycopg2-binary)" -ForegroundColor Yellow
+    try { python -m pip install --user --quiet fastapi uvicorn sqlalchemy pgvector psycopg2-binary | Out-Null } catch {}
+    # project-wide deps (RAG/IRIS etc)
+    try { python -m pip install --user --quiet -r (Join-Path $root 'requirements.txt') | Out-Null } catch {}
     return 'python'
   }
 }
@@ -84,6 +97,3 @@ do {
 if ((Get-Date) -ge $deadline) {
   Write-Host "[kb] TIMEOUT waiting for :$Port. See $outLog / $errLog" -ForegroundColor Yellow
 }
-
-
-

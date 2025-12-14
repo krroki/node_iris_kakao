@@ -1,0 +1,9 @@
+{
+  "title": "CASE1-옵션4(기본닉)",
+  "content": "안녕하세요 @{entrance}님 📢\n\n저희 방은 입장 절차로\n닉네임 수정과 하트 인증이\n필수로 진행되어야 합니다.\n\n번거로우시겠지만\n지금 바로 변경 부탁드릴게요!",
+  "category": "welcome",
+  "images": [
+    "assets/welcome/common/KakaoTalk_20251213_123012048.png"
+  ],
+  "mentions": []
+}

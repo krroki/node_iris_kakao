@@ -1,0 +1,9 @@
+{
+  "title": "CASE2-옵션1(닉확인)",
+  "content": "반갑습니다 @{entrance}님 👋\n\n입장해주셔서 감사합니다.\n저희 방은 하트 인증이 필수입니다.\n\n상단 하트 누르시고\n스샷 한 장만 부탁드릴게요!",
+  "category": "welcome",
+  "images": [
+    "assets/welcome/common/KakaoTalk_20251213_123012048.png"
+  ],
+  "mentions": []
+}

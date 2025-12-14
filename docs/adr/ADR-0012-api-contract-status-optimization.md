@@ -93,10 +93,14 @@ useEffect(() => {
 ```powershell
 # windows/stop_bot.ps1
 $cmd = $proc.CommandLine
-if (-not ($cmd -like '*node-iris-app*' -or $cmd -like '*dist\index.js*')) {
-    Write-Error "PID $Pid is not a node-iris-app process"
-    exit 2
-}
+# ⚠️ 절대 금지: "dist\\index.js" 같은 범용 패턴으로 node 전체 종료(다른 프로젝트까지 종료 위험)
+# 허용 조건:
+# - node-iris-app이 기록한 status.json PID 이거나
+# - node-iris-app 절대경로 dist/index.js 가 CommandLine에 포함된 경우만 종료
+$statusPid = ... # node-iris-app\data\status.json 에서 로드
+$distIndexAbs = ... # <repo>\node-iris-app\dist\index.js
+$absRe = [Regex]::Escape($distIndexAbs)
+if (-not ($TargetPid -eq $statusPid -or $cmd -match $absRe)) { exit 2 }
 ```
 
 API에서 스크립트 경유:
@@ -104,7 +108,7 @@ API에서 스크립트 경유:
 // web/src/app/api/bot/processes/route.ts
 // NOTE: (ADR-0012) 직접 Stop-Process 금지, 스크립트 경유
 const script = path.join(ROOT, 'windows', 'stop_bot.ps1');
-await execFileAsync('powershell.exe', ['-File', script, '-Pid', pid]);
+await execFileAsync('powershell.exe', ['-File', script, '-TargetPid', String(pid)]);
 ```
 
 ### 4. SSE fallback 경고

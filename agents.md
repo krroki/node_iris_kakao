@@ -1,14 +1,57 @@
 # 12.kakao Agents Handbook
 
 **언어 정책**: 모든 커뮤니케이션과 로그는 한국어로 작성한다.  
-**프로젝트 요약**: LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE) 운영. Python 봇, TypeScript IRIS 어댑터, Streamlit 대시보드, 운영 스크립트로 구성된다.  
-**주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), Streamlit, Playwright, PowerShell.
+**프로젝트 요약**: Redroid(Hyper‑V) + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE) 운영. Python 봇, TypeScript IRIS 어댑터, Next.js 대시보드(FastAPI+SSE), 운영 스크립트로 구성된다.  
+**주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), FastAPI(+SSE), Next.js(React), Playwright, PowerShell.
 
 핵심 문서 링크
+- `docs/ops/core-feature-split-plan.md` - 코어/기능 워커 분리 구현계획서(Welcome 1차)
+- `docs/adr/ADR-0027-core-logstore-and-feature-workers.md` - 코어(LogStore) 상시 가동 + 기능(Feature) 워커 분리(Welcome 1차) 결정(SSOT)
 - `docs/workflow/solo-dev-epic-pr.md` – 브랜치·PR 운영 표준 (Epic Draft PR 프로세스)
 - `docs/ssot.md`, `docs/prd.md`, `docs/roadmap.md` – 제품/기술 결정의 단일 출처
 - `docs/reference/project-structure.md` – 저장소 구조 및 책임 구분
 - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
+- `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
+- `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
+- `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
+
+---
+
+## 0.1) (중요) 이 워킹트리에서는 `main`만 사용
+
+현재 `C:\\dev\\12.kakao` 워킹트리를 **여러 세션/프로세스가 동시에 공유**하고 있다.
+
+따라서 다음을 **절대 하지 않는다**:
+
+- `git checkout <branch>` / `git switch <branch>` (워킹트리 흔들림 → 다른 세션 작업 파손)
+- 새 브랜치 생성 후 체크아웃(동일 이유)
+
+이 워킹트리에서 허용되는 Git 작업은 아래뿐이다:
+
+- `main`에서 변경 반영 → `git commit` (필요 시 여러 커밋)
+- (외부에서) PR/Epic 워크플로가 필요하면 **별도 clone/worktree**에서 수행
+
+세션 로그는 기본적으로 `docs/sessions/main.md`에 누적 기록한다. (기존 브랜치별 세션 로그는 역사 기록으로 유지)
+
+**운영 재기동 원칙(최우선)**: *부분 재기동 우선*. `windows/start_all.cmd`는 콜드 부팅/전체 복구 때만 사용한다. (상세: `docs/reference/verification-commands.md`)
+
+- 부분 재기동(권장):
+  - bot: `windows/start_bot.ps1 -Restart`
+  - welcome-worker: `windows/start_welcome_worker.ps1 -Restart`
+  - roster-worker: `windows/start_roster_worker.ps1 -Restart`
+  - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
+
+- **절대 금지(중요)**: `taskkill /im node.exe`, `Stop-Process -Name node` 같이 **node 전체를 종료**하는 조치는 금지한다.  
+  - 또한 `dist\\index.js` 같은 **범용 패턴 매칭으로 node를 정리하는 방식은 다른 프로젝트까지 종료**할 수 있어 금지한다.  
+  - 재기동/중복 정리는 **status.json PID 기반**으로만 수행한다(예: `windows/start_bot.ps1 -Restart`, `windows/smart_restart_bot.ps1`).
+
+- **Welcome 미발송 디버깅(자주 발생)**:
+  - **중복 welcome-worker 금지**: `welcome-worker`는 1개만 떠 있어야 한다. (락 파일: `node-iris-app/data/locks/welcome_worker.lock`)
+  - `/status`에서 `bot.ok/logStore.ok`가 `false`이면 welcome-worker가 `/logs/stream` 트리거를 못 받아 “토글 ON인데 미발송”처럼 보일 수 있다.
+    - 특히 `extra.emfile=true` 또는 `node-iris-app/data/bot_health.json`이 있으면 EMFILE로 파일 로그 기록이 중단된 상태일 수 있으니 우선 `windows/start_bot.ps1 -Restart`(또는 `windows/start_all.cmd`)로 복구한다. (watchdog가 살아있으면 대개 자동 복구)
+  - `runtime.json.features[roomId].welcome === true`가 아니면 welcome은 발신되지 않는다(로그에 `reason=WELCOME_DISABLED`로 표시).
+  - `windows/logs/welcome_worker.out.log`에서 `[welcome] 스킵` 사유(`ROOM_NOT_ALLOWED|WELCOME_DISABLED`)를 먼저 확인한다.
+  - `allowedRoomIds`/토글 변경은 welcome-worker가 **최대 60초 내 재연결로 자동 반영**된다(환경변수 `WELCOME_WORKER_STREAM_TTL_MS`). 즉시 반영이 필요하면 `windows/start_welcome_worker.ps1 -Restart`.
 
 ---
 
@@ -23,9 +66,11 @@
 ---
 
 ## 2. 저장소 맵 & 책임
-- **Python 봇 코어**: `src/`, `tests/`, `scripts/` – LDPlayer/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
+- **Python 봇 코어**: `src/`, `tests/`, `scripts/` – Redroid(Hyper‑V)/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
-- **Streamlit 대시보드**: `dashboard/`, `scripts/log_api.py` – 실시간 로그 UI와 API.  
+- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영 토글/강의톡방 배지**는 RoomCard의 **강의 운영** 섹션)  
+- **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
+- **구(스트림릿) 대시보드**: `dashboard/` – 임시/레거시로 보관(운영 기본에서 제외).  
 - **IRIS 지원 리소스**: `iris_server/`, `infra/iris/`, `windows/` – IRIS DB, PowerShell 포트프록시, 운영 도구.  
 - **문서 체계**: `docs/` – SSOT/PRD/로드맵, 세션 로그, 설정 가이드, 레퍼런스(본 핸드북 포함).  
 구조 변경 시 `docs/reference/project-structure.md`를 우선 업데이트한 뒤, 본 문서와 관련 워크플로 문서의 링크를 동기화한다.
@@ -46,6 +91,9 @@
 - **Node/TypeScript 변경**: `cd node-iris-app && npm install && npm test && npm run build`.  
 - **Playwright 스크립트/JS 자동화 수정**: 루트에서 `npx playwright test`.  
 - **대시보드/로그 API**: `scripts/serve_ui.sh` 혹은 `streamlit run dashboard/ui_node_iris.py` + `python scripts/log_api.py`로 스모크.
+- **KB/RAG**:
+  - 서비스 기동 후 `python scripts/kb_status.py`로 **수집 최신일/임베딩 개수/스케줄 상태**를 점검한다. 무료 특강(23), 정규 강의(42) 등 핵심 메뉴의 최근 수집이 2일 이상 비어 있으면 collect/embed 스케줄을 반드시 확인한다.
+  - 중요 변경 시 `python scripts/verify_rag.py --base-url http://127.0.0.1:8610`와 RAG 관련 pytest 스위트(`tests/test_rag_*.py`)를 함께 실행한다.
 - 문서 전용 변경(`docs/**`, `README*.md`, `**/*.md`)만 포함된 경우 테스트 생략 가능. 그 외에는 `docs/reference/verification-commands.md` 기준으로 관련 영역 검증을 완료해야 한다.
 - 실패한 테스트를 무시하거나 임시로 주석 처리하지 않는다. 원인을 해결하고 재실행한다.
 
@@ -61,15 +109,73 @@
 ---
 
 ## 6. 운영 가드레일
-- 기본 모드는 `SAFE_MODE=true` (발송 차단). UI/스크립트 모두 이 전제를 깨어서는 안 된다.  
+- 기능 워커 분리(ADR-0027/0028/0029):
+  - Welcome(ADR-0027): 코어(bot)는 신규 입장 이벤트를 `member_joined`로 로그에 기록하고, welcome/후속답장은 `welcome-worker`가 담당한다.
+  - Welcome 이미지(ADR-0030): welcome 템플릿의 `images`는 welcome-worker가 `/templates/assets/...`에서 다운로드→base64 변환 후 Realtime API `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달해 발신한다(SAFE_MODE 최종 차단 유지).
+  - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
+  - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
+  - 기본값: `AI_DISPATCHER=worker` (레거시 롤백: `AI_DISPATCHER=bot`)
+  - 공지/브로드캐스트(ADR-0029): 공지 복제/브로드캐스트 큐 발신은 `broadcast-worker`가 담당한다.
+    - 공지(미러링)는 `runtime.json.announcement.routes`로 source/targets를 관리하며, UI는 `http://127.0.0.1:3100/announcement`를 사용한다.
+    - 공지 전파가 끝나면 소스 방에 **1회** `[공지 전파 결과]` 요약 메시지를 남긴다(이 결과 메시지는 타겟으로 재전파되지 않도록 prefix 기반으로 스킵).
+    - 동일 공지를 여러 방에 한 번에 뿌릴 때는 route 옵션 `appendTargetIndex=true`(+ `targetIndexStart`)로 끝 번호를 붙여 중복/스팸 판정 리스크를 낮춘다.
+    - 공지가 안 나가면 `windows/logs/broadcast_worker.out.log`에서 `[announce] completed`/`[talkapi] dispatch*`를 확인하고, 실패한 `roomId`/`talkStatus`를 근거로 타겟/allowlist 설정을 점검한다.
+    - **중복 실행 방지(중요)**: `broadcast-worker`는 `node-iris-app/data/locks/broadcast_worker.lock` 싱글톤 락으로 1개만 동작한다. watchdog도 중복 실행 감지 시 자동 재기동으로 정리한다.
+  - 기본값: `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker` (레거시 롤백: 각각 `...=bot`)
+  - **재기동 원칙(필독)**: *부분 재기동 우선*. “항상 start_all”은 모듈화(코어/워커 분리) 취지에 반한다.
+    - `windows/start_all.cmd`는 **콜드 부팅/전체 복구**(PC 재부팅 직후, 포트/프로세스 꼬임, web 404/산출물 파손, env 드리프트 등) 때만 사용한다.
+    - 평소 배포/수정은 **변경한 컴포넌트만** 재기동한다(코어는 유지).
+    - watchdog(`windows/watchdog.ps1`)가 살아있으면 대부분 자동 복구되므로, 수동 개입은 “죽은 컴포넌트만” 대상으로 한다.
+
+    | 상황 | 권장 명령 |
+    |---|---|
+    | Welcome/후속 Reply(welcome-worker)만 반영 | `windows/start_welcome_worker.ps1 -Restart` |
+    | AI 응답(`?디하클`, ai-worker)만 반영 | `windows/start_ai_worker.ps1 -Restart` |
+    | 공지/브로드캐스트(broadcast-worker)만 반영 | `windows/start_broadcast_worker.ps1 -Restart` |
+    | 코어(bot: 수신/로그)만 반영 | `windows/start_bot.ps1 -Restart` |
+    | Realtime API(server)만 반영 | `windows/start_api.ps1 -Port 8650` |
+    | Web(UI)만 반영 | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` |
+    | 전체 부팅/대규모 복구 | `windows/start_all.cmd` |
+  - **절대 금지**: `taskkill /im node.exe /f`, “작업관리자에서 node 전부 종료” 같은 전역 종료는 다른 서비스까지 같이 죽여 장애를 키운다. 필요한 컴포넌트만 위 표대로 재기동한다.
+- 기본 모드는 `SAFE_MODE=true` (발신 차단).  
+  - 단일 소스: `node-iris-app/config/runtime.json.safeMode`  
+  - 웹 UI(`/settings`)에서 safeMode를 토글하면 즉시 runtime.json에 반영된다.  
+  - Node 봇은 컨트롤러 내부의 `isSafeMode()`를 통해 **모든 발신을 차단**한다(허용 방이어도 예외 없음).  
+  - `windows/start_bot.ps1`는 더 이상 `SAFE_MODE=false`를 강제로 설정하지 않는다.  
+- **Talk-API Reply(type=26) payload 타입 주의(중요)**:
+  - 오픈채팅 “답장(Reply)”은 텍스트 `@`로 구현되지 않으며, `type=26` + `attachment.src_*` 메타로 구현된다(ADR-0026).
+  - Node는 64-bit userId(2^53 초과)가 많아 `src_userId/src_linkId/src_type`를 문자열로 전달한다.
+  - Realtime API(`server/app.py:/send/talkapi/*_raw`)에서 `type=26`일 때 숫자형 문자열을 int로 강제 변환(coerce) 후 Talk-API로 전달한다. (미변환 시 `INVALID_ARGUMENT(-203)` 가능)
+- **테스트 커맨드 방 제한(중요)**:
+  - `!welcome test/!welcome:test`, `!reply test/!reply:test`는 **테스트용 오픈채팅방(18462226881291012)에서만** 수행한다.
+  - 다른 방에서 실행되면 “조용히 발신”하지 않고 **스킵 + 로그 기록(`*_test_dry_run`, reason=`NOT_TEST_ROOM`)**으로 끝낸다(운영 방 오발신 방지).
+- **폴백(Fallback) 절대 금지(중요)**:
+  - “대충 기본값으로 진행”, “에러 무시하고 계속”, “임의의 템플릿/문구로 대체” 같은 어줍잖은 폴백은 금지한다.
+  - 설정/파일/데이터가 불완전하면 **조용히 넘어가지 말고** 원인을 로그/문서(SSOT/세션 로그/ADR)로 남긴 뒤, 명시적으로 스킵/에러 처리한다.
+  - 상세 원칙은 `docs/agents.md`의 “🚨 제1원칙: FALLBACK 절대 금지”를 따른다.
 - 환경 변수/토큰은 Git에 커밋 금지. `.env`는 `config/env.example`를 복제하여 세션 범위에서만 사용한다.  
+- Google Sheets 업서트용 서비스 계정/시트 타겟은 **로컬 `data/`에서만** 관리한다(커밋 금지).
+  - 서비스 계정 키: `data/gcp_service_account.json`
+  - 시트 타겟(1회 등록): `data/openchat_members_sheets.json` (`python scripts/sync_openchat_members_to_sheets.py --init-config --spreadsheet-id <SHEET_ID_OR_URL>`)
 - IRIS 포트프록시는 `windows/setup_iris_port.ps1`(관리자 PowerShell) → `scripts/probe_iris.sh` 순으로 점검한다.  
 - 데이터/로그 파일은 보관 목적일 경우 `data/`, `logs/` 하위에만 저장한다. 외부 경로에는 쓰지 않는다.
 - 경로 추측 금지: 변경 전 `ls`, `cat`으로 파일 존재를 직접 확인한다.
+- **Windows 기동 엔트리포인트(중요)**:
+  - **사용자 실행 권장**: `windows/start_all.cmd` (더블클릭/`cmd.exe` 편의용).
+  - **로직 SSOT(수정 기준)**: `windows/start_all.ps1` (실제 기동 로직은 여기만 유지).
+  - `start_all.cmd`는 **얇은 래퍼**로만 유지한다(항상 `start_all.ps1`를 호출, 로직 추가 금지).
+- **PowerShell 자동변수 주의(중요)**:
+  - `$PID`는 읽기 전용 자동 변수이며 대소문자 구분이 없어 `$pid`도 동일하게 취급되어 대입 시 에러가 난다.
+  - 프로세스 ID 변수는 `$workerPid`, `$procPid`, `$listenPid`처럼 충돌 없는 이름을 사용한다.
+- **Web 운영 모드(중요)**:
+  - 운영 상주(Web)는 `windows/start_web.ps1 -Mode prod`(=`next start`)를 기준으로 한다. `next dev`는 개발용이며 운영에서 사용하지 않는다.
+  - prod 산출물은 `.next-prod`이며, 산출물 파손/모듈 누락이 의심되면 `windows/start_web.ps1 -CleanBuild` 또는 watchdog의 자동 복구를 사용한다.
+  - watchdog는 `http://127.0.0.1:3100/api/ping` 헬스체크 실패 시 web만 재시작하고, 반복 실패 시 CleanBuild로 단계적 복구를 시도한다.
 
 ---
 
 ## 7. 참고 리소스
+- `docs/ops/core-feature-split-plan.md` - 코어/기능 워커 분리 구현계획서(Welcome 1차)
 - `README.md`, `README_DASHBOARD.md` – 빠른 실행/운영 가이드.
 - `UI_VERIFICATION_CHECKLIST.md` – 대시보드 시각 검증 포인트.
 - `docs/ops/`, `docs/setup/` – 운영, 설치, 복구 절차 모음.
@@ -77,3 +183,40 @@
 - 필요 시 `docs/reference/verification-commands.md`에 새 명령을 추가하고, 위 섹션들과 동기화한다.
 
 본 핸드북과 동일한 내용은 `claude.md`에도 유지하여 AI/자동화 에이전트가 같은 지침을 따르도록 한다.
+
+---
+
+## 8. RAG / KB 운영 가드레일
+- **카페 SSOT 우선**: RAG 답변은 항상 디하클 카페 데이터(embeddings + `sources_post`, `manual_doc`)를 우선 사용한다. LLM은 “정리/요약/선택” 역할만 수행하며, 카페에 없는 사실(강의 일정/가격/포인트/링크 등)을 단정적으로 생성해서는 안 된다.
+- **도메인/일반 경로 분리(ADR-0018, ADR-0021)**:
+  - node-iris는 `?디하클` 접두어를 제거한 “질문 본문”만 KB에 전달하므로, KB는 `context_tags`가 있으면 **기본적으로 도메인(RAG) 경로를 시도**한다.
+  - 단, Sajulab 강제 태그(`sajulab`, `sajulab.kr`, `사주랩`)가 있으면 도메인=True를 강제하고 일반상식 예외를 타지 않는다.
+  - 일반 상식 경로(`_build_general_answer`)는 다음 경우에만 사용한다:
+    - Sajulab 강제 태그가 없고, `_is_general_knowledge_query(query)` 또는 `_is_platform_usage_query(query)`가 `True`인 경우
+  - 일반 상식 경로의 첫 문장은 반드시 `가이드라인에는 없지만, 일반 상식으로 답변드립니다.` 로 시작하고 URL을 출력하지 않는다.
+- **수집/조회 제외 게시판(중요)**:
+  - “강사들의 꿀팁(172)”은 수집/조회/노출에서 완전 제외한다(자료 기반 답변 불가, `disabled_board`로 종료).
+- **카페 메타(회원수/멤버수)**:
+  - “디하클 카페 회원수/멤버수/가입자수” 질문은 KB 수집 데이터가 아니라 **카페 홈(카페정보) HTML에서 실시간 파싱**하여 결정적으로 답한다(`diag.mode=cafe_member_count`).
+  - 파싱 실패 시 숫자를 추측/생성하지 말고 “자동 조회 실패”로 안내한다.
+- **카페 기본 정보/강사진(운영 편의)**:
+  - `docs/cafe_profile.md`를 `[KB] 디하클 카페 기본 정보`로 upsert하여( `kb/manualize.py`) 카페 기본 정보(SSOT)를 RAG 근거로 제공한다.
+  - 신청 게시판(무료특강 23 / 정규강의 42) 기반으로 `[KB] 강의/강사 인덱스 (신청 게시판)` 매뉴얼을 자동 생성해 신규 강의/강사 표기가 바로 검색되도록 한다.
+  - “강사진/강사 목록” 질문은 LLM 없이 결정적으로 응답한다(`diag.mode=instructors_list`, 제목 끝 `(닉네임)` 표기 기준 — 누락 가능).
+- **용어/인물 SSOT(중요)**:
+  - “다시보기”, “마케터제이J(대표/운영자)”, “룰루랄라릴리(강사)” 등 흔들리면 안 되는 정의는 `docs/kb_glossary.md`에 고정한다.
+  - “가장 최근 강의/다음 강의/최근 신청글” 류는 **신청 게시판 SSOT**만 사용한다: 무료특강 신청(23), 정규강의 신청(42). (단일 소스: `config/menus_dinohighclass.json`)
+  - 디하클 강의/특강은 “프로그램명(고유명)” 관행이 강하다(예: 쇼츠투벤츠, AI 마스터즈 등). 고유명이 포함된 질문은 해당 고유명이 **제목/본문에 실제 포함된 글**만 근거로 사용한다(하드코딩/추측 금지).
+  - “누구야/정체/소개” 류 질문은 LLM 환각 위험이 커서 `config/entities_dinohighclass.json`(역할 정의) + 카페 글 URL 근거만으로 **결정적으로** 답한다.
+- **링크/CTA 정책**:
+  - 링크/CTA는 항상 실제 게시글/매뉴얼의 `url`에만 근거해야 한다. 임의로 URL을 구성하거나, 없는 링크를 “추측”해서는 안 된다.
+  - “정보 없음/찾지 못했/관련 정보 없음/자료 부족/다시 시도” 류 답변에는 링크를 강제로 붙이지 않는다.
+  - 일반 상식 경로에서는 링크를 절대 출력하지 않는다.
+- **날짜/키워드 일치 필수**:
+  - 일정/다시보기/녹화/링크 등 강한 의도가 있는 질문에서는, 제목+본문(norm_text)에 동일한 날짜/키워드가 포함된 문서만 최종 후보에 남긴다.
+  - 날짜는 `12월 3일` / `12/3` / `12.3` 등 다양한 표기를 `_extract_date_keys`로 정규화해 비교한다.
+- **LLM 재랭크 범위 제한**:
+  - 벡터 검색 상위 50개 중에서 키워드·날짜 필터를 통과한 후보만 LLM 재랭크에 전달한다.
+  - 후보 수가 소수(예: 5개 이하)면, LLM 재랭크 없이 기존 순서를 사용해 토큰/비용을 절약한다.
+- **검증 스크립트 / 테스트 사용**:
+  - `scripts/verify_rag.py`와 `tests/test_rag_*.py`를 통해 “사알못 다시보기 링크”, “강의 날짜/가격/포인트”, “Sajulab 사용법”, “완전히 무관한 일반 질문” 등 핵심 시나리오를 주기적으로 검증한다.

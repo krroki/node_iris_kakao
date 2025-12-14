@@ -1,0 +1,9 @@
+{
+  "title": "CASE2-옵션2(닉확인)",
+  "content": "어서오세요 @{entrance}님 ✨\n\n닉네임 확인 되셨습니다!\n\n입장 절차 마무리로\n하트 인증샷만 업로드해주시면\n바로 활동 가능하십니다 🙏",
+  "category": "welcome",
+  "images": [
+    "assets/welcome/common/KakaoTalk_20251213_123012048.png"
+  ],
+  "mentions": []
+}

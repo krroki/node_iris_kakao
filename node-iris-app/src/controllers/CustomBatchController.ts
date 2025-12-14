@@ -138,6 +138,9 @@ class CustomBatchController {
    */
   @Schedule(5000, "broadcast-dispatcher")
   async dispatchBroadcasts() {
+    const dispatcher = String(process.env.BROADCAST_DISPATCHER || "worker").trim().toLowerCase();
+    if (dispatcher !== "bot") return;
+
     if (await isSafeMode()) return;
     const tasks = await broadcastService.fetchDue(5);
     if (tasks.length === 0) {

@@ -1,10 +1,17 @@
-<#
+﻿<#
 .SYNOPSIS
-  Lightweight watchdog for local IRIS 파이프라인.
+  로컬 IRIS/Realtime/Bot 자동 감지 및 자가복구(Watchdog)
+
 .DESCRIPTION
-  - /health(127.0.0.1:8600)와 /config(192.168.127.63:3000)를 주기적으로 체크
-  - API/Bot/Web 중단 시 기존 start_all 파이프라인으로 재기동
-  - IRIS 단말쪽(/config)까지 죽어 있으면 재기동 안 하고 로그만 남김(단말 이슈 분리)
+  - FastAPI `/status`(기본 :8650)를 기준으로 bot/logStore 상태를 감지한다.
+  - bot 장애(프로세스 종료/EMFILE/상태 파일 파손) 또는 "이벤트는 오는데 로그가 안 쌓임"을 감지하면 봇을 재시작한다.
+  - API 자체가 죽었으면 start_all.ps1로 파이프라인을 재가동한다.
+  - IRIS(127.0.0.1:5050/config) 연결 불가가 일정 횟수 이상 지속되면 repair_redroid_iris.ps1 -Fix를 시도한다.
+
+  폴백(조용한 무시) 금지 원칙:
+  - 실패는 숨기지 않고 `windows/watchdog.log`에 원인/조치/결과를 남긴다.
+  - 재시작 폭주를 막기 위해 cooldown을 두되, "안 한다"가 아니라 "왜 지금은 안 하는지"를 로그로 남긴다.
+
 .USAGE
   관리자 PowerShell:
     cd C:\dev\12.kakao\windows
@@ -12,90 +19,777 @@
 #>
 
 param(
-  [int]$IntervalSec = 30,
-  [string]$ApiHealth = "http://127.0.0.1:8600/health",
-  [string]$IrisConfig = "http://192.168.127.63:3000/config",
-  [string]$LogPath = "C:\dev\12.kakao\windows\watchdog.log"
+  [int]$IntervalSec = 15,
+  [string]$ApiBase = "http://127.0.0.1:8650",
+  [string]$IrisBase = "http://127.0.0.1:5050",
+  [int]$WebPort = 3100,
+  [string]$LogPath = "",
+  [int]$MaxIterations = 0,
+  [int]$BotRestartCooldownSec = 120,
+  [int]$PipelineRestartCooldownSec = 300,
+  [int]$WebRestartCooldownSec = 120,
+  [int]$WebFailThreshold = 6,
+  [int]$KbRestartCooldownSec = 180,
+  [int]$WelcomeWorkerRestartCooldownSec = 120,
+  [int]$AiWorkerRestartCooldownSec = 120,
+  [int]$BroadcastWorkerRestartCooldownSec = 120,
+  [int]$RosterWorkerRestartCooldownSec = 120,
+  [int]$IrisRepairCooldownSec = 300,
+  [int]$IrisFailThreshold = 3
 )
 
-$ErrorActionPreference = 'SilentlyContinue'
+# Force UTF-8 for logs/console to avoid mojibake in dashboard (/api/watchdog reads UTF-8)
+try { chcp 65001 | Out-Null } catch {}
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+
+$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$botLock = Join-Path $root "node-iris-app\data\bot.lock"
+
+if (-not $LogPath) { $LogPath = Join-Path $root "windows\watchdog.log" }
+New-Item -ItemType Directory -Force -Path (Split-Path $LogPath -Parent) | Out-Null
+if (-not (Test-Path $LogPath)) { New-Item -ItemType File -Force -Path $LogPath | Out-Null }
+
+$startAllScript = Join-Path $root "windows\start_all.ps1"
+$startBotScript = Join-Path $root "windows\start_bot.ps1"
+$startWebScript = Join-Path $root "windows\start_web.ps1"
+$startWelcomeWorkerScript = Join-Path $root "windows\start_welcome_worker.ps1"
+$startAiWorkerScript = Join-Path $root "windows\start_ai_worker.ps1"
+$startBroadcastWorkerScript = Join-Path $root "windows\start_broadcast_worker.ps1"
+$startRosterWorkerScript = Join-Path $root "windows\start_roster_worker.ps1"
+$smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
 $repairScript = Join-Path $root "windows\repair_redroid_iris.ps1"
-$lastRepairAt = Get-Date '2000-01-01T00:00:00Z'
+$kbServiceScript = Join-Path $root "windows\kb_service.ps1"
+
+$script:lastBotRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastPipelineRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastWebRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastKbRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastWelcomeWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
+$script:webFailCount = 0
+$script:webRestartAttemptsSinceOk = 0
+$script:irisFailCount = 0
+$script:lastSummaryAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastSummary = ""
+
+# Single-instance guard (same login session)
+$mutexName = "Local\12kakao_watchdog"
+$created = $false
+$mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$created)
+if (-not $created) {
+  $line = "[{0}] [INFO] watchdog already running; exit" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+  Add-Content -Path $LogPath -Value $line -Encoding UTF8
+  return
+}
 
 function Write-Log {
-  param([string]$Message)
-  $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
-  Add-Content -Path $LogPath -Value $line
+  param(
+    [ValidateSet('INFO','WARN','ERROR','ACTION')]
+    [string]$Level,
+    [string]$Message
+  )
+  $line = "[{0}] [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $Message
+  try { Add-Content -Path $LogPath -Value $line -Encoding UTF8 } catch {}
+  try { Write-Host $line } catch {}
 }
 
-function Kill-BotProcesses {
-  try {
-    $nodeProcs = Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like '*node-iris-app*' }
-    foreach ($p in $nodeProcs) {
-      try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
-    }
-  } catch {}
-  try {
-    $pwProcs = Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -eq 'playwright.exe' -and $_.CommandLine -like '*node-iris-app*' }
-    foreach ($p in $pwProcs) {
-      try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
-    }
-  } catch {}
-  if (Test-Path $botLock) { Remove-Item $botLock -Force -ErrorAction SilentlyContinue }
+function Invoke-HttpJson {
+  param(
+    [string]$Url,
+    [int]$TimeoutSec = 4
+  )
+  $params = @{
+    Uri         = $Url
+    TimeoutSec  = $TimeoutSec
+    Method      = 'GET'
+    ErrorAction = 'Stop'
+  }
+  if ($PSVersionTable.PSVersion.Major -lt 6) { $params['UseBasicParsing'] = $true }
+  $resp = Invoke-WebRequest @params
+  if ($resp.StatusCode -ne 200) { throw "HTTP $($resp.StatusCode)" }
+  return ($resp.Content | ConvertFrom-Json)
 }
 
-function Start-All {
-  Write-Log "restart -> start_all.ps1"
-  try { & "$root\windows\start_all.ps1" -IrisUrl "http://192.168.127.63:3000" } catch { Write-Log "start_all error: $_" }
+function Test-Http200 {
+  param(
+    [string]$Url,
+    [int]$TimeoutSec = 3
+  )
+  $params = @{
+    Uri         = $Url
+    TimeoutSec  = $TimeoutSec
+    Method      = 'GET'
+    ErrorAction = 'Stop'
+  }
+  if ($PSVersionTable.PSVersion.Major -lt 6) { $params['UseBasicParsing'] = $true }
+  $resp = Invoke-WebRequest @params
+  return ($resp.StatusCode -eq 200)
 }
 
-function Invoke-Repair {
-  if (-not (Test-Path $repairScript)) {
-    Write-Log "[repair] script not found: $repairScript"
+function Get-ApiPort {
+  try { return ([uri]$ApiBase).Port } catch { return 8650 }
+}
+
+function Restart-Pipeline {
+  param([string]$Reason)
+  if (-not (Test-Path $startAllScript)) {
+    Write-Log -Level 'ERROR' -Message "start_all.ps1 없음: $startAllScript (파이프라인 재기동 불가)"
     return
   }
   $now = Get-Date
-  if ($now -lt $lastRepairAt.AddMinutes(2)) {
-    Write-Log "[repair] skip (cooldown < 2min)"
+  $cooldownUntil = $script:lastPipelineRestartAt.AddSeconds($PipelineRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "파이프라인 재기동 스킵(cooldown ${remain}s 남음). 사유: $Reason"
     return
   }
-  $script:lastRepairAt = $now
-  Write-Log "[repair] running repair_redroid_iris.ps1 -Fix"
+  $script:lastPipelineRestartAt = $now
+  # start_all.ps1가 web도 함께 재기동하므로, watchdog의 web 재시작 폭주를 막기 위해
+  # web 실패 카운트/시도 카운트를 초기화하고 cooldown 기준을 현재로 맞춘다.
+  $script:lastWebRestartAt = $now
+  $script:webFailCount = 0
+  $script:webRestartAttemptsSinceOk = 0
+  $apiPort = Get-ApiPort
+  Write-Log -Level 'ACTION' -Message "파이프라인 재기동(start_all.ps1) 실행. 사유: $Reason"
   try {
-    & $repairScript -Fix 2>&1 | ForEach-Object { Write-Log "[repair] $_" }
+    & $startAllScript -IrisUrl $IrisBase -ApiPort $apiPort -WebPort $WebPort 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[start_all] $_" }
+    Write-Log -Level 'INFO' -Message "파이프라인 재기동(start_all.ps1) 호출 완료"
   } catch {
-    Write-Log "[repair] ERROR: $_"
+    Write-Log -Level 'ERROR' -Message "파이프라인 재기동 실패: $($_.Exception.Message)"
   }
 }
 
-while ($true) {
-  $okApi = $false
-  $okIris = $false
+function Restart-Bot {
+  param([string]$Reason)
+  $now = Get-Date
+  $cooldownUntil = $script:lastBotRestartAt.AddSeconds($BotRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "봇 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastBotRestartAt = $now
 
-  try {
-    $resp = Invoke-WebRequest -Uri $ApiHealth -TimeoutSec 3
-    if ($resp.StatusCode -eq 200) { $okApi = $true }
-  } catch {}
+  $irisConfig = "$IrisBase/config"
+  $irisOk = $false
+  try { $irisOk = Test-Http200 -Url $irisConfig -TimeoutSec 3 } catch { $irisOk = $false }
 
-  try {
-    $resp2 = Invoke-WebRequest -Uri $IrisConfig -TimeoutSec 3
-    if ($resp2.StatusCode -eq 200) { $okIris = $true }
-  } catch {}
-
-  if (-not $okIris) {
-    Write-Log "[IRIS] health FAIL (단말/컨테이너 확인 필요)"
-    Invoke-Repair
+  if (-not $irisOk -and (Test-Path $smartRestartScript)) {
+    Write-Log -Level 'ACTION' -Message "IRIS 연결 불가로 smart_restart_bot.ps1 실행(포트프록시/봇 재시작). 사유: $Reason"
+    try {
+      & $smartRestartScript 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[smart_restart] $_" }
+      return
+    } catch {
+      Write-Log -Level 'ERROR' -Message "smart_restart_bot.ps1 실패: $($_.Exception.Message)"
+      # continue -> try direct start_bot
+    }
   }
 
-  if (-not $okApi -and $okIris) {
-    Write-Log "[API/Bot] health FAIL -> restart pipeline"
-    Kill-BotProcesses
-    Start-All
+  if (-not (Test-Path $startBotScript)) {
+    Write-Log -Level 'ERROR' -Message "start_bot.ps1 없음: $startBotScript (봇 재시작 불가)"
+    return
   }
-
-  Start-Sleep -Seconds $IntervalSec
+  Write-Log -Level 'ACTION' -Message "봇 재시작(start_bot.ps1 -Restart -SkipBuild) 실행. 사유: $Reason"
+  try {
+    & $startBotScript -IrisUrl $IrisBase -Restart -SkipBuild 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[start_bot] $_" }
+    Write-Log -Level 'INFO' -Message "봇 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "봇 재시작 실패: $($_.Exception.Message)"
+  }
 }
+
+function Restart-KB {
+  param([string]$Reason)
+  $now = Get-Date
+  $cooldownUntil = $script:lastKbRestartAt.AddSeconds($KbRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "KB 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastKbRestartAt = $now
+
+  if (Test-Path $kbServiceScript) {
+    Write-Log -Level 'ACTION' -Message "KB 재시작(kb_service.ps1) 실행. 사유: $Reason"
+    try {
+      & $kbServiceScript -Port 8610 -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[kb_service] $_" }
+      Write-Log -Level 'INFO' -Message "KB 재시작(kb_service.ps1) 호출 완료"
+      return
+    } catch {
+      Write-Log -Level 'ERROR' -Message "KB 재시작 실패: $($_.Exception.Message)"
+      # continue -> fall back to full pipeline restart
+    }
+  } else {
+    Write-Log -Level 'WARN' -Message "kb_service.ps1 없음: $kbServiceScript (KB 단독 재시작 불가)"
+  }
+
+  Restart-Pipeline -Reason ("KB 재시작 실패/불가 -> 전체 재기동: {0}" -f $Reason)
+}
+
+function Restart-Web {
+  param(
+    [string]$Reason,
+    [switch]$CleanBuild
+  )
+
+  if (-not (Test-Path $startWebScript)) {
+    Write-Log -Level 'ERROR' -Message "start_web.ps1 없음: $startWebScript (web 재시작 불가)"
+    return $false
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastWebRestartAt.AddSeconds($WebRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "web 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return $false
+  }
+
+  $script:lastWebRestartAt = $now
+  $script:webFailCount = 0
+  $script:webRestartAttemptsSinceOk++
+
+  $logDir = Join-Path $root 'windows\logs'
+  $args = @(
+    '-Port', "$WebPort",
+    '-TimeoutSec', '180',
+    '-ForceKillPort',
+    '-Mode', 'prod',
+    '-LogDir', $logDir
+  )
+  if ($CleanBuild) { $args += '-CleanBuild' }
+
+  $cleanLabel = if ($CleanBuild) { ' (CleanBuild)' } else { '' }
+  Write-Log -Level 'ACTION' -Message ("web 재시작(start_web.ps1{0}) 실행. 사유: {1}" -f $cleanLabel, $Reason)
+  try {
+    & $startWebScript @args 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[start_web] $_" }
+    Write-Log -Level 'INFO' -Message "web 재시작 호출 완료"
+    return $true
+  } catch {
+    Write-Log -Level 'ERROR' -Message "web 재시작 실패: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Test-WelcomeWorkerOk {
+  try {
+    # WELCOME_DISPATCHER=bot이면 worker는 "의도적으로" 꺼진 것으로 본다.
+    $disp = ""
+    try { $disp = [string]$env:WELCOME_DISPATCHER } catch { $disp = "" }
+    if ($disp -and $disp.Trim().ToLower() -eq 'bot') { return $true }
+    if ($env:WELCOME_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\welcome_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-WelcomeWorker {
+  param([string]$Reason)
+
+  # WELCOME_DISPATCHER=bot이면 worker는 관리 대상에서 제외한다.
+  $disp = ""
+  try { $disp = [string]$env:WELCOME_DISPATCHER } catch { $disp = "" }
+  if ($disp -and $disp.Trim().ToLower() -eq 'bot') { return }
+  if ($env:WELCOME_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startWelcomeWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_welcome_worker.ps1 없음: $startWelcomeWorkerScript (welcome-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastWelcomeWorkerRestartAt.AddSeconds($WelcomeWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "welcome-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastWelcomeWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "welcome-worker 재시작(start_welcome_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startWelcomeWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[welcome_worker] $_" }
+    Write-Log -Level 'INFO' -Message "welcome-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "welcome-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-AiWorkerOk {
+  try {
+    # AI_DISPATCHER=bot이면 worker는 "의도적으로" 꺼진 것으로 본다.
+    $disp = ""
+    try { $disp = [string]$env:AI_DISPATCHER } catch { $disp = "" }
+    if ($disp -and $disp.Trim().ToLower() -eq 'bot') { return $true }
+    if ($env:AI_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\ai_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-AiWorker {
+  param([string]$Reason)
+
+  # AI_DISPATCHER=bot이면 worker는 관리 대상에서 제외한다.
+  $disp = ""
+  try { $disp = [string]$env:AI_DISPATCHER } catch { $disp = "" }
+  if ($disp -and $disp.Trim().ToLower() -eq 'bot') { return }
+  if ($env:AI_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startAiWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_ai_worker.ps1 없음: $startAiWorkerScript (ai-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastAiWorkerRestartAt.AddSeconds($AiWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "ai-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastAiWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "ai-worker 재시작(start_ai_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startAiWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[ai_worker] $_" }
+    Write-Log -Level 'INFO' -Message "ai-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "ai-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-BroadcastWorkerOk {
+  try {
+    # ANNOUNCEMENT_DISPATCHER=bot && BROADCAST_DISPATCHER=bot 이면 worker는 "의도적으로" 꺼진 것으로 본다.
+    $ann = ""
+    $bcast = ""
+    try { $ann = [string]$env:ANNOUNCEMENT_DISPATCHER } catch { $ann = "" }
+    try { $bcast = [string]$env:BROADCAST_DISPATCHER } catch { $bcast = "" }
+    $ann = $ann.Trim().ToLower()
+    $bcast = $bcast.Trim().ToLower()
+    if ($ann -eq 'bot' -and $bcast -eq 'bot') { return $true }
+    if ($env:BROADCAST_WORKER_DISABLE -eq '1') { return $true }
+
+    # 중복 실행 감지: 같은 공지가 여러 번 전송되는 최빈 원인.
+    # - 여러 프로세스가 동시에 stream을 구독하면 동일 이벤트를 각각 처리할 수 있다.
+    # - 해결은 "가장 최신 1개만 유지" + 필요 시 -Restart로 정리.
+    try {
+      $workerEntry = Join-Path $root "node-iris-app\dist\workers\broadcast_worker.js"
+      $absRe = [Regex]::Escape($workerEntry)
+      $relRe = 'dist[/\\]workers[/\\]broadcast_worker\.js'
+      $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { ($_.CommandLine -match $absRe) -or ($_.CommandLine -match $relRe) } |
+        Select-Object ProcessId,CreationDate)
+      if ($procs.Count -gt 1) {
+        $sorted = @($procs | Sort-Object -Property CreationDate -Descending)
+        $keepPid = [int]$sorted[0].ProcessId
+        $killPids = @($sorted | Select-Object -Skip 1 | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
+        Write-Log -Level 'WARN' -Message ("broadcast-worker 중복 실행 감지(count={0}). keep(pid={1}) kill({2}). 재기동으로 정리 예정" -f $procs.Count, $keepPid, ($killPids -join ',')))
+        return $false
+      }
+    } catch {}
+
+    $statusPath = Join-Path $root "node-iris-app\data\broadcast_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-BroadcastWorker {
+  param([string]$Reason)
+
+  $ann = ""
+  $bcast = ""
+  try { $ann = [string]$env:ANNOUNCEMENT_DISPATCHER } catch { $ann = "" }
+  try { $bcast = [string]$env:BROADCAST_DISPATCHER } catch { $bcast = "" }
+  $ann = $ann.Trim().ToLower()
+  $bcast = $bcast.Trim().ToLower()
+  if ($ann -eq 'bot' -and $bcast -eq 'bot') { return }
+  if ($env:BROADCAST_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startBroadcastWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_broadcast_worker.ps1 없음: $startBroadcastWorkerScript (broadcast-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastBroadcastWorkerRestartAt.AddSeconds($BroadcastWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "broadcast-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastBroadcastWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "broadcast-worker 재시작(start_broadcast_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startBroadcastWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[broadcast_worker] $_" }
+    Write-Log -Level 'INFO' -Message "broadcast-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "broadcast-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-RosterWorkerOk {
+  try {
+    if ($env:ROSTER_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\roster_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-RosterWorker {
+  param([string]$Reason)
+
+  if ($env:ROSTER_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startRosterWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_roster_worker.ps1 없음: $startRosterWorkerScript (roster-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastRosterWorkerRestartAt.AddSeconds($RosterWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "roster-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastRosterWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "roster-worker 재시작(start_roster_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startRosterWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[roster_worker] $_" }
+    Write-Log -Level 'INFO' -Message "roster-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "roster-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Maybe-Repair-Iris {
+  param([string]$Reason)
+  if (-not (Test-Path $repairScript)) {
+    Write-Log -Level 'WARN' -Message "repair_redroid_iris.ps1 없음: $repairScript (IRIS 자동복구 스킵). 사유: $Reason"
+    return
+  }
+  $now = Get-Date
+  $cooldownUntil = $script:lastIrisRepairAt.AddSeconds($IrisRepairCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "IRIS 복구 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastIrisRepairAt = $now
+  Write-Log -Level 'ACTION' -Message "IRIS 복구 시도(repair_redroid_iris.ps1 -Fix). 사유: $Reason"
+  try {
+    & $repairScript -Fix 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[repair] $_" }
+    Write-Log -Level 'INFO' -Message "IRIS 복구 스크립트 실행 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "IRIS 복구 실패: $($_.Exception.Message)"
+  }
+}
+
+function Should-RestartBotByLogLag {
+  param($LogStage)
+  try {
+    if (-not $LogStage) { return $false }
+    if ($LogStage.ok -eq $true) { return $false }
+    $extra = $LogStage.extra
+    if (-not $extra) { return $false }
+
+    # 이벤트는 최근인데 로그가 뒤처지는 케이스(/status logStore에서 lastEventAgeSec를 포함해 내려준다)
+    $lastEventAgeSec = $null
+    try { if ($extra.lastEventAgeSec -ne $null) { $lastEventAgeSec = [int]$extra.lastEventAgeSec } } catch {}
+    $logAgeSec = $null
+    try { if ($extra.logAgeSec -ne $null) { $logAgeSec = [int]$extra.logAgeSec } } catch {}
+
+    if ($lastEventAgeSec -ne $null -and $logAgeSec -ne $null) {
+      if ($lastEventAgeSec -le 180 -and $logAgeSec -ge 90) { return $true }
+    }
+
+    # 문자열 timestamp로도 한 번 더 확인 (보수적으로)
+    $lastEventTs = $null
+    $latestLogTs = $null
+    try { $lastEventTs = [string]$extra.lastEventTs } catch {}
+    try { $latestLogTs = [string]$extra.latestLogTs } catch {}
+    if ($lastEventTs -and $latestLogTs) {
+      $a = [datetime]::Parse($lastEventTs).ToUniversalTime()
+      $b = [datetime]::Parse($latestLogTs).ToUniversalTime()
+      $diff = ($a - $b).TotalSeconds
+      if ($diff -gt 60) { return $true }
+    }
+  } catch {}
+  return $false
+}
+
+Write-Log -Level 'INFO' -Message ("watchdog start (interval={0}s, api={1}, webPort={2}, iris={3}, log={4})" -f $IntervalSec, $ApiBase, $WebPort, $IrisBase, $LogPath)
+
+$iter = 0
+$fatal = $null
+try
+{
+  while ($true)
+  {
+    $iter++
+    if ($MaxIterations -gt 0 -and $iter -gt $MaxIterations) { break }
+
+    $apiStatus = $null
+    try
+    {
+      $apiStatus = Invoke-HttpJson -Url ("$ApiBase/status") -TimeoutSec 4
+    }
+    catch
+    {
+      Write-Log -Level 'WARN' -Message "API /status 연결 실패: $($_.Exception.Message)"
+      Restart-Pipeline -Reason "API /status 연결 실패"
+      Start-Sleep -Seconds $IntervalSec
+      continue
+    }
+
+    $stages = $apiStatus.stages
+    $botStage = $stages.bot
+    $logStage = $stages.logStore
+    $kbStage = $stages.kb
+
+    # KB 서비스가 꺼져 있으면 우선 KB만 재기동 (AI 질의/수집/임베딩 정상화를 위해)
+    try {
+      if ($kbStage -and ($kbStage.ok -ne $true)) {
+        $detail = ""
+        try { $detail = [string]$kbStage.detail } catch { $detail = "" }
+        Restart-KB -Reason ("KB stage not ok. {0}" -f $detail)
+      }
+    } catch {}
+    $deviceStage = $stages.device
+
+    $summary = "device={0} bot={1} logStore={2} realtime={3}" -f $deviceStage.ok, $botStage.ok, $logStage.ok, $stages.realtime.ok
+    $now = Get-Date
+    $shouldEmitSummary = $false
+    if ($summary -ne $script:lastSummary) { $shouldEmitSummary = $true }
+    if (($now - $script:lastSummaryAt).TotalSeconds -ge 300) { $shouldEmitSummary = $true }
+    if ($shouldEmitSummary) {
+      $script:lastSummaryAt = $now
+      $script:lastSummary = $summary
+      Write-Log -Level 'INFO' -Message ("상태 요약: {0}" -f $summary)
+    }
+
+    # Web health check: API가 살아있는데 web만 죽는 케이스(next dev/build 충돌, 산출물 파손 등)를 감지해 web만 우선 복구한다.
+    $webOk = $false
+    try { $webOk = Test-Http200 -Url ("http://127.0.0.1:{0}/api/ping" -f $WebPort) -TimeoutSec 2 } catch { $webOk = $false }
+    if ($webOk) {
+      if ($script:webFailCount -gt 0 -or $script:webRestartAttemptsSinceOk -gt 0) {
+        Write-Log -Level 'INFO' -Message ("WEB 정상 복귀(연속 실패 {0}회, 재시작 시도 {1}회 -> 0)" -f $script:webFailCount, $script:webRestartAttemptsSinceOk)
+      }
+      $script:webFailCount = 0
+      $script:webRestartAttemptsSinceOk = 0
+    } else {
+      $script:webFailCount++
+      Write-Log -Level 'WARN' -Message ("WEB /api/ping 실패(연속 {0}회)" -f $script:webFailCount)
+      if ($script:webFailCount -ge $WebFailThreshold) {
+        # 첫 재시작은 일반 모드, 반복 실패 시 CleanBuild로 산출물 파손까지 복구 시도
+        $useClean = ($script:webRestartAttemptsSinceOk -ge 1)
+        $detail = ""
+        try { $detail = [string]$apiStatus.detail } catch { $detail = "" }
+        Restart-Web -Reason ("WEB /api/ping 연속 실패($($script:webFailCount)회). $detail") -CleanBuild:$useClean | Out-Null
+      }
+    }
+
+    # IRIS health check (연속 실패 시에만 수리 시도)
+    $irisOk = $false
+    try { $irisOk = Test-Http200 -Url ("$IrisBase/config") -TimeoutSec 3 } catch { $irisOk = $false }
+    if ($irisOk) {
+      if ($script:irisFailCount -gt 0) { Write-Log -Level 'INFO' -Message "IRIS 정상 복귀(연속 실패 $($script:irisFailCount)회 -> 0회)" }
+      $script:irisFailCount = 0
+    } else {
+      $script:irisFailCount++
+      Write-Log -Level 'WARN' -Message ("IRIS /config 실패(연속 {0}회)" -f $script:irisFailCount)
+      if ($script:irisFailCount -ge $IrisFailThreshold) {
+        Maybe-Repair-Iris -Reason "IRIS /config 연속 실패($($script:irisFailCount)회)"
+      }
+    }
+
+    # Bot stage
+    if ($botStage.ok -ne $true) {
+      $detail = ""
+      try { $detail = [string]$botStage.detail } catch {}
+      Restart-Bot -Reason ("bot.ok=false ($detail)")
+      Start-Sleep -Seconds $IntervalSec
+      continue
+    }
+
+    # welcome-worker stage (feature worker) - 코어(bot)는 정상인데 worker만 죽는 케이스를 자동 복구한다.
+    try {
+      $ok = Test-WelcomeWorkerOk
+      if (-not $ok) {
+        Restart-WelcomeWorker -Reason "welcome-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # ai-worker stage (feature worker) - 코어는 정상인데 ai-worker만 죽는 케이스를 자동 복구한다.
+    try {
+      $ok = Test-AiWorkerOk
+      if (-not $ok) {
+        Restart-AiWorker -Reason "ai-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # broadcast-worker stage (feature worker) - 공지/브로드캐스트 워커가 죽는 케이스를 자동 복구한다.
+    try {
+      $ok = Test-BroadcastWorkerOk
+      if (-not $ok) {
+        Restart-BroadcastWorker -Reason "broadcast-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # roster-worker stage (feature worker) - 강의 운영(카페/닉네임 검증) 워커 자동 복구
+    try {
+      $ok = Test-RosterWorkerOk
+      if (-not $ok) {
+        Restart-RosterWorker -Reason "roster-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # logStore stage: 이벤트는 들어오는데 로그가 안 쌓이면 재시작
+    if (Should-RestartBotByLogLag -LogStage $logStage) {
+      $detail = ""
+      try { $detail = [string]$logStage.detail } catch {}
+      Restart-Bot -Reason ("logStore 지연 감지 ($detail)")
+      Start-Sleep -Seconds $IntervalSec
+      continue
+    }
+
+    Start-Sleep -Seconds $IntervalSec
+  }
+}
+catch
+{
+  $fatal = $_
+  Write-Log -Level 'ERROR' -Message "watchdog fatal: $($_.Exception.Message)"
+}
+
+try
+{
+  $mutex.ReleaseMutex() | Out-Null
+  $mutex.Dispose()
+}
+catch {}
+Write-Log -Level 'INFO' -Message "watchdog exit"
+if ($fatal) { throw $fatal }
+

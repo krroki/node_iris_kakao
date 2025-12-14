@@ -10,12 +10,7 @@
  * - 다중 route 지원
  */
 
-import {
-  ChatController,
-  ChatContext,
-  Logger,
-  OnMessage,
-} from "@tsuki-chat/node-iris";
+import Bot, { ChatController, ChatContext, Logger, OnMessage } from "@tsuki-chat/node-iris";
 import {
   isAnnouncementAllowed,
   findAnnouncementRoutesBySource,
@@ -27,7 +22,7 @@ import { announcementDedup } from "../services";
 // 루프 방지용 마커
 const MIRROR_MARKER_PREFIX = "\u200B[MF:"; // Zero-width space + marker
 const MIRROR_MARKER_SUFFIX = "]\u200B";
-const MIRROR_MARKER_REGEX = /\u200B\[MF:[^\]]+\]\u200B/g;
+const MIRROR_MARKER_REGEX = /\u200B\[MF:[^\]]+\]\u200B/;
 
 @ChatController
 class AnnouncementController {
@@ -48,6 +43,11 @@ class AnnouncementController {
 
   @OnMessage
   async onMessage(context: ChatContext) {
+    const dispatcher = String(process.env.ANNOUNCEMENT_DISPATCHER || "worker").trim().toLowerCase();
+    if (dispatcher !== "bot") {
+      return;
+    }
+
     const roomId = String(context.room.id);
     this.logger.debug("AnnouncementController.onMessage called", { roomId });
 
@@ -114,7 +114,7 @@ class AnnouncementController {
       });
 
       for (const route of routes) {
-        await this.processRoute(route, text, images, roomId, senderName);
+        await this.processRoute(route, text, images, roomId, senderName, msgId);
       }
     } catch (error) {
       this.logger.error("Announcement processing failed", { error: String(error) });
@@ -129,7 +129,8 @@ class AnnouncementController {
     text: string,
     images: string[],
     sourceRoomId: string,
-    senderName: string
+    senderName: string,
+    msgId: string
   ): Promise<void> {
     // 발신자 이름 프리픽스 (옵션)
     let finalText = text;
@@ -156,7 +157,7 @@ class AnnouncementController {
       return;
     }
 
-    await this.broadcastToTargets(route, validTargets, finalText, images, sourceRoomId);
+    await this.broadcastToTargets(route, validTargets, finalText, images, sourceRoomId, msgId);
   }
 
   /**
@@ -279,9 +280,15 @@ class AnnouncementController {
     validTargets: string[],
     text: string,
     images: string[],
-    sourceRoomId: string
+    sourceRoomId: string,
+    msgId: string
   ): Promise<void> {
-    const bot = AnnouncementController.botInstance;
+    let bot = AnnouncementController.botInstance;
+    if (!bot?.api) {
+      try {
+        bot = Bot.requireInstance();
+      } catch {}
+    }
     if (!bot?.api) {
       this.logger.error("Bot instance not available for announcement");
       return;
@@ -293,12 +300,16 @@ class AnnouncementController {
 
     // 루프 방지 마커 추가
     const mirrorMarker = this.createMirrorMarker(sourceRoomId);
-    const textWithMarker = text ? `${text}${mirrorMarker}` : "";
+    const startIndexRaw = route.targetIndexStart;
+    const startIndex = typeof startIndexRaw === "number" && Number.isFinite(startIndexRaw)
+      ? Math.max(1, Math.floor(startIndexRaw))
+      : 1;
 
-    for (const targetId of validTargets) {
+    for (let idx = 0; idx < validTargets.length; idx++) {
+      const targetId = validTargets[idx];
       // 추가 dedup: source+target+msgId 조합으로 이중 체크
       // (다중 route에서 같은 target이 중복될 경우 방지)
-      const dedupKey = `broadcast:${sourceRoomId}:${targetId}`;
+      const dedupKey = `broadcast:${sourceRoomId}:${msgId}:${targetId}`;
       if (announcementDedup.isDuplicate(dedupKey)) {
         this.logger.debug("Target already received this message", { targetId });
         continue;
@@ -309,6 +320,10 @@ class AnnouncementController {
         if (delayMs > 0) {
           await this.delay(delayMs);
         }
+
+        const textWithMarker = text
+          ? `${text}${route.appendTargetIndex ? ` ${startIndex + idx}` : ""}${mirrorMarker}`
+          : "";
 
         // 텍스트 발송 (마커 포함)
         if (textWithMarker) {
@@ -381,9 +396,7 @@ class AnnouncementController {
         ]);
       }
     } else {
-      // 이미지 URL을 텍스트로 발송 (fallback)
-      this.logger.warn("Image API not available, sending as text URLs");
-      await bot.api.reply(targetId, images.join("\n"));
+      throw new Error("Image send API missing (replyImageUrls/replyImage not available)");
     }
   }
 

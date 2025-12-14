@@ -85,3 +85,22 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0011 | 봇 싱글톤 메커니즘                               | Accepted           | PID 락 + 프로세스 필터로 중복 응답 방지 |
 | 0012 | API 계약 정합성 및 상태 체크 경량화             | Accepted           | ok 필드 표준화, 캐시 기반 상태, 안전한 봇 종료 |
 | 0013 | 빌드 파이프라인 강화 및 명령 파서 정책         | Accepted           | 빌드 강제/검증, ?디하클 필수, UTF-8 로깅 |
+| 0014 | KB 임베딩 스케일 재조정 및 검색 임계치 재설정    | Accepted           | dist 스케일 대응, 키워드 보강 검색 |
+| 0015 | 임베딩 프로바이더 하드페일 및 OpenAI 전환        | Accepted           | 0벡터 폴백 금지, OpenAI 임베딩 |
+| 0016 | SAFE_MODE 동작 및 웹 UI 정렬                     | Accepted           | 발신 완전 차단 SSOT 정리 |
+| 0017 | 상태/룸 정보 FS 결합 해소 및 API 단일화          | Accepted           | /status,/rooms 단일 소스 |
+| 0018 | RAG 범위 밖 질의에 대한 일반 상식 경로           | Accepted           | out-of-domain 라우팅, 고정 프리픽스 |
+| 0019 | 로그 파이프라인 안정성 강화                      | Accepted           | SAVE_CHAT_LOGS 기본 true, logStore 판정 |
+| 0020 | 이미지 기반 규칙의 텍스트 매뉴얼화 및 RAG 연동    | Draft              | 이미지→텍스트 매뉴얼 생성 규칙 |
+| 0021 | RAG 질의 라우팅 / 컨텍스트 태그 정렬             | Accepted           | context_tags 기반 routing |
+| 0022 | Welcome 템플릿 세트 + 카카오 기본 닉네임 분기    | Accepted           | CASE1/CASE2 세트, 기본닉 정규식 |
+| 0023 | `/status` 기반 Watchdog 자동 재시작              | Accepted           | 봇/파이프라인 자동 복구 |
+| 0024 | Talk-API authHeader 캡처(Frida)                  | Accepted           | Authorization/Duuid 캡처, data 저장/반영 |
+| 0025 | Next.js Web 운영(prod) 고정 + web 헬스체크 재시작  | Accepted           | .next/.next-prod 분리 + watchdog /api/ping |
+| 0026 | Welcome 후속(첫 이미지) 자동 답장(Reply)          | Accepted           | type=26 Reply + src_* 타입(coerce)로 -203 방지 |
+| 0027 | 코어(LogStore) 상시 가동 + 기능 워커 분리(Welcome) | Accepted           | welcome/후속답장을 워커로 분리해 코어 다운타임 최소화 |
+| 0028 | AI 응답을 ai-worker로 분리 (LogStore 구독 기반)   | Accepted           | `?디하클` 질의 처리를 bot에서 분리, KB 호출/발신은 워커가 담당 |
+| 0029 | 공지/브로드캐스트 발신을 broadcast-worker로 분리 (LogStore 구독 기반) | Accepted | bot 내부 공지/브로드캐스트 발신을 worker로 분리, watchdog 단독 복구 |
+| 0030 | Welcome-worker 템플릿 이미지 발신을 IRIS /reply로 복구 (Realtime API 브리지) | Accepted | 템플릿 이미지 발신 복구, SAFE_MODE 최종 차단 유지 |
+| 0031 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | Accepted | 동시성 제한 + EMFILE 백오프 재시도 + 상태 가시화(`/status`) |
+| 0032 | 강의 운영(카페/닉네임 검증) 워커 + 15분/24시간 안내 정책 | Accepted | 오픈채팅 입장자 검증/안내 + Sheets 업서트 |

@@ -9,25 +9,17 @@ Set-Location -LiteralPath (Join-Path (Get-Location).Path "..")
 
 function Py {
   param([string[]]$A)
-  $py = if (Test-Path ("{0}\Scripts\python.exe" -f $Venv)) { "{0}\Scripts\python.exe" -f $Venv } else { "python" }
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $py
-  $psi.Arguments = ($A -join ' ')
-  $psi.WorkingDirectory = (Get-Location).Path
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.UseShellExecute = $false
-  Write-Host ("[kb_collect] exec: {0} {1}" -f $psi.FileName, $psi.Arguments)
-  $p = [System.Diagnostics.Process]::Start($psi)
-  $p.WaitForExit()
-  $out = $p.StandardOutput.ReadToEnd()
-  $err = $p.StandardError.ReadToEnd()
-  if ($out) { Write-Host $out }
-  if ($err) { Write-Host $err }
+  $py = if (Test-Path ("{0}\\Scripts\\python.exe" -f $Venv)) { "{0}\\Scripts\\python.exe" -f $Venv } else { "python" }
+  Write-Host ("[kb_collect] exec: {0} {1}" -f $py, ($A -join ' '))
+  # stdout/stderr를 실시간으로 스트리밍한다 (진행 중 무응답 체감 완화).
+  & $py @A 2>&1 | ForEach-Object { Write-Host $_ }
+  $rc = $LASTEXITCODE
+  if ($rc -ne 0) { throw ("python exited with {0}" -f $rc) }
 }
 
 Write-Host "[kb_collect] ingest menus (pages=$Pages)" -ForegroundColor Cyan
 $env:KB_PAGES = "$Pages"
+if (-not $env:KB_LOG_FILE) { $env:KB_LOG_FILE = 'kb_collect.log' }
 # 외부 프로세스 stderr로 인한 NativeCommandError를 피하기 위해 일시적으로 Continue
 $__oldEA = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 try {

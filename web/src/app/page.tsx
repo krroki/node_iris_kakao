@@ -1,11 +1,23 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import './dashboard.css';
-import { LogEntry, SSEPayload, PipelineStatus, RoomInfo, RoomFeatures } from "../types";
+import "./dashboard.css";
+import {
+  LogEntry,
+  SSEPayload,
+  PipelineStatus,
+  RoomInfo,
+  RoomFeatures,
+  CourseRosterConfig,
+  CourseRosterRoomConfig,
+  BulkLogsResponse,
+  RuntimeConfig,
+} from "../types";
 import PipelineMonitor from "../components/PipelineMonitor";
 import RoomCard from "../components/RoomCard";
 import LogViewer from "../components/LogViewer";
 import BotProcessManager from "../components/BotProcessManager";
+import { usePipelineStatus } from "../hooks/usePipelineStatus";
+import { useWatchdog } from "../hooks/useWatchdog";
 
 const REALTIME_BASE = process.env.NEXT_PUBLIC_REALTIME_BASE || "http://127.0.0.1:8650";
 const SSE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_SSE === "1";
@@ -23,7 +35,7 @@ function dedupLogs(list: LogEntry[], max: number): LogEntry[] {
   const out: LogEntry[] = [];
   const seen = new Set<string>();
   for (const e of sorted) {
-    const uid = (e as any).uid ? String((e as any).uid) : "";
+    const uid = e.uid ? String(e.uid) : "";
     const primary = e.mid ? `m:${String(e.mid)}` : uid || null;
     const normText = (e.text || "").replace(/\s+/g, " ").trim();
     const fallback = `t:${e.roomId}|${e.sender}|${normText}`;
@@ -43,134 +55,230 @@ export default function Home() {
   const [connectionVersion, setConnectionVersion] = useState(0);
   const [allLogs, setAllLogs] = useState<LogEntry[]>([]);
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [roomsLoadError, setRoomsLoadError] = useState<string | null>(null);
   const [roomLogs, setRoomLogs] = useState<Record<string, LogEntry[]>>({});
   const [excluded, setExcluded] = useState<string[]>([]);
   const [showExcluded, setShowExcluded] = useState<boolean>(false);
   const [features, setFeatures] = useState<Record<string, RoomFeatures>>({});
   const [savingRooms, setSavingRooms] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
+  const [avatarVersions, setAvatarVersions] = useState<Record<string, number>>({});
   const [chosen, setChosen] = useState<string | undefined>(undefined);
   const [include, setInclude] = useState<string>("");
   const [exclude, setExclude] = useState<string>("");
   const [limit, setLimit] = useState<number>(80);
 
+  // 강의 운영(roster-worker) 설정/상태
+  const [courseRosterConfig, setCourseRosterConfig] = useState<CourseRosterConfig | null>(null);
+  const [courseRosterConfigExists, setCourseRosterConfigExists] = useState<boolean>(false);
+  const [courseRosterConfigPath, setCourseRosterConfigPath] = useState<string | null>(null);
+  const [courseRosterConfigDirty, setCourseRosterConfigDirty] = useState<boolean>(false);
+  const [courseRosterConfigSaving, setCourseRosterConfigSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [courseRosterConfigError, setCourseRosterConfigError] = useState<string | null>(null);
+  const [courseRosterServiceAccount, setCourseRosterServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
+  const [rosterWorkerStatus, setRosterWorkerStatus] = useState<any | null>(null);
+  const [rosterWorkerStatusError, setRosterWorkerStatusError] = useState<string | null>(null);
+
+  // Debug: React 상태 기준 로그 개수 확인용 (UI에 노출)
+  const debugCounts = useMemo(() => {
+    const roomKeys = Object.keys(roomLogs || {});
+    const roomTotal = roomKeys.reduce((acc, rid) => acc + (roomLogs[rid]?.length || 0), 0);
+    return {
+      allCount: allLogs.length,
+      roomKeys: roomKeys.length,
+      roomTotal,
+    };
+  }, [allLogs, roomLogs]);
+
   const esRef = useRef<EventSource | null>(null);
   const lastUpdateRef = useRef<number>(0);
   const pollBusyRef = useRef<boolean>(false);
 
-  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
-  const [pipelineError, setPipelineError] = useState<string | null>(null);
-  const [botRestarting, setBotRestarting] = useState<boolean>(false);
-  const [botRestartMessage, setBotRestartMessage] = useState<string | null>(null);
-  const [deviceRepairing, setDeviceRepairing] = useState<boolean>(false);
-  const [deviceRepairMessage, setDeviceRepairMessage] = useState<string | null>(null);
-  const [watchdog, setWatchdog] = useState<{ ok: boolean; mtime?: string; lines: string[] }>({ ok: false, lines: [] });
+  const {
+    status: pipelineStatus,
+    error: pipelineError,
+    refresh: fetchPipelineStatus,
+    botRestarting,
+    botRestartMessage,
+    deviceRepairing,
+    deviceRepairMessage,
+    restartBot,
+    repairDevice,
+  } = usePipelineStatus();
+
+  const watchdog = useWatchdog();
 
   const diagCommand = `cd C:\\dev\\12.kakao && powershell -ExecutionPolicy Bypass -File .\\scripts\\diagnose_realtime.ps1`;
 
-  const handleBotRestart = async () => {
-    const confirmRestart = window.confirm("Node-IRIS 봇을 다시 시작할까요? (메시지 발신은 하지 않습니다)");
-    if (!confirmRestart) return;
-    setBotRestarting(true);
-    setBotRestartMessage(null);
-    try {
-      const res = await fetch(`/api/bot/restart`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok === false) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
-      setBotRestartMessage("봇 재기동 명령을 보냈습니다. 5~10초 후 상태가 갱신됩니다.");
-    } catch (error: any) {
-      setBotRestartMessage(`실패: ${error?.message || error}`);
-    } finally {
-      setBotRestarting(false);
-      fetchPipelineStatus();
-    }
-  };
-
-  const handleDeviceRepair = async () => {
-    const confirmRepair = window.confirm("Redroid / IRIS 단말 자동 복구를 시도할까요?\n(Hyper-V VM은 이미 실행 중이라고 가정합니다.)");
-    if (!confirmRepair) return;
-    setDeviceRepairing(true);
-    setDeviceRepairMessage(null);
-    try {
-      const res = await fetch(`/api/device/repair`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok === false) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
-      setDeviceRepairMessage("단말 복구 스크립트를 실행했습니다.  몇 초 후 상태 패널에서 Redroid / IRIS 단말 상태를 다시 확인해주세요.");
-    } catch (error: any) {
-      setDeviceRepairMessage(`복구 실패: ${error?.message || error}`);
-    } finally {
-      setDeviceRepairing(false);
-      fetchPipelineStatus();
-    }
-  };
-
   // Load rooms list
   useEffect(() => {
-    fetch(`/api/rooms`).then(r => r.json()).then((list) => {
-      setRooms(list);
-      if (!chosen && list.length) setChosen(undefined);
-    }).catch(() => { });
+    let cancelled = false;
+    let timer: any = null;
+
+    const load = async () => {
+      try {
+        const r = await fetch(`/api/rooms`, { cache: "no-store" });
+        const j: any = await r.json().catch(() => null);
+        if (!r.ok) {
+          const detail = j && typeof j === "object" ? (j.detail || j.error) : "";
+          throw new Error(String(detail || `rooms fetch failed: HTTP ${r.status}`));
+        }
+        if (!Array.isArray(j)) {
+          throw new Error("rooms 응답 형식이 올바르지 않습니다(배열 아님)");
+        }
+        if (cancelled) return;
+        setRooms(j as RoomInfo[]);
+        setRoomsLoadError(null);
+        if (!chosen && j.length) setChosen(undefined);
+      } catch (e: any) {
+        if (cancelled) return;
+        setRooms([]);
+        setRoomsLoadError(String(e?.message || e));
+      }
+    };
+
+    void load();
+    // activeMembersCount는 변동 가능하므로 방 메타를 주기적으로 리프레시한다.
+    timer = setInterval(() => { void load(); }, 60_000);
+    return () => {
+      cancelled = true;
+      try { if (timer) clearInterval(timer); } catch {}
+    };
   }, []);
 
   // Load runtime (features/excluded)
   useEffect(() => {
-    fetch(`/api/runtime`).then(r => r.json()).then((cfg) => {
-      setExcluded(cfg?.excludedRoomIds || []);
-      setFeatures(cfg?.features || {});
-    }).catch(() => { });
+    fetch(`/api/runtime`)
+      .then((r) => r.json())
+      .then((cfg: RuntimeConfig) => {
+        setExcluded((cfg?.excludedRoomIds as string[]) || []);
+        setFeatures((cfg?.features as Record<string, RoomFeatures>) || {});
+      })
+      .catch(() => {});
   }, []);
 
-  const fetchPipelineStatus = useCallback(async () => {
+  const loadCourseRosterConfig = useCallback(async () => {
     try {
-      const res = await fetch(`/api/status`, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setPipelineStatus(data);
-      setPipelineError(null);
-    } catch (error: any) {
-      setPipelineError(error?.message || '상태를 불러올 수 없습니다.');
+      const r = await fetch(`/api/course-roster/config`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setCourseRosterConfigExists(!!j.exists);
+      setCourseRosterConfigPath(j.path ? String(j.path) : null);
+      setCourseRosterServiceAccount({
+        exists: !!j?.serviceAccount?.exists,
+        path: j?.serviceAccount?.path ? String(j.serviceAccount.path) : undefined,
+        clientEmail: j?.serviceAccount?.clientEmail ? String(j.serviceAccount.clientEmail) : null,
+        error: j?.serviceAccount?.error ? String(j.serviceAccount.error) : null,
+      });
+      const cfg: CourseRosterConfig = (j.config && typeof j.config === "object")
+        ? (j.config as CourseRosterConfig)
+        : ({ version: 1, rooms: {} } as CourseRosterConfig);
+      setCourseRosterConfig(cfg);
+      setCourseRosterConfigError(null);
+    } catch (e: any) {
+      setCourseRosterConfigError(String(e?.message || e));
+      setCourseRosterConfig((prev) => prev || ({ version: 1, rooms: {} } as CourseRosterConfig));
     }
   }, []);
 
-  // 디바이스 헬스 캐시 자동 갱신 (2분 간격)
-  // /api/device/health를 호출하여 device_health_cache.json을 최신 상태로 유지
-  const refreshDeviceHealth = useCallback(async () => {
+  const loadRosterWorkerStatus = useCallback(async () => {
     try {
-      await fetch(`/api/device/health`, { cache: 'no-store' });
-    } catch {
-      // 실패해도 무시 (status에서 캐시 만료로 표시됨)
+      const r = await fetch(`/api/course-roster/status`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setRosterWorkerStatus(j);
+      setRosterWorkerStatusError(null);
+    } catch (e: any) {
+      setRosterWorkerStatus(null);
+      setRosterWorkerStatusError(String(e?.message || e));
     }
   }, []);
 
   useEffect(() => {
-    fetchPipelineStatus();
-    refreshDeviceHealth(); // 최초 로드 시 헬스 체크
-    const statusId = setInterval(fetchPipelineStatus, 10_000);
-    const healthId = setInterval(refreshDeviceHealth, 2 * 60 * 1000); // 2분 간격
-    return () => {
-      clearInterval(statusId);
-      clearInterval(healthId);
-    };
-  }, [fetchPipelineStatus, refreshDeviceHealth]);
+    void loadCourseRosterConfig();
+    void loadRosterWorkerStatus();
+    const t = setInterval(() => { void loadRosterWorkerStatus(); }, 5000);
+    return () => clearInterval(t);
+  }, [loadCourseRosterConfig, loadRosterWorkerStatus]);
 
-  const fetchWatchdog = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/watchdog`, { cache: 'no-store' });
-      const data = await res.json();
-      setWatchdog({ ok: !!data.ok, mtime: data.mtime, lines: data.lines || [] });
-    } catch {
-      setWatchdog({ ok: false, lines: [] });
-    }
+  const onUpdateCourseRosterRoomConfig = useCallback((roomId: string, patch: Partial<CourseRosterRoomConfig>) => {
+    const rid = String(roomId || "").trim();
+    if (!rid) return;
+    setCourseRosterConfig((prev) => {
+      const base: CourseRosterConfig = (prev && typeof prev === "object") ? prev : ({ version: 1, rooms: {} } as CourseRosterConfig);
+      const nextRooms: Record<string, any> = { ...(base.rooms || {}) };
+      const cur = (nextRooms[rid] && typeof nextRooms[rid] === "object") ? nextRooms[rid] : {};
+      nextRooms[rid] = { ...cur, ...patch };
+      // UX: rosterSheetName 기본값 자동 채움
+      if (!String(nextRooms[rid].rosterSheetName || "").trim()) {
+        nextRooms[rid].rosterSheetName = "ROSTER_RAW";
+      }
+      // UX: enabled 기본값
+      if (nextRooms[rid].enabled === undefined) nextRooms[rid].enabled = true;
+      return { ...base, version: Number(base.version) || 1, rooms: nextRooms };
+    });
+    setCourseRosterConfigDirty(true);
   }, []);
 
-  useEffect(() => {
-    fetchWatchdog();
-    const id = setInterval(fetchWatchdog, 15000);
-    return () => clearInterval(id);
-  }, [fetchWatchdog]);
+  const saveCourseRosterConfig = useCallback(async (): Promise<boolean> => {
+    try {
+      setCourseRosterConfigSaving("saving");
+      const cfg = courseRosterConfig && typeof courseRosterConfig === "object"
+        ? courseRosterConfig
+        : ({ version: 1, rooms: {} } as CourseRosterConfig);
+      const r = await fetch(`/api/course-roster/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: cfg }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setCourseRosterConfigDirty(false);
+      setCourseRosterConfigSaving("saved");
+      setTimeout(() => setCourseRosterConfigSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      await loadCourseRosterConfig();
+      return true;
+    } catch (e: any) {
+      setCourseRosterConfigSaving("error");
+      setCourseRosterConfigError(String(e?.message || e));
+      return false;
+    }
+  }, [courseRosterConfig, loadCourseRosterConfig]);
+
+  const uploadServiceAccount = useCallback(async (file: File): Promise<boolean> => {
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch(`/api/course-roster/service-account`, { method: "POST", body: fd });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      await loadCourseRosterConfig();
+      return true;
+    } catch (e: any) {
+      setCourseRosterConfigError(String(e?.message || e));
+      return false;
+    }
+  }, [loadCourseRosterConfig]);
+
+  const restartRosterWorker = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/course-roster/restart`, { method: "POST" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      // 상태는 polling으로 갱신됨
+    } catch (e: any) {
+      setRosterWorkerStatusError(String(e?.message || e));
+    }
+  }, []);
 
   // Connect SSE
   useEffect(() => {
@@ -217,7 +325,7 @@ export default function Home() {
           });
         }
         if (data.all && Array.isArray(data.all)) {
-          const arr: LogEntry[] = data.all as any;
+          const arr: LogEntry[] = data.all;
           const grouped: Record<string, LogEntry[]> = {};
           for (const e of arr) {
             const rid = e.roomId;
@@ -252,7 +360,7 @@ export default function Home() {
     };
     esRef.current = es;
     return () => { try { es?.close(); } catch { } }
-  }, [chosen, include, exclude, limit, showExcluded, excluded.join(","), rooms.map(r => r.roomId).join(","), connectionVersion]);
+  }, [chosen, include, exclude, limit, connectionVersion]);
 
   // Initial bulk fetch
   useEffect(() => {
@@ -271,21 +379,42 @@ export default function Home() {
           params.set("limit", String(Math.min(Math.max(10, limit), 120)));
           const r = await fetch(`/api/bulk?` + params.toString(), { cache: "no-store" });
           if (!r.ok) continue;
-          const data: any = await r.json();
-          if (data?.rooms) {
-            setRoomLogs((prev) => {
-              const next = { ...prev } as Record<string, LogEntry[]>;
-              for (const rid of Object.keys(data.rooms)) {
-                const arr: LogEntry[] = data.rooms[rid] || [];
-                next[rid] = dedupLogs(arr, limit);
-              }
-              return next;
-            });
-          }
+          const payload: BulkLogsResponse = await r.json();
+          const roomsObj: Record<string, LogEntry[]> =
+            (payload.rooms as Record<string, LogEntry[]>) || {};
+          setRoomLogs((prev) => {
+            const next = { ...prev } as Record<string, LogEntry[]>;
+            for (const rid of Object.keys(roomsObj)) {
+              const arr: LogEntry[] = roomsObj[rid] || [];
+              next[rid] = dedupLogs(arr, limit);
+            }
+            return next;
+          });
         }
       } catch { }
     })().catch(() => { });
   }, [rooms, showExcluded, excluded.join(","), limit]);
+
+  // When a room emits logs but is not in /rooms list yet, add it so it appears without reload.
+  useEffect(() => {
+    const keys = Object.keys(roomLogs || {});
+    if (keys.length === 0) return;
+    setRooms((prev) => {
+      const known = new Set((prev || []).map((r) => r.roomId));
+      let changed = false;
+      const next = [...(prev || [])];
+      for (const rid of keys) {
+        if (known.has(rid)) continue;
+        const arr = roomLogs[rid] || [];
+        if (!arr.length) continue;
+        const last = arr[arr.length - 1];
+        next.push({ roomId: rid, roomName: last?.roomName || rid });
+        known.add(rid);
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [roomLogs]);
 
   // Fallback polling
   useEffect(() => {
@@ -306,12 +435,12 @@ export default function Home() {
         const url = `/api/bulk?` + params.toString();
         const r = await fetch(url, { cache: 'no-store' });
         if (r.ok) {
-          const data: any = await r.json();
-          if (data?.all) {
-            setAllLogs((prev) => dedupLogs((data.all as LogEntry[]), limit));
+          const data: BulkLogsResponse = await r.json();
+          if (data.all) {
+            setAllLogs(() => dedupLogs(data.all as LogEntry[], limit));
           }
-          if (data?.all) {
-            const arr: LogEntry[] = data.all as any;
+          if (data.all) {
+            const arr: LogEntry[] = data.all;
             const grouped: Record<string, LogEntry[]> = {};
             for (const e of arr) {
               const rid = e.roomId; if (!rid) continue;
@@ -336,7 +465,7 @@ export default function Home() {
       finally { pollBusyRef.current = false; }
     }, 1200);
     return () => clearInterval(timer);
-  }, [status, chosen, include, exclude, limit, showExcluded, excluded.join(","), rooms.map(r => r.roomId).join(",")]);
+  }, [status, include, exclude, limit]);
 
   const handleReconnect = () => {
     try {
@@ -350,16 +479,20 @@ export default function Home() {
     setConnectionVersion((v) => v + 1);
   };
 
-  const updateRuntime = async (next: { features?: any, excludedRoomIds?: string[] }) => {
+  const updateRuntime = async (next: {
+    features?: Record<string, RoomFeatures>;
+    excludedRoomIds?: string[];
+  }) => {
     const res = { ok: false };
     try {
-      const nextFeatures = next.features ?? features;
+      const nextFeatures: Record<string, RoomFeatures> =
+        next.features ?? features;
       const nextExcluded = next.excludedRoomIds ?? excluded;
       // allowedRoomIds: 기능이 하나라도 켜진 방 중 제외되지 않은 방
       const allowedRoomIds = Object.keys(nextFeatures || {}).filter(rid => {
         if (nextExcluded.includes(rid)) return false;
         const f = nextFeatures[rid] || {};
-        return !!(f.welcome || f.broadcast || f.schedules || f.ai);
+        return !!(f.welcome || f.broadcast || f.schedules || f.ai || f.chatSummary || f.courseRoster);
       });
       // POST via Next API proxy (avoids CORS/host mismatch)
       const r = await fetch(`/api/runtime`, {
@@ -372,9 +505,9 @@ export default function Home() {
         })
       });
       res.ok = r.ok;
-      const cfg = await (await fetch(`/api/runtime`)).json();
-      setExcluded(cfg?.excludedRoomIds || []);
-      setFeatures(cfg?.features || {});
+      const cfg: RuntimeConfig = await (await fetch(`/api/runtime`)).json();
+      setExcluded((cfg?.excludedRoomIds as string[]) || []);
+      setFeatures((cfg?.features as Record<string, RoomFeatures>) || {});
     } catch {
       res.ok = false;
     }
@@ -385,7 +518,9 @@ export default function Home() {
     setSavingRooms(prev => ({ ...prev, [rid]: "saving" }));
     const next = { ...features };
     next[rid] = next[rid] || {};
-    const ok = await updateRuntime({ features: next, excludedRoomIds: excluded });
+    const okRuntime = await updateRuntime({ features: next, excludedRoomIds: excluded });
+    const okCourse = courseRosterConfigDirty ? await saveCourseRosterConfig() : true;
+    const ok = okRuntime && okCourse;
     setSavingRooms(prev => ({ ...prev, [rid]: ok ? "saved" : "error" }));
     if (ok) {
       setTimeout(() => {
@@ -414,7 +549,12 @@ export default function Home() {
   const onUploadAvatar = async (rid: string, file: File) => {
     const fd = new FormData();
     fd.append('file', file);
-    try { await fetch(`${REALTIME_BASE}/avatar/${rid}`, { method: 'POST', body: fd }); }
+    try {
+      const r = await fetch(`${REALTIME_BASE}/avatar/${rid}`, { method: 'POST', body: fd });
+      if (r.ok) {
+        setAvatarVersions(prev => ({ ...prev, [rid]: (prev[rid] || 0) + 1 }));
+      }
+    }
     catch { }
   };
 
@@ -430,6 +570,12 @@ export default function Home() {
     const ts = watchdog.mtime ? new Date(watchdog.mtime).toLocaleString() : 'N/A';
     return { ts, lastLine };
   }, [watchdog]);
+
+  const visibleRooms = useMemo(() => {
+    const withLogs = (rooms || []).filter((r) => (roomLogs[r.roomId]?.length || 0) > 0);
+    const filtered = withLogs.filter((r) => (showExcluded ? true : !excluded.includes(r.roomId)));
+    return filtered;
+  }, [rooms, roomLogs, showExcluded, excluded]);
 
   return (
     <div className="dashboard-container">
@@ -473,6 +619,75 @@ export default function Home() {
         <pre style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: 8, padding: 10, maxHeight: 140, overflow: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
           {watchdog.lines?.slice(-10).join('\n') || '로그 없음'}
         </pre>
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+          디버그 · allLogs: {debugCounts.allCount}개 / roomLogs: {debugCounts.roomKeys}방, 총 {debugCounts.roomTotal}행
+        </div>
+      </div>
+
+      {/* 강의 운영(roster-worker) 상태/설정 */}
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>강의 운영 (카페/닉네임 검증)</h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+          <span className={`tag ${courseRosterConfigDirty ? 'tag-inactive' : 'tag-active'}`}>
+            설정 {courseRosterConfigDirty ? '저장 필요' : 'OK'}
+          </span>
+          <span className="tag tag-excluded" title={courseRosterConfigPath || ''}>
+            설정파일 {courseRosterConfigExists ? 'OK' : '없음'}
+          </span>
+          <span className="tag tag-excluded" title={courseRosterServiceAccount.path || ''}>
+            서비스계정 {courseRosterServiceAccount.exists ? 'OK' : '없음'}
+          </span>
+          {courseRosterServiceAccount.clientEmail && (
+            <span className="tag tag-excluded" title="서비스계정 이메일">
+              {courseRosterServiceAccount.clientEmail}
+            </span>
+          )}
+          <span className="tag tag-excluded" title="roster-worker heartbeat/status">
+            워커 {rosterWorkerStatus?.status?.pid ? `RUN(pid=${rosterWorkerStatus.status.pid})` : 'N/A'}
+          </span>
+          <span className="tag tag-excluded" title="pending tracking count">
+            pending {typeof rosterWorkerStatus?.status?.pending === 'number' ? rosterWorkerStatus.status.pending : '—'}
+          </span>
+          <button
+            className="btn-outline"
+            style={{ padding: '6px 10px', fontSize: 12 }}
+            onClick={() => void restartRosterWorker()}
+            title="windows/start_roster_worker.ps1 -Restart"
+          >
+            워커 재시작
+          </button>
+          <button
+            className="btn-save"
+            style={{ padding: '6px 10px', fontSize: 12 }}
+            disabled={courseRosterConfigSaving === 'saving' || !courseRosterConfigDirty}
+            onClick={() => void saveCourseRosterConfig()}
+            title="data/course_roster_worker.json 저장"
+          >
+            {courseRosterConfigSaving === 'saving' ? '저장 중…' : '강의설정 저장'}
+          </button>
+          <label className="btn-outline" style={{ padding: '6px 10px', fontSize: 12, cursor: 'pointer' }} title="data/gcp_service_account.json 업로드">
+            서비스계정 업로드
+            <input
+              type="file"
+              accept="application/json"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void uploadServiceAccount(f);
+              }}
+            />
+          </label>
+        </div>
+        {(courseRosterConfigError || rosterWorkerStatusError || courseRosterServiceAccount.error) && (
+          <div style={{ fontSize: 12, color: 'var(--error)', lineHeight: 1.5 }}>
+            {courseRosterConfigError && (<div>설정 로드/저장 오류: <code>{courseRosterConfigError}</code></div>)}
+            {courseRosterServiceAccount.error && (<div>서비스계정 파싱 오류: <code>{courseRosterServiceAccount.error}</code></div>)}
+            {rosterWorkerStatusError && (<div>워커 상태 조회 오류: <code>{rosterWorkerStatusError}</code></div>)}
+          </div>
+        )}
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          - 방 카드의 <b>강의 운영</b> 섹션에서 roomId별 시트/CSV/가입URL을 설정하고 <b>저장</b>하면, roster-worker가 15분/24시간 정책으로 멘션 안내 + Sheets 업서트를 수행합니다.
+        </div>
       </div>
 
       <div className="filters-bar">
@@ -484,7 +699,7 @@ export default function Home() {
             className="filter-select"
           >
             <option value=''>전체(ALL)</option>
-            {rooms.map(r => <option key={r.roomId} value={r.roomId}>{r.roomName}</option>)}
+            {visibleRooms.map(r => <option key={r.roomId} value={r.roomId}>{r.roomName}</option>)}
           </select>
         </div>
         <div className="filter-group">
@@ -532,10 +747,10 @@ export default function Home() {
         status={pipelineStatus}
         error={pipelineError}
         onRefresh={fetchPipelineStatus}
-        onRestartBot={handleBotRestart}
+        onRestartBot={restartBot}
         botRestarting={botRestarting}
         botRestartMessage={botRestartMessage}
-        onRepairDevice={handleDeviceRepair}
+        onRepairDevice={repairDevice}
         deviceRepairing={deviceRepairing}
         deviceRepairMessage={deviceRepairMessage}
       />
@@ -546,16 +761,45 @@ export default function Home() {
         <div className="section-title">
           <span>📱 방 목록</span>
           <span style={{ fontSize: 14, fontWeight: 400, color: 'var(--text-muted)' }}>
-            ({rooms.filter(r => showExcluded ? true : !excluded.includes(r.roomId)).length}개)
+            ({visibleRooms.length}개)
           </span>
         </div>
+        {roomsLoadError && (
+          <div
+            style={{
+              marginTop: 10,
+              marginBottom: 12,
+              padding: 12,
+              borderRadius: 10,
+              border: "1px solid var(--border-color)",
+              background: "rgba(239,68,68,0.08)",
+              color: "var(--error)",
+              fontSize: 13,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontWeight: 800, marginBottom: 6 }}>방 목록 로드 실패</div>
+            <div style={{ color: "var(--text-secondary)" }}>
+              - 에러: <code>{roomsLoadError}</code>
+              <br />- Realtime API(:8650)가 내려가 있으면 `/api/rooms`가 503을 반환합니다.
+              <br />  - 우선 부분 재기동을 권장합니다: <code>pwsh windows/start_api.ps1 -Port 8650</code>
+              <br />  - UI만 문제면: <code>pwsh windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort</code>
+              <br />  - 정말 콜드 부팅/전체 복구가 필요할 때만: <code>windows/start_all.cmd</code>
+            </div>
+          </div>
+        )}
         <div className="room-grid">
-          {rooms.filter(r => showExcluded ? true : !excluded.includes(r.roomId)).map(r => (
+          {visibleRooms.map(r => (
             <RoomCard
               key={r.roomId}
               room={r}
               logs={roomLogs[r.roomId] || []}
               features={features[r.roomId] || {}}
+              courseRosterConfig={(courseRosterConfig?.rooms as any)?.[r.roomId] || null}
+              courseRosterConfigExists={courseRosterConfigExists}
+              courseRosterHasServiceAccount={courseRosterServiceAccount.exists}
+              courseRosterConfigDirty={courseRosterConfigDirty}
+              onUpdateCourseRosterConfig={onUpdateCourseRosterRoomConfig}
               excluded={excluded.includes(r.roomId)}
               saving={savingRooms[r.roomId] || "idle"}
               onToggleFeature={onToggleFeature}
@@ -563,6 +807,7 @@ export default function Home() {
               onExclude={onExcludeRoom}
               onUploadAvatar={onUploadAvatar}
               realtimeBase={REALTIME_BASE}
+              avatarVersion={avatarVersions[r.roomId] || 0}
             />
           ))}
         </div>
@@ -579,7 +824,7 @@ export default function Home() {
       </div>
 
       <div style={{ marginTop: 40, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', paddingBottom: 40 }}>
-        <b>SAFE_MODE</b>: 항상 ON (발신 기능 미노출). 이 UI는 수신/모니터링 전용입니다.
+        <b>SAFE_MODE</b>: 기본은 ON(발신 차단)이며, 실제 운영/발신은 `/settings`에서 제어됩니다. (가드레일: allowlist + talkApi.enabled)
       </div>
     </div>
   );

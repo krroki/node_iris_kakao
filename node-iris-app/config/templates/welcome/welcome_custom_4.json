@@ -1,0 +1,9 @@
+{
+  "title": "CASE2-옵션4(닉확인)",
+  "content": "안녕하세요 @{entrance}님 📢\n\n소통하시기 전에\n하트 인증이 선행되어야 합니다.\n\n번거로우시겠지만\n캡쳐해서 바로 올려주세요!",
+  "category": "welcome",
+  "images": [
+    "assets/welcome/common/KakaoTalk_20251213_123012048.png"
+  ],
+  "mentions": []
+}

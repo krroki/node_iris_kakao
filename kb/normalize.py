@@ -1,10 +1,14 @@
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
 import hashlib
 import re
 
 
 def html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html or "", "lxml")
+    # NOTE: lxml이 없을 수 있으므로(특히 Windows 환경) html.parser로 폴백한다.
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+    except FeatureNotFound:
+        soup = BeautifulSoup(html or "", "html.parser")
     # Keep line breaks for block elements
     for br in soup.find_all(["br", "p", "div", "li", "h1", "h2", "h3", "h4"]):
         br.append("\n")
@@ -24,4 +28,3 @@ def make_dedup_key(title: str, author: str | None, created_at_iso: str | None, l
     if links:
         parts.extend(sorted(set(links)))
     return sha256("|".join(parts))
-

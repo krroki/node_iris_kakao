@@ -6,23 +6,14 @@ Set-Location -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path) | Ou
 Set-Location -LiteralPath (Join-Path (Get-Location).Path "..")
 
 function Py { param([string[]]$A)
-  $py = if (Test-Path ("{0}\Scripts\python.exe" -f $Venv)) { "{0}\Scripts\python.exe" -f $Venv } else { "python" }
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $py
-  $psi.Arguments = ($A -join ' ')
-  $psi.WorkingDirectory = (Get-Location).Path
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.UseShellExecute = $false
-  $p = [System.Diagnostics.Process]::Start($psi)
-  $p.WaitForExit()
-  $out = $p.StandardOutput.ReadToEnd(); if ($out) { Write-Host $out }
-  $err = $p.StandardError.ReadToEnd(); if ($err) { Write-Host $err }
+  $py = if (Test-Path ("{0}\\Scripts\\python.exe" -f $Venv)) { "{0}\\Scripts\\python.exe" -f $Venv } else { "python" }
+  Write-Host ("[kb_manualize] exec: {0} {1}" -f $py, ($A -join ' '))
+  & $py @A 2>&1 | ForEach-Object { Write-Host $_ }
+  $rc = $LASTEXITCODE
+  if ($rc -ne 0) { throw ("python exited with {0}" -f $rc) }
 }
 
 Write-Host "[kb_manualize] running" -ForegroundColor Cyan
+if (-not $env:KB_LOG_FILE) { $env:KB_LOG_FILE = 'kb_manualize.log' }
 $__oldEA = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-try { Py @('-m','kb.manualize2') } finally { $ErrorActionPreference = $__oldEA }
-
-
-
+try { Py @('-m','kb.manualize') } finally { $ErrorActionPreference = $__oldEA }

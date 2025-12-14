@@ -1,9 +1,16 @@
-# 14.kakao
+# 12.kakao
 
-LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 안전모드)의 코드/문서 저장소입니다. UI 대시보드, 실시간 로그(1초), 포트프록시/ADB 설정 스크립트를 포함합니다.
+> ⚠️ **중요 안내**  
+> 이 README는 초기 **WSL + Streamlit 대시보드** 구성을 기준으로 작성된 레거시 문서입니다.  
+> 현재 공식 운영 스택은 **Windows 전용(ADR-0010)** + FastAPI(`/logs/stream`) + Next.js 대시보드(`web/`)이며,  
+> 최신 구조와 실행 방법은 `agents.md`, `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/ops/realtime_api.md`,
+> `docs/runbook_windows_portproxy.md`를 우선 참고해야 합니다.
+
+LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE)의 코드/문서 저장소입니다.  
+UI 대시보드, 실시간 로그(1초), 포트프록시/ADB 설정 스크립트를 포함합니다.
 
 - 작업 전 `agents.md`의 지침을 먼저 확인하세요.
-- 실행/운영 관련 빠른 가이드는 아래 Quick Start를 따르세요.
+- 실행/운영 관련 빠른 가이드는 **Windows 전용 런북** 문서를 따르되, 아래 Quick Start는 레거시 WSL 기준 예시로만 활용하세요.
 
 **중요: 기본은 SAFE_MODE=true로 “메시지 발송 차단” 상태입니다. 수신/로그만 동작합니다.**
 

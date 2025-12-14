@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "rooms": {
+    "18462226881291012": {
+      "enabled": false,
+      "spreadsheetId": "https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit",
+      "rosterSheetName": "ROSTER_RAW",
+      "cafeCsvPath": "C:\\\\dev\\\\naver-cafe-member-crawler\\\\data\\\\<카페이름>_<clubid>.csv",
+      "joinUrl": "https://cafe.naver.com/<clubname>"
+    }
+  }
+}

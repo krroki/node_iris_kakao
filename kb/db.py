@@ -1,4 +1,5 @@
 import os
+import re
 from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -29,7 +30,16 @@ except Exception:
 
 def _default_db_url() -> str:
     # Default to local pgvector container mapping (host 127.0.0.1:5433)
-    return os.getenv("DATABASE_URL", "postgresql+psycopg://iris:iris@127.0.0.1:5433/iris")
+    # NOTE: SQLAlchemy 1.4 환경에서는 psycopg3(dialect=psycopg)가 로딩되지 않을 수 있어 기본은 psycopg2로 둔다.
+    url = (os.getenv("DATABASE_URL") or "").strip()
+    if not url:
+        return "postgresql+psycopg2://iris:iris@127.0.0.1:5433/iris"
+
+    # 환경/툴에 따라 DATABASE_URL이 postgresql+psycopg(=psycopg3)로 설정되어 들어오는 경우가 있는데,
+    # 이 저장소 기본 설치(Windows 스크립트)는 psycopg2-binary를 사용하므로, 드라이버 미설치로 서비스가
+    # 죽지 않도록 psycopg2로 안전하게 변환한다.
+    url = re.sub(r"^postgresql\\+psycopg://", "postgresql+psycopg2://", url, flags=re.IGNORECASE)
+    return url
 
 
 engine = create_engine(_default_db_url(), pool_pre_ping=True, future=True)

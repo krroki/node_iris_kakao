@@ -8,6 +8,7 @@ from kb.auto_login import login_and_store
 from kb.rules import load_rules, should_keep
 from kb.collect_detail import upsert_post
 from kb.normalize import html_to_text
+from kb.disabled_menus import DISABLED_MENU_IDS
 from kb.jobs import start, finish
 from sqlalchemy import text
 from kb.db import db_session
@@ -63,6 +64,11 @@ def _max_known_post_id(menu_id: int) -> int:
 
 
 def ingest(cafe_id: int, menus: List[int], pages: int = 3):
+    menus = [m for m in (menus or []) if m not in DISABLED_MENU_IDS]
+    if not menus:
+        logger.info("[ingest] no menus to ingest after disabled filter")
+        return {"kept": 0, "skipped": 0, "known": 0}
+
     rules = load_rules(DEFAULT_RULES)
     kept = 0
     skipped = 0
@@ -107,10 +113,10 @@ def ingest(cafe_id: int, menus: List[int], pages: int = 3):
                     continue
                 try:
                     try:
-                        detail = get_article(aid_int)
+                        detail = get_article(aid_int, menu_id=mid)
                     except Exception:
                         if ensure_login_once():
-                            detail = get_article(aid_int)
+                            detail = get_article(aid_int, menu_id=mid)
                         else:
                             raise
                     article = detail.get("result", {}).get("article") or detail.get("article") or {}
@@ -123,7 +129,11 @@ def ingest(cafe_id: int, menus: List[int], pages: int = 3):
                             if t < 10_000_000_000:
                                 t = t * 1000
                             import datetime as _dt
-                            created_iso = _dt.datetime.utcfromtimestamp(t/1000.0).isoformat()+"Z"
+                            created_iso = (
+                                _dt.datetime.fromtimestamp(t / 1000.0, tz=_dt.timezone.utc)
+                                .isoformat()
+                                .replace("+00:00", "Z")
+                            )
                     except Exception:
                         created_iso = None
                     text = html_to_text(html)
@@ -142,6 +152,10 @@ def ingest(cafe_id: int, menus: List[int], pages: int = 3):
 
 def main():
     menus = _parse_menus_from_env()
+    before = list(menus)
+    menus = [m for m in menus if m not in DISABLED_MENU_IDS]
+    if before != menus:
+        logger.info(f"[ingest] disabled menus filtered: before={before} after={menus}")
     pages = int(os.getenv("KB_PAGES", "3"))
     jid = start("ingest", {"menus": menus, "pages": pages, "cafe_id": CAFE_ID})
     try:

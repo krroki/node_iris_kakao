@@ -25,14 +25,13 @@ class WelcomeHandler:
         target = room_template if room_template.exists() else default_template
 
         if target.exists():
-            return json.loads(target.read_text(encoding="utf-8"))
+            try:
+                return json.loads(target.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
 
-        # 기본 텍스트 템플릿 초기화
-        default_template.write_text(
-            json.dumps({"auto_reply": "환영합니다! 채팅방 규칙을 확인해주세요."}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        return {"auto_reply": "환영합니다! 채팅방 규칙을 확인해주세요."}
+        # 템플릿이 없으면 기본 환영 멘트를 생성/발송하지 않는다.
+        return {}
 
     def prepare_welcome_payload(self, chat: ChatContext) -> Dict[str, Any]:
         """환영 템플릿과 신규 멤버 메타 정보를 결합한다."""

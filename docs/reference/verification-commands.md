@@ -12,7 +12,7 @@
 |------|------|------|
 | Python 테스팅 | `pytest` | 루트에서 실행, `tests/` 전체 대상 |
 | Python 문법 스모크 | `python -m compileall src` | 빠른 문법 검증 (선택) |
-| Playwright 기반 스크립트 확인 | `npx playwright test` | `scripts/*.js`에서 사용하는 Playwright 의존성 검증 |
+| Playwright E2E(Next.js 대시보드) | `npx playwright test` | 기본: Next dev 서버를 `http://127.0.0.1:3110`로 자동 기동 후 E2E 실행 (`PW_BASE_URL`/`PW_WEB_PORT`). 레거시 Streamlit(:8512)은 `LEGACY_STREAMLIT_E2E=1`일 때만 실행 |
 | 프로젝트 의존성 설치 | `pip install -r requirements.txt` | 루트 Python 환경 구성 |
 
 > 문서 전용 변경(`docs/**`, `README*.md`, `**/*.md`)만 포함된 PR은 테스트 생략 가능.  
@@ -50,6 +50,49 @@
 
 `node-iris-app/.env.example`을 기반으로 로컬 환경 변수를 구성하고, 변경 시 `config/runtime.json`을 함께 확인한다.
 
+### 테스트 커맨드(방 제한)
+
+- `!welcome test` / `!welcome:test`, `!reply test` / `!reply:test`는 **테스트용 오픈채팅방에서만** 동작한다: `18462226881291012`
+  - 다른 방에서 실행하면 **발신/응답 없이 스킵**되며, 로그에는 `*_test_dry_run (reason=NOT_TEST_ROOM)`만 기록된다.
+
+### 오픈채팅 “답장(Reply)” 발신 스모크
+
+- 카카오톡에서 임의의 메시지에 **‘답장’으로** `!reply test` (또는 `!reply:test`) 전송 → Iris가 **실제 답장**으로 `답장 테스트: ...` 를 발신해야 한다.
+  - 전제: `runtime.json.safeMode=false`, `runtime.json.talkApi.enabled=true`, 테스트 방 roomId가 `allowedRoomIds`에 포함
+  - 참고: Reply는 `type=26`이며, Realtime API의 `/send/talkapi/dispatch_raw` 경로를 사용한다. 이때 `attachment.src_userId/src_linkId/src_type`는 Talk-API 요구사항 때문에 최종적으로 int(number)로 전달되어야 하며, 서버가 숫자형 문자열을 int로 강제 변환(coerce)한다(미적용 시 `INVALID_ARGUMENT(-203)` 가능).
+
+### Welcome 후속 “첫 이미지” 자동 답장 스모크
+
+- 전제:
+  - `runtime.json.safeMode=false`, `runtime.json.talkApi.enabled=true`
+  - 테스트 방 roomId가 `allowedRoomIds`에 포함
+  - welcome 기능 ON + (방 옵션) `welcomeFollowUp`가 OFF가 아닐 것(기본 ON)
+- 시나리오:
+  1. 신규 입장자가 들어오고 welcome 텍스트가 정상 발신되는지 확인
+  1-1. (템플릿 이미지) welcome 템플릿에 `images`가 설정되어 있다면 이미지도 별도 메시지로 발신되는지 확인(ADR-0030)
+  2. 해당 신규 입장자가 **입장 후 5분 이내**에 **첫 이미지**를 전송
+  3. 봇이 그 이미지 메시지에 **답장(Reply)** 으로 랜덤 문구(예: “감사합니다~ 이제 편하게 소통해주시면 됩니다!”)를 1회 발신
+- 체크:
+  - 같은 사용자가 추가 이미지를 보내도 **추가 답장은 없어야 함**(1회 트리거)
+  - 5분이 지난 뒤 첫 이미지를 보내면 **답장이 없어야 함**
+
+### 공지(Announcement) 미러링 스모크 (소스 → 다중 타겟 복제)
+
+- 전제:
+  - `runtime.json.safeMode=false`, `runtime.json.talkApi.enabled=true`
+  - 소스/타겟 roomId가 `runtime.json.allowedRoomIds`에 포함
+  - 운영 방 오발신 방지를 위해, **테스트용 소스/타겟 방을 별도로 만들어** 그 방들로만 검증 권장
+- 설정:
+  - 대시보드 `http://127.0.0.1:3100/announcement`에서 route 추가/편집
+  - route 옵션:
+    - `appendTargetIndex=true` → 타겟별로 끝에 번호를 붙임(예: `공지 1`, `공지 2`…)
+    - `targetIndexStart` → 시작 번호(기본 1)
+- 확인:
+  - `windows/logs/broadcast_worker.out.log`에 `[announce] triggered` / `[announce] completed` 로그가 찍히는지 확인
+  - 실패 시 같은 로그에 `[talkapi] dispatch non-OK`가 찍히며, `roomId`/`talkStatus`로 어떤 타겟이 실패하는지 확인 가능
+  - 워커 상태 파일: `node-iris-app/data/broadcast_worker_status.json`의 `lastAnnouncement*` 필드 확인
+  - 소스 방에 `[공지 전파 결과]` 요약 메시지가 1회 남고, **이 메시지가 타겟 방으로는 복제되지 않는지** 확인
+
 ---
 
 ## 4. Streamlit 대시보드 (`dashboard/`)
@@ -79,18 +122,93 @@
 
 ## 6. Windows 운영 스크립트 (`windows/`)
 
+> 원칙: **부분 재기동 우선**. start_all은 “콜드 부팅/전체 복구”에만 사용한다.  
+> (코어/워커 분리(ADR-0027) 이후 “항상 start_all”은 취지에 반한다.)
+
 | 목적 | 명령 (PowerShell 관리자) | 설명 |
 |------|-------------------------|------|
-| 포트프록시/ADB 설정 | `windows/setup_iris_port.ps1 -LocalPort 5050` | 기본 포트 5050, 필요 시 `_5005` 버전 사용 |
+| 전체 스택 기동(API+KB+Bot+Web) | `windows/start_all.cmd` | 사용자 실행 권장 엔트리포인트(cmd 래퍼, 내부적으로 `windows/start_all.ps1` 호출). 기본 포트: API 8650, Web 3100. 실행 후 watchdog가 **자동으로 백그라운드 기동**되며(`windows/watchdog.log` 기록), 필요 시 `windows/start_all.ps1 -NoWatchdog`로 비활성화 |
+| 부팅 자동 기동 등록(Task Scheduler) | `windows/register_start_all_task.ps1` | Windows 작업 스케줄러에 로그인/부팅 트리거로 `start_all.cmd` 자동 실행 작업을 등록. 삭제는 `windows/register_start_all_task.ps1 -Delete` |
+| Bot 단독 재기동(빌드 포함) | `windows/start_bot.ps1 -Restart` | `node-iris-app/dist`가 최신이 아니면 자동으로 `npm run build` 후 기동. 운영 중 “코드 변경이 반영되지 않음”이 의심되면 이 명령으로 확인 |
+| Bot 단독 재기동(빌드 생략) | `windows/start_bot.ps1 -Restart -SkipBuild` | 빠른 재기동(이미 빌드가 최신이라는 확신이 있을 때만) |
+| Welcome-worker 단독 재기동 | `windows/start_welcome_worker.ps1 -Restart` | Welcome/후속 Reply 기능 워커(ADR-0027). 중복 실행은 락 파일(`node-iris-app/data/locks/welcome_worker.lock`)로 자동 차단된다. 기본값은 `WELCOME_DISPATCHER=worker`이며, 레거시(`WELCOME_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장. 설정 변경 반영을 위해 SSE 재연결 TTL(기본 60초, `WELCOME_WORKER_STREAM_TTL_MS`)이 적용된다 |
+| AI-worker 단독 재기동 | `windows/start_ai_worker.ps1 -Restart` | `?디하클` AI 응답 워커(ADR-0028). 기본값은 `AI_DISPATCHER=worker`이며, 레거시(`AI_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
+| Broadcast-worker 단독 재기동 | `windows/start_broadcast_worker.ps1 -Restart` | 공지/브로드캐스트 워커(ADR-0029). 기본값은 `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker`이며, 둘 다 레거시(`...=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
+| Web 단독 기동(prod) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` | 운영 모드(`next start`, distDir `.next-prod`). READY는 `/api/ping`(200)으로 판정 |
+| Web 단독 기동(prod, CleanBuild) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild` | `.next-prod` 삭제 후 재빌드(Next chunk 깨짐/MODULE_NOT_FOUND 복구용) |
+| Web 개발 서버(dev) | `windows/start_web.ps1 -Mode dev -Port 3100 -ForceKillPort` | 개발용(`next dev`, distDir `.next`). 시작 전 `.next` 삭제 실패 시 즉시 실패(폴백 금지) |
+| Watchdog 단독 기동 | `windows/watchdog.ps1` | `/status` 기반으로 bot/logStore 이상을 감지해 자동 재시작. 로그는 `windows/watchdog.log`에 기록되며 Web 홈에서 “Watchdog” 카드로 확인 가능 |
+| 포트프록시/ADB 설정 | `windows/setup_iris_port.ps1 -LocalPort 5050` | 기본 포트 5050. `adb cannot bind 127.0.0.1:5050 (10048)`이면 `netsh interface portproxy show v4tov4`에서 5050 listen 규칙 삭제 후 재실행 |
 | 상태 점검 | `windows/probe_iris.ps1` | HTTP 200 여부 체크 |
 | WSL 봇 로그 모니터링 | `windows/tail_wsl_bot.ps1` | 실시간 로그 tail |
 | 포트프록시 해제/재설정 | `windows/tcp_proxy_iris.ps1` | 고급 네트워크 설정 |
+
+### `/status` 기반 장애 진단(Welcome 미발송 포함)
+
+- 빠른 상태 확인(권장):
+  - `powershell -NoProfile -Command "Invoke-RestMethod http://127.0.0.1:8650/status | ConvertTo-Json -Depth 6"`
+- 체크 포인트:
+  - `bot.ok=false` 또는 `logStore.ok=false`면 **welcome-worker/ai-worker가 트리거를 못 받을 수 있음**(`/logs/stream`은 파일 로그 기반).
+  - `extra.emfile=true` 또는 `node-iris-app/data/bot_health.json` 존재 시: MessageStore가 `EMFILE(too many open files)`로 로그 기록을 중단한 상태일 수 있음.
+    - 우선 복구: `windows/start_bot.ps1 -Restart` (또는 콜드 부팅은 `windows/start_all.cmd`)
+    - 운영에서는 watchdog가 자동 재시작하지만, watchdog가 죽어있으면 수동 복구가 필요.
 
 모든 스크립트는 관리자 권한 PowerShell에서 실행해야 하며, 실행 전 `Set-ExecutionPolicy RemoteSigned` 상태를 확인한다.
 
 ---
 
-## 7. 세션 종료 체크
+## 7. 오픈채팅 멤버(닉네임) 로딩/조회 (`scripts/`, `web/`)
+
+> 대시보드(3100)의 “멤버 보기”는 IRIS DB(`db2.open_chat_member`)를 조회한다.  
+> 대형 방은 단말에서 “멤버 목록”을 한 번 열고 스크롤해야 DB가 충분히 채워질 수 있다.
+
+| 목적 | 명령 | 설명 |
+|------|------|------|
+| 멤버 DB 강제 로딩(단말 UI 스크롤) | `pwsh scripts/openchat_load_members.ps1 -RoomId <ROOM_ID>` | 오픈채팅 URL로 진입 → 멤버 화면 스크롤로 `db2.open_chat_member`를 채움(송신 없음) |
+| 멤버 스냅샷(JSON) 저장 | `python scripts/iris_members_snapshot.py --rooms <ROOM_ID> --output logs/analysis/iris_members_snapshot.json` | `db2.open_chat_member`를 roomId로 필터해 userId/nickname 목록을 저장 |
+| 대시보드에서 멤버 보기 | `http://127.0.0.1:3100` | 방 카드의 “멤버 보기”에서 닉네임 검색/페이지 이동(userId 클릭 시 복사) |
+| Google Sheets 업서트 | `python scripts/sync_openchat_members_to_sheets.py --room-id <ROOM_ID>` | `db2.open_chat_member`를 Google Sheets에 upsert(서비스 계정 OAuth 필요). 기본은 loaded<active면 실패. 1회 등록(`--init-config`)을 안 했으면 `--spreadsheet-id`가 필요 |
+
+### 강의 운영: 카페/닉네임 검증 워커(roster-worker)
+
+- 설정(로컬, gitignore):
+  - `data/course_roster_worker.json` (예시: `config/course_roster_worker.example.json`)
+  - `data/gcp_service_account.json` (서비스 계정)
+  - 카페 멤버 CSV: `C:\dev\naver-cafe-member-crawler\data\<카페이름>_<clubid>.csv`
+- 기동:
+  - `pwsh windows/start_roster_worker.ps1`
+  - 재시작: `pwsh windows/start_roster_worker.ps1 -Restart`
+- 비활성화:
+  - 전체 비활성화(운영): `setx ROSTER_WORKER_DISABLE 1`
+  - 방별 비활성화: `runtime.features[roomId].courseRoster=false`
+- 로그/상태:
+  - `windows/logs/roster_worker.out.log`
+  - `node-iris-app/data/roster_worker_status.json`
+
+---
+
+## 8. KB/RAG/SAFE_MODE 통합 검증 (`scripts/`)
+
+| 시나리오 | 명령 | 설명 |
+|----------|------|------|
+| KB 계약 + RAG 회귀 + SAFE_MODE 스모크 | `python scripts/test_kb_e2e.py` | KB 계약 테스트, RAG 결과 검증, SAFE_MODE 토크 API 차단 여부를 한 번에 점검 |
+| KB 수집/임베딩 신선도 점검 | `python scripts/kb_status.py` | 메뉴별 수집 최신일(예: 무료 특강/정규 강의가 며칠 전까지 들어왔는지), 포스트/임베딩 개수, 스케줄 상태(`/schedule`)를 한 번에 확인 |
+| SAFE_MODE 스모크 단독 실행 | `python scripts/test_safe_mode.py` | `/runtime`으로 safeMode 토글 → `/send/talkapi/dispatch`가 safeMode=true일 때 403을 반환하는지 확인 (테스트 후 원래 값 복원). payload의 roomId는 기본적으로 테스트 방(`TEST_ROOM_ID=18462226881291012`)을 사용 |
+| Talk-API authHeader 저장(수동 주입) | `powershell -ExecutionPolicy Bypass -File scripts/extract_talkapi_auth.ps1 -AccessToken "<token>" -DeviceUUID "<uuid>" -ApplyRuntime` | Authorization `accessToken-deviceUUID`를 `data/`에 저장하고 Realtime API(`/runtime`)에 반영 |
+| Talk-API authHeader 추출(자동 스캔, root 필요) | `powershell -ExecutionPolicy Bypass -File scripts/extract_talkapi_auth.ps1` | 카카오톡 로컬 경로에서 토큰/UUID 후보를 스캔(성공 시 `data/`에 저장). 실패 시 후보를 레드랙트 출력 후 종료 |
+| Talk-API authHeader 캡처(Frida) | `python scripts/capture_talkapi_auth_frida.py` | KakaoTalk 앱에서 실제 Authorization/Duuid 헤더를 캡처해 `data/`에 저장(값은 레드랙트만 출력) |
+| Talk-API authHeader 검증(실발송, confirm 필요) | `python scripts/verify_talkapi_auth_candidates.py --chat-id <ROOM_ID> --confirm-send --auth-header-file data/talkapi_auth.txt` | 저장된 authHeader로 1회 전송하여 `status==0` 성공 여부를 확인(테스트 방 권장) |
+| RAG 회귀 단독 실행 | `python scripts/verify_rag.py --base-url http://127.0.0.1:8610` | “사알못 다시보기 링크”, “12월 3일에 강의 있나”, “엉뚱한 질문” 등 핵심 질의를 자동화로 검증 |
+| RAG 예상 질문 20개 평가 | `python scripts/eval_rag_20_questions.py --suite member --base-url http://127.0.0.1:8610 --dump-md tmp\\rag_eval_member_20.md` | 카페 회원 관점 20문항을 일괄 호출해 라우팅/금지문구/URL 정책/가독성을 PASS/FAIL로 점검 (`--suite trained|creative|creative2|member|room455|edge|all`, LLM 모델 강제: `--llm-model gpt-4.1`) |
+| (추가) 창의/엣지 질문 20개(v2) | `python scripts/eval_rag_creative_20_v2.py` | 실사용/엣지 질문 20개로 빠르게 점검하고 `tmp/rag_eval_creative_20_v2.md`를 생성(금지문구/URL 중복/일반 상식 URL 정책 위반 자동 체크) |
+| (회귀) 특정 방 로그 재현 | `python scripts/eval_rag_20_questions.py --suite room455 --base-url http://127.0.0.1:8610` | 455330144472802 로그 기반 회귀(마케터제이/룰루랄라릴리/캡컷 가격) |
+| /ask_llm 단발 호출 | `python scripts/quick_call_ask_llm.py "질문"` | 기본 `context_tags=['dinohighclass']`로 node-iris와 동일 조건 테스트 (`--no-tags`, `--tags`, `--model` 지원) |
+
+통합 검증 스크립트는 **서비스가 실제로 띄워진 상태**에서만 의미가 있으므로, 먼저 KB 서비스(:8610)와 Realtime API(:8650)를 실행한 뒤 사용해야 한다.
+
+---
+
+## 9. 세션 종료 체크
 
 1. 코드 변경이 있는 모든 언어/영역에 대해 위 명령으로 테스트 수행 (`pytest`, `npm test`, `npx playwright test` 등).
 2. `scripts/log_api.py` 또는 UI 스모크를 통해 런타임 동작 스크린샷/로그 확보.

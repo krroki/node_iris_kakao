@@ -38,6 +38,26 @@ class DedupCache {
   }
 
   /**
+   * 존재 여부만 확인 (있으면 true). TTL 만료된 엔트리는 제거한다.
+   * - isDuplicate와 달리 key를 새로 추가하지 않는다.
+   */
+  has(key: string): boolean {
+    const now = Date.now();
+    const entry = this.cache.get(key);
+    if (!entry) return false;
+    if (now - entry.timestamp < this.ttlMs) return true;
+    this.cache.delete(key);
+    return false;
+  }
+
+  /**
+   * key를 "봤음"으로 표시 (TTL 갱신)
+   */
+  mark(key: string): void {
+    this.cache.set(key, { timestamp: Date.now() });
+  }
+
+  /**
    * 메시지 ID + 소스 방 조합으로 중복 체크
    */
   isMessageDuplicate(msgId: string, sourceRoom: string): boolean {

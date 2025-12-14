@@ -126,21 +126,40 @@ function Stop-ExistingBot {
         return
     }
 
-    # Only stop node-iris-app related processes (check command line)
-    # ADR-0011: dist\index.js 패턴 포함 (start_bot.ps1과 일관성)
-    $stopped = 0
-    Get-WmiObject Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($_.CommandLine -like "*node-iris-app*" -or $_.CommandLine -like "*iris*bot*" -or
-            $_.CommandLine -like "*dist\index*" -or $_.CommandLine -like "*dist/index*") {
-            try {
-                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-                Write-Status "Stopped bot process (PID: $($_.ProcessId))" "Yellow"
-                $stopped++
-            } catch {}
+    # ⚠️ 절대 금지: "dist\\index.js" 같은 범용 패턴으로 node 전체를 종료하면 다른 프로젝트까지 종료될 수 있다.
+    # node-iris-app이 기록한 status.json PID + (신규) 절대경로 dist/index.js 만 안전하게 종료한다.
+    $root = Split-Path $PSScriptRoot -Parent
+    $botDir = Join-Path $root 'node-iris-app'
+    $statusPath = Join-Path $botDir 'data\status.json'
+    $distIndexAbs = Join-Path $botDir 'dist\index.js'
+
+    $targets = @()
+    try {
+        if (Test-Path $statusPath) {
+            $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($j.pid) { $targets += [int]$j.pid }
         }
-    }
-    if ($stopped -eq 0) {
+    } catch {}
+
+    try {
+        $absRe = [Regex]::Escape($distIndexAbs)
+        $extra = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match $absRe } |
+            Select-Object -ExpandProperty ProcessId)
+        if ($extra) { $targets += $extra }
+    } catch {}
+
+    $targets = @($targets | Where-Object { $_ -and $_ -gt 0 } | Sort-Object -Unique)
+    if ($targets.Count -eq 0) {
         Write-Status "No bot processes found to stop" "Gray"
+        return
+    }
+
+    foreach ($pid in $targets) {
+        try {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+            Write-Status "Stopped bot process (PID: $pid)" "Yellow"
+        } catch {}
     }
 }
 

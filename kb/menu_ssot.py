@@ -48,6 +48,15 @@ def get_cafe_id() -> int:
     return load_ssot().get("cafe_id", 30819883)
 
 
+def get_cafe_url() -> str:
+    """SSOT에서 cafe_url 반환"""
+    url = str(load_ssot().get("cafe_url") or "").strip()
+    if url:
+        return url
+    # best-effort fallback (SSOT가 비어있을 때만)
+    return f"https://cafe.naver.com/{get_cafe_id()}"
+
+
 def get_all_menus() -> List[Dict[str, Any]]:
     """전체 메뉴 목록 반환"""
     return load_ssot().get("menus", [])

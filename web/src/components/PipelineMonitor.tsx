@@ -13,7 +13,7 @@ interface PipelineMonitorProps {
   deviceRepairMessage: string | null;
 }
 
-const stageOrder: StageKey[] = ['device', 'bot', 'logStore', 'realtime', 'ui'];
+const stageOrder: StageKey[] = ['device', 'bot', 'logStore', 'realtime', 'kb', 'ui'];
 
 const stageGuides: Record<StageKey, string[]> = {
   device: [
@@ -27,11 +27,16 @@ const stageGuides: Record<StageKey, string[]> = {
   ],
   logStore: [
     'node-iris-app/data/logs/<room>/*.log 파일이 최근에 갱신되는지 확인',
-    '필요 시 windows/start_all.ps1 로 전체 스택 재기동',
+    '필요 시 windows/start_all.cmd 로 전체 스택 재기동',
   ],
   realtime: [
-    'windows/start_all.ps1 실행 후 FastAPI(8650) /health 확인',
+    'windows/start_all.cmd 실행 후 FastAPI(8650) /health 확인',
     'logs/realtime_api.log tail -f 로 에러 확인',
+  ],
+  kb: [
+    'PowerShell: windows/kb_service.ps1 (KB 서비스 8610 기동)',
+    '또는 windows/start_all.cmd 로 전체 스택 재기동',
+    'KB 스케줄/수집 상태는 /kb 탭에서 확인',
   ],
   ui: [
     '윈도우 PowerShell: windows/start_web.ps1 또는 start_all.ps1',
@@ -230,4 +235,3 @@ export default function PipelineMonitor({
     </div>
   );
 }
-

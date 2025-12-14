@@ -106,7 +106,8 @@ curl http://127.0.0.1:5050/config
 | 증상 | 조치 |
 |------|------|
 | `./iris_control start` 시 `su: not found` | Redroid 컨테이너가 아닌 물리 단말에 연결된 경우 → `adb connect localhost:5555`로 Redroid에 접속, 물리 단말은 사용하지 않음 |
-| `Probe http://127.0.0.1:5050/config -> ERR` | 포트프록시 미적용 또는 IRIS 미동작. ① IRIS 상태 재확인 ② `setup_iris_port.ps1 -LocalPort 5050` 재실행 |
+| `Probe http://127.0.0.1:5050/config -> ERR` | 포트프록시 미적용/깨짐 또는 IRIS 미동작.<br>① VM에서 `curl http://localhost:3000/config` 200 확인<br>② Windows에서 `netsh interface portproxy show v4tov4 | findstr 5050`로 5050 규칙 확인<br>③ `windows/setup_iris_port.ps1 -Device \"<REDROID_IP>:5555\" -LocalPort 5050 -RemotePort 3000` 재실행<br>④ 다시 `curl http://127.0.0.1:5050/config` 200 확인 |
+| `setup_iris_port.ps1` 실행 시 `adb ... cannot bind to 127.0.0.1:5050 (10048)` | 5050이 이미 다른 portproxy/서비스에 점유된 상태.<br>① `netstat -ano | findstr \":5050\"`로 점유 PID 확인<br>② `netsh interface portproxy show v4tov4 | findstr 5050`로 **listenaddress가 127.0.0.1/0.0.0.0/WSL IP 등으로 남아있는 5050 규칙을 모두 삭제**<br>`netsh interface portproxy delete v4tov4 listenport=5050 listenaddress=<addr>`<br>③ 다시 `windows/setup_iris_port.ps1 ...` 실행<br>④ `curl http://127.0.0.1:5050/config` 200 확인 |
 | `logs/bot_wsl.log`에 `socket hang up` | 위 포트포워드/IRIS 상태 점검 후 `.env` 갱신(`./scripts/start_bot_wsl.sh`) |
 | `adb devices`에 192.168.0.216:5555만 표시 | 물리 단말에 연결된 상태. `adb disconnect` 후 VM(192.168.66.34) 또는 Redroid( localhost:5555 )에 다시 연결 |
 

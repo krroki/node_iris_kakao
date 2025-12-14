@@ -11,6 +11,7 @@ import { safeReply, safeReplyWithMentions, safeReplyImageUrls, resolveTemplateIm
 import { isRoomAllowed, isSafeMode, isFeatureEnabledForRoomId } from "../utils/guard";
 import { askKb } from "../utils/askKb";
 import { updateStatus } from "../utils/status";
+import { resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
 import path from "path";
 import { promises as fs } from "fs";
 import { createHash } from "crypto";
@@ -213,9 +214,19 @@ class CustomMessageController {
   // KB 질의 (?디하클 ...) : 허용방 + ai 토글 켜진 경우에만 동작
   @OnMessage
   async aiQuery(context: ChatContext): Promise<void> {
+    // ADR-0028: 기본은 ai-worker가 처리한다. (레거시 롤백: AI_DISPATCHER=bot)
+    const dispatcher = String(process.env.AI_DISPATCHER || "worker").toLowerCase().trim();
+    if (dispatcher !== "bot") return;
+
     const msg: any = (context as any)?.message || {};
     const rid = String(context.room.id);
     const msgId = msg?.id || msg?.messageId || "";
+
+    // SAFE_MODE 전역 차단: 설정이 켜져 있으면 AI 응답 자체를 수행하지 않는다.
+    if (await isSafeMode()) {
+      this.logger.warn("[ai] skip: SAFE_MODE on", { roomId: rid, msgId });
+      return;
+    }
 
     // ★★★ CRITICAL: 가장 먼저 동기적으로 락 체크 (race condition 방지) ★★★
     // 모든 await나 비동기 연산 전에 락을 획득해야 함
@@ -267,7 +278,7 @@ class CustomMessageController {
     if (!parsed && this.lastRawByRoom[rid]) {
       try {
         const buf = Buffer.from(this.lastRawByRoom[rid], "base64").toString("utf8");
-        const maybe = buf.match(/\?디하클[^\n"]{0,200}/);
+        const maybe = buf.match(/\?\s*디하클[^\n"]{0,200}/);
         if (maybe) parsed = maybe[0];
       } catch {}
     }
@@ -292,8 +303,10 @@ class CustomMessageController {
     parsed = (parsed || "").trim();
     const normalized = parsed.normalize("NFC");
 
-    // 접두어는 반드시 문자열 맨 앞의 "?디하클"만 허용한다 (추측·fallback 금지)
-    const prefixMatch = normalized.match(/^\?디하클\s*(.*)$/);
+    // 접두어는 반드시 문자열 맨 앞에서 "? + (공백) + 디하클" 형태만 허용한다.
+    // - "?디하클", "? 디하클" 등 공백 변형은 허용
+    // - 그 외 fallback/추측은 금지
+    const prefixMatch = normalized.match(/^\?\s*디하클\s*(.*)$/);
     if (!prefixMatch) {
       // rawDump는 base64로 전체 메시지 오브젝트가 들어 있음 (인코딩 문제 분석용)
       const { msg: decodedMsg } = decodeRawDump(rawDump);
@@ -345,15 +358,6 @@ class CustomMessageController {
       return;
     }
 
-    // SAFE_MODE일 때도 allowedRoomIds 통과한 방이어야 함
-    if (await isSafeMode()) {
-      const allowed = await isRoomAllowed(context);
-      if (!allowed) {
-        this.logger.warn("AI blocked by SAFE_MODE room not allowed", { roomId: rid });
-        return;
-      }
-    }
-
     // 방별 처리 플래그 세팅 (LLM 응답 완료/실패 시 해제)
     const clearInflight = () => {
       const timer = inflightByRoom.get(rid);
@@ -392,43 +396,32 @@ class CustomMessageController {
     const roomName = context.room.name || "this room";
     const senderId = String((context.sender as any)?.id || (context.sender as any)?.userId || "");
 
-    // --- welcome 템플릿 로딩 (NewMember와 동일한 경로) ---
-    const getTemplateName = async (): Promise<string> => {
-      try {
-        const p = path.join(__dirname, "..", "..", "config", "runtime.json");
-        const raw = await fs.readFile(p, "utf8");
-        const parsed = JSON.parse(raw);
-        if (parsed?.templateByFeature?.welcome && typeof parsed.templateByFeature.welcome === "string" && parsed.templateByFeature.welcome.trim()) {
-          return parsed.templateByFeature.welcome.trim();
-        }
-        if (parsed && typeof parsed.welcomeTemplateName === "string" && parsed.welcomeTemplateName.trim()) {
-          return parsed.welcomeTemplateName.trim();
-        }
-      } catch {}
-      return process.env.WELCOME_TEMPLATE || "default";
-    };
-
-    const loadTemplate = async (name: string): Promise<{ text: string; image: string | null }> => {
-      const p = path.join(__dirname, "..", "..", "config", "templates", "welcome", `${name}.json`);
-      try {
-        const raw = await fs.readFile(p, "utf8");
-        const parsed = JSON.parse(raw);
-        const text =
-          typeof parsed?.messages?.text === "string"
-            ? parsed.messages.text
-            : typeof parsed?.content === "string"
-              ? parsed.content
-              : "{userName}님 환영합니다!";
-        const image =
-          typeof parsed?.messages?.image === "string"
-            ? parsed.messages.image
-            : Array.isArray(parsed?.images) && parsed.images.length
-              ? String(parsed.images[0])
-              : null;
-        return { text, image };
-      } catch {
-        return { text: "{userName}님 환영합니다!", image: null };
+    const loadTemplate = async (name: string): Promise<{ text: string; images: string[] }> => {
+      if (!name) throw new Error("welcome template name is not configured");
+      const p = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
+      const raw = await fs.readFile(p, "utf8");
+      const parsed = JSON.parse(raw);
+      const text =
+        typeof parsed?.messages?.text === "string"
+          ? parsed.messages.text
+          : typeof parsed?.content === "string"
+            ? parsed.content
+            : typeof parsed?.text === "string"
+              ? parsed.text
+              : "";
+      if (!text || !String(text).trim()) {
+        throw new Error(`welcome template has empty text: ${p}`);
       }
+      const images: string[] = [];
+      if (typeof parsed?.messages?.image === "string" && parsed.messages.image.trim()) {
+        images.push(parsed.messages.image.trim());
+      }
+      if (Array.isArray(parsed?.images)) {
+        for (const img of parsed.images) {
+          if (typeof img === "string" && img.trim()) images.push(img.trim());
+        }
+      }
+      return { text: String(text), images: Array.from(new Set(images)) };
     };
 
     const renderText = (text: string): { text: string; hasMention: boolean } => {
@@ -464,30 +457,49 @@ class CustomMessageController {
       return { text: out, hasMention };
     };
 
+    let sentText = false;
+    let tplName = "";
+    let hasMention = false;
+    let images: string[] = [];
+    let meta: any = {};
     try {
-      const tplName = await getTemplateName();
+      const selection = await resolveWelcomeTemplateSelection({ userName, senderId });
+      tplName = selection?.templateName || "";
       const tpl = await loadTemplate(tplName);
-      const { text, hasMention } = renderText(tpl.text);
-      const images = tpl.image ? resolveTemplateImageUrls(tpl.image) : [];
+      const rendered = renderText(tpl.text);
+      hasMention = rendered.hasMention;
+      const resolvedImages = resolveTemplateImageUrls(tpl.images || []);
+      images = Array.isArray(resolvedImages) ? resolvedImages : [];
+      meta = {
+        tplName,
+        nicknameClass: selection?.nicknameClass,
+        source: selection?.source,
+        setKey: selection?.setKey,
+        pick: selection?.pick,
+      };
 
       if (hasMention && senderId) {
-        try {
-          await safeReplyWithMentions(this.logger, context, text, [{ name: userName, userId: senderId }], 8000);
-        } catch {
-          await safeReply(this.logger, context, text, 8000);
-        }
+        await safeReplyWithMentions(this.logger, context, rendered.text, [{ name: userName, userId: senderId }], 8000);
       } else {
-        await safeReply(this.logger, context, text, 8000);
+        await safeReply(this.logger, context, rendered.text, 8000);
       }
-      if (images && images.length) {
-        try {
-          await safeReplyImageUrls(this.logger, context, images, 10000);
-        } catch {}
-      }
-      this.logger.info("[welcome:test] sent", { tplName, hasMention, images: images.length });
+      sentText = true;
+      this.logger.info("[welcome:test] sent(text)", { ...meta, hasMention });
     } catch (e) {
-      this.logger.error("[welcome:test] failed", e as any);
-      await context.reply("웰컴 템플릿 테스트 중 오류가 발생했습니다.");
+      this.logger.error("[welcome:test] failed(text)", { err: String(e), tplName, sentText });
+      if (!sentText) {
+        await safeReply(this.logger, context, "웰컴 템플릿 테스트 중 오류가 발생했습니다.", 5000);
+      }
+      return;
+    }
+
+    if (images.length) {
+      try {
+        await safeReplyImageUrls(this.logger, context, images, 10000);
+        this.logger.info("[welcome:test] sent(images)", { ...meta, images: images.length });
+      } catch (e) {
+        this.logger.warn("[welcome:test] image send failed", { err: String(e), ...meta, images: images.length });
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import type { ChatContext, Logger } from "@tsuki-chat/node-iris";
 import { tryServerTalkApiDispatch } from "./talkapi";
+import { isSafeMode } from "./guard";
 
 function roomIdOf(context: ChatContext): string {
   try {
@@ -15,6 +16,10 @@ function roomIdOf(context: ChatContext): string {
 export async function safeReply(logger: Logger, context: ChatContext, message: string, timeoutMs = 8000): Promise<void> {
   const start = Date.now();
   const rid = roomIdOf(context);
+  if (await isSafeMode()) {
+    logger.warn("[send] skip reply: SAFE_MODE on", { roomId: rid, len: message?.length || 0 });
+    return;
+  }
   logger.info("[send] reply start", { len: message?.length || 0, timeoutMs, roomId: rid });
   const op = context.reply(message);
   try {
@@ -32,25 +37,45 @@ export async function safeReply(logger: Logger, context: ChatContext, message: s
 export async function safeReplyImageUrls(logger: Logger, context: ChatContext, urls: string[], timeoutMs = 10000): Promise<void> {
   const u = Array.from(urls || []).filter(Boolean);
   if (u.length === 0) return;
-  const start = Date.now();
-  logger.info("[send] replyImageUrls start", { count: u.length, timeoutMs });
-  const fn: any = (context as any).replyImageUrls;
-  if (typeof fn !== 'function') {
-    logger.warn("[send] replyImageUrls not supported; fallback to plain URLs");
-    await safeReply(logger, context, u.join('\n'), timeoutMs);
+  const rid = roomIdOf(context);
+  if (await isSafeMode()) {
+    logger.warn("[send] skip replyImageUrls: SAFE_MODE on", { roomId: rid, count: u.length });
     return;
   }
-  const op = fn.call(context, u);
-  try {
-    await Promise.race([
-      op,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('reply_image_timeout')), timeoutMs)),
-    ]);
-    logger.info("[send] replyImageUrls ok", { ms: Date.now() - start });
-  } catch (err) {
-    logger.error("[send] replyImageUrls failed", { ms: Date.now() - start, err: String(err) });
-    throw err;
+  const start = Date.now();
+  logger.info("[send] replyImageUrls start", { count: u.length, timeoutMs, roomId: rid });
+  const ctx: any = context as any;
+  const fnUrls: any = ctx.replyImageUrls;
+  if (typeof fnUrls === "function") {
+    const op = fnUrls.call(context, u);
+    try {
+      await Promise.race([
+        op,
+        new Promise((_, rej) => setTimeout(() => rej(new Error("reply_images_timeout")), timeoutMs)),
+      ]);
+      logger.info("[send] replyImageUrls ok", { ms: Date.now() - start, roomId: rid });
+      return;
+    } catch (err) {
+      logger.error("[send] replyImageUrls failed", { ms: Date.now() - start, roomId: rid, err: String(err) });
+      throw err;
+    }
   }
+
+  const fnOne: any = ctx.replyImage || ctx.replyImageUrl;
+  if (typeof fnOne === "function") {
+    logger.warn("[send] replyImageUrls not supported; using per-image send", { roomId: rid, count: u.length });
+    for (const url of u) {
+      const op = fnOne.call(context, url);
+      await Promise.race([
+        op,
+        new Promise((_, rej) => setTimeout(() => rej(new Error("reply_image_timeout")), timeoutMs)),
+      ]);
+    }
+    logger.info("[send] replyImage(per-image) ok", { ms: Date.now() - start, roomId: rid, count: u.length });
+    return;
+  }
+
+  throw new Error("No image-capable send method available (replyImageUrls/replyImage missing)");
 }
 
 export function resolveTemplateImageUrls(relOrList: string | string[]): string[] {
@@ -69,39 +94,84 @@ export function resolveTemplateImageUrls(relOrList: string | string[]): string[]
     .map((r) => base + r);
 }
 
-// Experimental: try to send mentions if SDK exposes any suitable API. Falls back to plain text.
-function buildMentionEntities(
-  text: string,
-  mentionees: Array<{ name?: string; userId?: string }>,
-): { finalText: string; entities: Array<{ user_id: string; at: number[]; len: number }> } {
-  const base = typeof text === 'string' ? text : '';
-  let finalText = base;
-  const entities: Array<{ user_id: string; at: number[]; len: number }> = [];
+type Mentionee = { name?: string; userId?: string };
+type MentionStruct = { user_id: string; at: number[]; len: number };
+
+// LOCO-style mention attachment builder (aligned with storycraft/node-kakao MentionStruct):
+// - at: 1-based mention order indices (NOT character offsets)
+// - len: display name length excluding '@' (UTF-16 code units == JS/Kotlin String.length)
+function buildMentionAttachment(text: string, mentionees: Mentionee[]): { finalText: string; mentions: MentionStruct[] } {
+  const msg = typeof text === "string" ? text : "";
   const list = Array.isArray(mentionees) ? mentionees.filter(Boolean) : [];
-  for (const m of list) {
-    const uid = String((m as any)?.userId || '').trim();
-    const name = String((m as any)?.name || '').trim();
-    if (!uid) continue;
-    const needle = name ? `@${name}` : '';
-    let at = -1;
-    if (needle && finalText) {
-      at = finalText.indexOf(needle);
-    }
-    if (at < 0) {
-      // Append mention text to the end if not present
-      const prefix = finalText && !finalText.endsWith(' ') ? ' ' : '';
-      if (needle) {
-        at = (finalText + prefix).length;
-        finalText = (finalText + prefix + needle);
-      } else {
-        // No name available: still create entity with zero-length anchor at end
-        at = finalText.length;
+  if (list.length === 0) return { finalText: msg, mentions: [] };
+  if (list.length > 15) throw new Error(`too many mentions: ${list.length} (max 15)`);
+
+  const entries = list.map((m, idx) => {
+    const userId = String((m as any)?.userId || "").trim();
+    const name = String((m as any)?.name || "").trim();
+    if (!userId || !name) throw new Error(`mentionees[${idx}] missing name/userId`);
+    return { idx, userId, name, token: `@${name}` };
+  });
+
+  // Assign each mentionee to a distinct token occurrence, scanning left-to-right.
+  const queues = new Map<string, number[]>();
+  entries.forEach((e, i) => {
+    const q = queues.get(e.token) || [];
+    q.push(i);
+    queues.set(e.token, q);
+  });
+
+  let cursor = 0;
+  const orderedIndices: number[] = [];
+  let remaining = entries.length;
+  while (remaining > 0) {
+    let bestPos = -1;
+    let bestToken: string | null = null;
+    let bestLen = -1;
+
+    for (const [token, q] of queues.entries()) {
+      if (q.length === 0) continue;
+      const pos = msg.indexOf(token, cursor);
+      if (pos < 0) continue;
+      const tlen = token.length;
+      const better =
+        bestToken === null ||
+        pos < bestPos ||
+        (pos === bestPos && tlen > bestLen); // prefer longer token when same start (prefix overlap)
+      if (better) {
+        bestPos = pos;
+        bestToken = token;
+        bestLen = tlen;
       }
     }
-    const len = needle ? [...needle].length : 0; // rough length; UI will highlight by LOCO rules
-    entities.push({ user_id: uid, at: [at], len });
+
+    if (bestToken === null) {
+      const missing = Array.from(queues.entries()).find(([, q]) => q.length > 0)?.[0];
+      throw new Error(`message does not contain required mention token after pos=${cursor}: ${missing || ""}`);
+    }
+
+    const idx = queues.get(bestToken)!.shift()!;
+    orderedIndices.push(idx);
+    cursor = bestPos + bestLen;
+    remaining -= 1;
   }
-  return { finalText, entities };
+
+  const mentions: MentionStruct[] = [];
+  const idxByUserId = new Map<string, number>();
+  for (let i = 0; i < orderedIndices.length; i++) {
+    const order = i + 1;
+    const e = entries[orderedIndices[i]];
+    const mi = idxByUserId.get(e.userId);
+    if (mi != null) {
+      if (mentions[mi].len !== e.name.length) throw new Error(`same userId mentioned with different name length: ${e.userId}`);
+      mentions[mi].at.push(order);
+    } else {
+      idxByUserId.set(e.userId, mentions.length);
+      mentions.push({ user_id: e.userId, at: [order], len: e.name.length });
+    }
+  }
+
+  return { finalText: msg, mentions };
 }
 
 export async function safeReplyWithMentions(
@@ -112,7 +182,16 @@ export async function safeReplyWithMentions(
   timeoutMs = 8000,
 ): Promise<void> {
   const start = Date.now();
+  const rid = roomIdOf(context);
   const mlist = Array.isArray(mentionees) ? mentionees.filter(Boolean) : [];
+  if (await isSafeMode()) {
+    logger.warn("[send] skip replyWithMentions: SAFE_MODE on", {
+      roomId: rid,
+      len: message?.length || 0,
+      count: mlist.length,
+    });
+    return;
+  }
   const hasIds = mlist.some((m) => typeof (m as any)?.userId === "string" && (m as any)?.userId);
   const ctx: any = context as any;
   logger.info("[send] replyWithMentions start", {
@@ -125,71 +204,45 @@ export async function safeReplyWithMentions(
     hasReplyMentions: typeof ctx?.replyMentions === "function",
   });
 
-  // Prefer rich payload with LOCO-style attachment.mentions
-  let op: Promise<any> | null = null;
-  let finalText = message;
-  let entities: Array<{ user_id: string; at: number[]; len: number }> = [];
-  try {
-    const built = buildMentionEntities(message, mlist);
-    finalText = built.finalText;
-    entities = built.entities;
-    const richPayload = {
-      text: finalText,
-      attachment: {
-        mentions: entities,
-        // also provide segments/mentionees for broader client compatibility
-        segments: entities.map((e) => ({
-          type: "mention",
-          at: e.at?.[0] ?? 0,
-          len: e.len,
-        })),
-        mentionees: mlist.map((m, idx) => ({
-          name: (m as any)?.name || "",
-          userId: (m as any)?.userId || "",
-          at: entities[idx]?.at?.[0] ?? 0,
-          len: entities[idx]?.len ?? 0,
-        })),
-      },
-    } as any;
-    if (entities.length > 0 && typeof ctx.replyRich === "function") {
-      op = ctx.replyRich(richPayload);
-    } else if (typeof ctx.replyWithMentions === "function") {
-      // Fallback to any SDK-provided mention API
-      op = ctx.replyWithMentions(message, mlist);
-    } else if (typeof ctx.replyMentions === "function") {
-      op = ctx.replyMentions(message, mlist);
-    }
-  } catch (e) {
-    logger.warn("[send] mention rich API threw, will fallback", { err: String(e) });
+  if (mlist.length === 0) {
+    await safeReply(logger, context, message, timeoutMs);
+    return;
   }
 
-  // Server-side Talk API fallback (FASTAPI) when client SDK lacks mention API
-  if (!op && hasIds) {
-    try {
-      const rid = roomIdOf(context);
-      const ok = await tryServerTalkApiDispatch(logger, rid, finalText, mlist, timeoutMs);
-      if (ok) {
-        logger.info("[send] talkapi dispatch ok", { ms: Date.now() - start, roomId: rid });
-        return;
-      }
-      logger.warn("[send] talkapi dispatch failed, fallback to plain text", { roomId: rid });
-    } catch (e) {
-      logger.warn("[send] talkapi dispatch error, fallback to plain text", { err: String(e) });
+  const { finalText, mentions } = buildMentionAttachment(message, mlist as Mentionee[]);
+
+  // 1) Prefer server-side Talk-API dispatch when mentionees include userId.
+  if (hasIds) {
+    if (!rid) throw new Error("roomId missing in context");
+    const ok = await tryServerTalkApiDispatch(logger, rid, finalText, mlist, timeoutMs);
+    if (ok) {
+      logger.info("[send] talkapi dispatch ok", { ms: Date.now() - start, roomId: rid });
+      return;
     }
+  }
+
+  // 2) Try SDK-provided mention APIs (no plain-text fallback).
+  let op: Promise<any> | null = null;
+  if (mentions.length > 0 && typeof ctx.replyRich === "function") {
+    op = ctx.replyRich({ text: finalText, attachment: { mentions } });
+  } else if (typeof ctx.replyWithMentions === "function") {
+    op = ctx.replyWithMentions(finalText, mlist);
+  } else if (typeof ctx.replyMentions === "function") {
+    op = ctx.replyMentions(finalText, mlist);
   }
 
   if (!op) {
-    logger.warn("[send] mention API not available; fallback to plain text");
-    return safeReply(logger, context, finalText, timeoutMs);
+    throw new Error("No mention-capable send method available (talkapi failed; SDK mention API missing)");
   }
+
   try {
     await Promise.race([
       op,
       new Promise((_, rej) => setTimeout(() => rej(new Error("reply_mentions_timeout")), timeoutMs)),
     ]);
-    logger.info('[send] replyWithMentions ok', { ms: Date.now() - start });
+    logger.info("[send] replyWithMentions ok", { ms: Date.now() - start });
   } catch (err) {
-    logger.error('[send] replyWithMentions failed', { ms: Date.now() - start, err: String(err) });
+    logger.error("[send] replyWithMentions failed", { ms: Date.now() - start, err: String(err) });
     throw err;
   }
 }
@@ -217,28 +270,30 @@ export async function safeBotReplyWithMentions(
 ): Promise<void> {
   const start = Date.now();
   const mlist = Array.isArray(mentionees) ? mentionees.filter(Boolean) : [];
+  if (await isSafeMode()) {
+    logger.warn("[send] skip bot.replyWithMentions: SAFE_MODE on", {
+      channel,
+      len: message?.length || 0,
+      count: mlist.length,
+    });
+    return;
+  }
   logger.info('[send] bot.replyWithMentions start', { channel, len: message?.length || 0, count: mlist.length });
   let op: Promise<any> | null = null;
   try {
-    const { finalText, entities } = buildMentionEntities(message, mlist);
-    if (entities.length > 0 && typeof bot?.api?.replyRich === 'function') {
-      op = bot.api.replyRich(channel, { text: finalText, attachment: { mentions: entities } });
+    const { finalText, mentions } = buildMentionAttachment(message, mlist as Mentionee[]);
+    if (mentions.length > 0 && typeof bot?.api?.replyRich === 'function') {
+      op = bot.api.replyRich(channel, { text: finalText, attachment: { mentions } });
     } else if (typeof bot?.api?.replyWithMentions === 'function') {
       op = bot.api.replyWithMentions(channel, message, mlist);
     } else if (typeof bot?.api?.replyMentions === 'function') {
       op = bot.api.replyMentions(channel, message, mlist);
     }
   } catch (e) {
-    logger.warn('[send] bot mention API threw, will fallback', { err: String(e) });
+    logger.warn('[send] bot mention API threw', { err: String(e) });
   }
   if (!op) {
-    logger.warn('[send] bot mention API not available; fallback to plain text');
-    const fallback = bot?.api?.reply?.bind(bot?.api) || bot?.reply?.bind(bot);
-    if (typeof fallback === 'function') {
-      op = fallback(channel, message);
-    } else {
-      throw new Error('No reply function available on bot.api');
-    }
+    throw new Error('No mention-capable send method available on bot.api');
   }
   try {
     await Promise.race([

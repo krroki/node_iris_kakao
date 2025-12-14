@@ -33,7 +33,7 @@ class IRISConnectionManager:
         self.is_running = True
         self.logger = logging.getLogger(__name__)
 
-    def _validate_url(self) -> None:
+    def _validate_url(self) -> bool:
         host, sep, port = self.iris_url.partition(":")
         if not sep:
             raise ValueError(f"IRIS URL must include host:port, got '{self.iris_url}'")
@@ -44,6 +44,7 @@ class IRISConnectionManager:
             raise ValueError(f"IRIS URL port out of range: {port_num}")
         if not host:
             raise ValueError("IRIS URL host is empty")
+        return True
 
     async def connect_with_retry(self) -> Bot:
         """IRIS Bot 인스턴스를 만들고 실패 시 지수 백오프로 재시도한다."""
@@ -275,13 +276,16 @@ def create_context(
 def run_dry_run(ctx: BotContext, iris_url: str) -> None:
     bot = Bot(iris_url)
     configure_bot_handlers(bot, ctx)
-    dummy_chat = ChatContext(
-        {"id": 1000, "name": "dry-run-room"},
-        {"id": 500, "name": "dry-run-user"},
-        {"msg": "!ping", "attachment": {}},
-    )
-    for handler in bot.handlers.get("message", []):
-        handler(dummy_chat)
+    # 최신 iris.ChatContext 시그니처에 맞춰 실제 모델 객체로 더미 컨텍스트를 만든다.
+    from iris.bot.models import Room, User, Message  # type: ignore
+
+    dummy_room = Room(id=1000, name="dry-run-room", api=bot.api)
+    dummy_sender = User(id=500, chat_id=1000, api=bot.api, name="dry-run-user")
+    dummy_message = Message(id=1, type=1, msg=f"{ctx.command_router.prefix}ping", attachment="", v={})
+    raw = {"room": {"id": dummy_room.id, "name": dummy_room.name}, "sender": {"id": dummy_sender.id}, "message": {"msg": dummy_message.msg}}
+    dummy_chat = ChatContext(dummy_room, dummy_sender, dummy_message, raw, bot.api)
+    # iris.Bot은 내부 EventEmitter를 통해 핸들러를 호출한다.
+    bot.emitter.emit("message", [dummy_chat])
     ctx.logger.info("Dry-run 완료")
 
 

@@ -33,6 +33,7 @@ export default function LogViewer({ logs, height = 200, id, showRoomName = false
                 out = out.replace(new RegExp(`@${esc}(\\s*)`, 'g'), '$1');
             }
         }
+        if (out.includes('\n')) return out.trim();
         return out.replace(/\s{2,}/g, ' ').trim();
     };
 
@@ -74,7 +75,7 @@ export default function LogViewer({ logs, height = 200, id, showRoomName = false
                                 ))}
                             </span>
                         )}
-                        <span>{stripMentionFromText(e.text || '', e.mentions)}</span>
+                        <span style={{ whiteSpace: 'pre-wrap' }}>{stripMentionFromText(e.text || '', e.mentions)}</span>
                     </div>
                 ))
             )}

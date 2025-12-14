@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import time
 from typing import List, Tuple
 
 from sqlalchemy import text
@@ -72,10 +73,15 @@ def _chunk_text(text: str, max_chars: int = 800, overlap: int = 80) -> List[str]
 def run(kind: str):
     jid = start(f"embed_{kind}")
     try:
-        provider = os.getenv("EMBED_PROVIDER", "GOOGLE").upper()
-        model = os.getenv("EMBED_MODEL", "text-embedding-004" if provider == "GOOGLE" else "text-embedding-3-large")
+        provider = os.getenv("EMBED_PROVIDER", "OPENAI").upper()
+        model = os.getenv(
+            "EMBED_MODEL",
+            "text-embedding-004" if provider == "GOOGLE" else "text-embedding-3-large",
+        )
         max_chars = int(os.getenv("KB_EMBED_MAX_CHARS", "800"))
         overlap = max(40, max_chars // 10)
+        chunk_batch = max(1, int(os.getenv("KB_EMBED_CHUNK_BATCH", "24")))
+        pause_sec = float(os.getenv("KB_EMBED_PAUSE_SEC", "0.15" if provider == "OPENAI" else "0") or "0")
         total = 0
         while True:
             batch = _fetch_missing(kind, limit=256)
@@ -85,7 +91,13 @@ def run(kind: str):
             vecs: List[List[float]] = []
             for obj_id, text_val in batch:
                 chunks = _chunk_text(text_val, max_chars=max_chars, overlap=overlap)
-                emb_chunks = embed_texts(chunks)
+                # chunks가 매우 많으면 단일 요청이 429/timeout으로 실패할 수 있어 sub-batch로 분할한다.
+                emb_chunks: List[List[float]] = []
+                for i in range(0, len(chunks), chunk_batch):
+                    part = chunks[i : i + chunk_batch]
+                    emb_chunks.extend(embed_texts(part))
+                    if pause_sec and (i + chunk_batch) < len(chunks):
+                        time.sleep(pause_sec)
                 if not emb_chunks:
                     continue
                 avg = [sum(col) / len(emb_chunks) for col in zip(*emb_chunks)]

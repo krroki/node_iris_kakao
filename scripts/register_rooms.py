@@ -30,7 +30,8 @@ def discover_rooms_via_iris():
     try:
         from iris import Bot
 
-        iris_url = os.getenv("IRIS_URL", "http://localhost:8765")
+        # Windows-only 스택 기준 SSOT: IRIS_URL=http://127.0.0.1:5050
+        iris_url = os.getenv("IRIS_URL", "http://127.0.0.1:5050")
         bot = Bot(iris_url)
 
         # IRIS에서 방 정보 가져오기 (IRIS API 사용)

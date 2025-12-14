@@ -3,7 +3,8 @@ import { promises as fs } from "fs";
 import path from "path";
 
 // NOTE: (ADR-0012) "ai" feature 추가 - KB 질의 기능 활성화 플래그
-type FeatureName = "welcome" | "broadcast" | "schedules" | "ai";
+// chatSummary: 채팅 요약(!채팅요약) 기능 토글
+type FeatureName = "welcome" | "broadcast" | "schedules" | "ai" | "chatSummary";
 
 // Announcement Route 타입 정의
 export interface AnnouncementRoute {
@@ -14,6 +15,10 @@ export interface AnnouncementRoute {
   includeImages?: boolean;
   includeSenderName?: boolean;
   delayMs?: number;
+  // 동일 문구를 다수 방에 발송할 때, 끝에 타겟별 번호를 붙여(예: "공지 1", "공지 2") 스팸/중복 판정 리스크를 낮춘다.
+  appendTargetIndex?: boolean;
+  // appendTargetIndex=true일 때 시작 번호(기본 1)
+  targetIndexStart?: number;
 }
 
 interface AnnouncementConfig {
@@ -40,10 +45,19 @@ async function loadRuntimeConfig(): Promise<RuntimeConfig> {
   }
 }
 
+function resolveSafeMode(cfg: RuntimeConfig): boolean {
+  // SAFE_MODE 기본값은 true(발신 차단)이며, 명시적으로 false일 때만 발신을 허용한다.
+  if (cfg.safeMode === true) return true;
+  if (cfg.safeMode === false) return false;
+  const env = String(process.env.SAFE_MODE || "").trim().toLowerCase();
+  if (env === "false") return false;
+  if (env === "true") return true;
+  return true;
+}
+
 export async function isSafeMode(): Promise<boolean> {
   const cfg = await loadRuntimeConfig();
-  if (typeof cfg.safeMode === "boolean") return cfg.safeMode;
-  return (process.env.SAFE_MODE || "").toLowerCase() === "true";
+  return resolveSafeMode(cfg);
 }
 
 export async function isRoomAllowed(context: ChatContext): Promise<boolean> {
@@ -91,20 +105,14 @@ export async function isFeatureEnabledForRoomId(
 
 /**
  * Announcement 기능이 허용되는지 확인
- * SAFE_MODE일 때는 allowWhenSafeMode가 true여야 함
+ * SAFE_MODE=true이면 어떤 경우에도 false(발신 차단)
  */
 export async function isAnnouncementAllowed(): Promise<boolean> {
   const cfg = await loadRuntimeConfig();
-  const safeMode = typeof cfg.safeMode === "boolean"
-    ? cfg.safeMode
-    : (process.env.SAFE_MODE || "").toLowerCase() === "true";
+  const safeMode = resolveSafeMode(cfg);
 
-  if (!safeMode) {
-    return true; // SAFE_MODE가 아니면 항상 허용
-  }
-
-  // SAFE_MODE일 때는 allowWhenSafeMode 체크
-  return cfg.announcement?.allowWhenSafeMode === true;
+  // SAFE_MODE에서는 어떤 경우에도 발신하지 않는다(운영 가드레일).
+  return safeMode === false;
 }
 
 /**

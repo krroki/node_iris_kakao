@@ -76,6 +76,10 @@ class CustomBootstrapController {
    */
   @Bootstrap(50) // 낮은 우선순위 (나중에 실행)
   async setupPeriodicTasks() {
+    if ((process.env.ENABLE_BOOTSTRAP_EXAMPLE_SCHEDULES || "").toLowerCase() !== "true") {
+      this.logger.info("Bootstrap example schedules disabled; skip periodic tasks");
+      return;
+    }
     if (await isSafeMode()) {
       this.logger.warn("SAFE_MODE on: skip scheduling periodic tasks");
       return;
@@ -195,30 +199,11 @@ class CustomBootstrapController {
       metadata?: any;
     }>
   > {
-    // 실제 구현에서는 데이터베이스에서 스케줄을 로드
-    // 예시로 빈 배열 반환
-
     try {
       if (await isSafeMode()) return [];
-      // const schedules = await db.query('SELECT * FROM scheduled_messages WHERE active = true');
-      // return schedules.map(schedule => ({
-      //   id: schedule.id,
-      //   roomId: schedule.room_id,
-      //   message: schedule.message,
-      //   scheduledTime: schedule.scheduled_time,
-      //   metadata: JSON.parse(schedule.metadata || '{}')
-      // }));
-
-      // 예시 데이터
-      return [
-        {
-          id: "example-reminder",
-          roomId: "your-room-id-here",
-          message: "📝 예시 리마인더입니다!",
-          scheduledTime: Date.now() + 60000, // 1분 후
-          metadata: { type: "example", recurring: false },
-        },
-      ];
+      // TODO: 실제 구현에서는 DB에서 스케줄을 로드한다.
+      // 운영 기본값은 "아무 스케줄도 자동 등록하지 않음" (예제/샘플 발송 금지).
+      return [];
     } catch (error) {
       this.logger.error("Failed to load schedules from database:", error);
       return [];

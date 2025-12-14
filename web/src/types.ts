@@ -1,0 +1,100 @@
+﻿export type LogEntry = {
+  ts: string;
+  roomId: string;
+  roomName: string;
+  sender: string;
+  text: string;
+  mid?: string;
+  mentions?: string[];
+  // 서버 log_utils.py에서 생성하는 UID (dedup용) – 선택적
+  uid?: string;
+};
+
+export type SSEPayload = {
+  type: "snapshot" | "append" | string;
+  rooms?: Record<string, LogEntry[]>;
+  all?: LogEntry[];
+};
+
+export type StageKey = "device" | "bot" | "logStore" | "realtime" | "kb" | "ui";
+
+export type PipelineStage = {
+  key: StageKey;
+  name: string;
+  ok: boolean;
+  detail: string;
+  timestamp?: string | null;
+};
+
+export type PipelineStatus = {
+  updatedAt: string;
+  stages: Record<StageKey, PipelineStage>;
+  latestLogTs?: string | null;
+};
+
+export type RoomInfo = {
+  roomId: string;
+  roomName: string;
+  activeMembersCount?: number;
+};
+
+export type RoomMember = {
+  userId: string;
+  nickname: string;
+};
+
+export type RoomMembersResponse = {
+  ok: boolean;
+  roomId: string;
+  activeMembersCount?: number;
+  loadedMembersCount?: number;
+  limit?: number;
+  offset?: number;
+  members?: RoomMember[];
+  hint?: string | null;
+  error?: string;
+  detail?: string;
+};
+
+export type RoomFeatures = {
+  welcome?: boolean;
+  welcomeFollowUp?: boolean;
+  broadcast?: boolean;
+  schedules?: boolean;
+  ai?: boolean;
+   chatSummary?: boolean;
+  // 강의 운영(카페/닉네임 검증) 기능
+  courseRoom?: boolean;
+  courseRoster?: boolean;
+};
+
+export type CourseRosterRoomConfig = {
+  enabled?: boolean;
+  spreadsheetId?: string;
+  rosterSheetName?: string;
+  cafeCsvPath?: string;
+  joinUrl?: string;
+};
+
+export type CourseRosterConfig = {
+  version?: number;
+  rooms?: Record<string, CourseRosterRoomConfig>;
+};
+
+// FastAPI /logs/bulk 응답 형태
+export type BulkLogsResponse = {
+  rooms?: Record<string, LogEntry[]>;
+  all?: LogEntry[];
+};
+
+// FastAPI /runtime 응답 최소 형태 (UI에서 사용하는 필드만 정의)
+export type RuntimeConfig = {
+  safeMode?: boolean;
+  allowedRoomIds?: string[];
+  excludedRoomIds?: string[];
+  features?: Record<string, RoomFeatures>;
+  templateByFeature?: Record<string, string>;
+  welcomeTemplateName?: string;
+  // 서버에서 추가로 내려줄 수 있는 필드는 자유롭게 확장
+  [key: string]: unknown;
+};
