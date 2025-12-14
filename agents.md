@@ -78,8 +78,11 @@
 ---
 
 ## 3. 브랜치 & PR 운영 원칙
-- `main`은 직접 푸시 금지. 모든 작업은 `feat/*`, `fix/*`, `chore/*` 브랜치에서 시작한다.
-- 브랜치를 생성한 즉시 Draft PR을 열어 **Goal / Scope / Invariants / Acceptance Criteria / Docs / Tasks / Decision Log** 섹션을 채운다.
+- (원칙) `main`은 직접 푸시 금지. 모든 작업은 `feat/*`, `fix/*`, `chore/*` 브랜치에서 시작한다.
+- (현재 워킹트리 예외 - 중요) 하지만 **이 워킹트리(`C:\dev\12.kakao`)는 여러 세션이 동시에 공유**하므로,
+  브랜치 체크아웃/생성으로 워킹트리를 흔들면 안 된다. 이 워킹트리에서는 **`main`만 사용**한다.
+  - PR/Epic Draft PR이 필요하면 **별도 clone/worktree**에서 브랜치 워크플로를 수행한다.
+- 브랜치를 생성한 즉시 Draft PR을 열어 **Goal / Scope / Invariants / Acceptance Criteria / Docs / Tasks / Decision Log** 섹션을 채운다. (별도 clone/worktree에서 적용)
 - 세션 동안 내린 결정은 PR 코멘트 + `docs/sessions/<branch>.md` + `docs/ssot.md`에 모두 반영한다.
 - 테스트/스크린샷/로그가 있는 경우 PR 코멘트나 첨부 링크로 남긴다.
 - Merge 전략은 기본적으로 Merge commit. 필요 시 Rebase/Squash는 PR 성격에 맞게 선택한다.
@@ -103,7 +106,9 @@
 - **SSOT(`docs/ssot.md`)**: 새로운 결정, 배포 결과, 미해결 항목을 즉시 기록.  
 - **제품 문서**: 범위/요구 변경 시 `docs/prd.md`, `docs/roadmap.md`, 필요 시 `docs/todo.md`를 함께 수정.  
 - **ADR**: 아키텍처/기술 결정에 변화가 생기면 `docs/adr/<id>-<slug>.md` 작성 또는 갱신.  
-- **세션 로그**: `docs/sessions/<branch>.md` 파일은 브랜치 단위로 유지, 세션 시작/종료마다 업데이트.  
+- **세션 로그**:
+  - 공유 워킹트리: `docs/sessions/main.md`에 누적 기록
+  - PR/브랜치 워크플로(별도 clone/worktree): `docs/sessions/<branch>.md` 유지
 - 문서 구조가 확장될 경우 `docs/reference/README.md`에 신규 레퍼런스를 추가하고, 관련 링크를 본 문서에 반영한다.
 
 ---
