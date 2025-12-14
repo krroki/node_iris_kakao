@@ -38,7 +38,9 @@
 - 부분 재기동(권장):
   - bot: `windows/start_bot.ps1 -Restart`
   - welcome-worker: `windows/start_welcome_worker.ps1 -Restart`
-  - roster-worker: `windows/start_roster_worker.ps1 -Restart`
+  - ai-worker: `windows/start_ai_worker.ps1 -Restart`
+  - broadcast-worker: `windows/start_broadcast_worker.ps1 -Restart`
+  - roster-worker(선택 기능): `windows/start_roster_worker.ps1 -Restart`
   - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
 
 - **절대 금지(중요)**: `taskkill /im node.exe`, `Stop-Process -Name node` 같이 **node 전체를 종료**하는 조치는 금지한다.  
@@ -47,6 +49,8 @@
 
 - **Welcome 미발송 디버깅(자주 발생)**:
   - **중복 welcome-worker 금지**: `welcome-worker`는 1개만 떠 있어야 한다. (락 파일: `node-iris-app/data/locks/welcome_worker.lock`)
+  - **중복 ai-worker 금지**: `ai-worker`는 1개만 떠 있어야 한다. (락 파일: `node-iris-app/data/locks/ai_worker.lock`)
+  - **중복 broadcast-worker 금지**: `broadcast-worker`는 1개만 떠 있어야 한다. (락 파일: `node-iris-app/data/locks/broadcast_worker.lock`)
   - `/status`에서 `bot.ok/logStore.ok`가 `false`이면 welcome-worker가 `/logs/stream` 트리거를 못 받아 “토글 ON인데 미발송”처럼 보일 수 있다.
     - 특히 `extra.emfile=true` 또는 `node-iris-app/data/bot_health.json`이 있으면 EMFILE로 파일 로그 기록이 중단된 상태일 수 있으니 우선 `windows/start_bot.ps1 -Restart`(또는 `windows/start_all.cmd`)로 복구한다. (watchdog가 살아있으면 대개 자동 복구)
   - `runtime.json.features[roomId].welcome === true`가 아니면 welcome은 발신되지 않는다(로그에 `reason=WELCOME_DISABLED`로 표시).

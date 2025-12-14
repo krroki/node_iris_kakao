@@ -132,8 +132,9 @@
 | Bot 단독 재기동(빌드 포함) | `windows/start_bot.ps1 -Restart` | `node-iris-app/dist`가 최신이 아니면 자동으로 `npm run build` 후 기동. 운영 중 “코드 변경이 반영되지 않음”이 의심되면 이 명령으로 확인 |
 | Bot 단독 재기동(빌드 생략) | `windows/start_bot.ps1 -Restart -SkipBuild` | 빠른 재기동(이미 빌드가 최신이라는 확신이 있을 때만) |
 | Welcome-worker 단독 재기동 | `windows/start_welcome_worker.ps1 -Restart` | Welcome/후속 Reply 기능 워커(ADR-0027). 중복 실행은 락 파일(`node-iris-app/data/locks/welcome_worker.lock`)로 자동 차단된다. 기본값은 `WELCOME_DISPATCHER=worker`이며, 레거시(`WELCOME_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장. 설정 변경 반영을 위해 SSE 재연결 TTL(기본 60초, `WELCOME_WORKER_STREAM_TTL_MS`)이 적용된다 |
-| AI-worker 단독 재기동 | `windows/start_ai_worker.ps1 -Restart` | `?디하클` AI 응답 워커(ADR-0028). 기본값은 `AI_DISPATCHER=worker`이며, 레거시(`AI_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
-| Broadcast-worker 단독 재기동 | `windows/start_broadcast_worker.ps1 -Restart` | 공지/브로드캐스트 워커(ADR-0029). 기본값은 `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker`이며, 둘 다 레거시(`...=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
+| AI-worker 단독 재기동 | `windows/start_ai_worker.ps1 -Restart` | `?디하클` AI 응답 워커(ADR-0028). 중복 실행은 락 파일(`node-iris-app/data/locks/ai_worker.lock`)로 자동 차단된다. 기본값은 `AI_DISPATCHER=worker`이며, 레거시(`AI_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
+| Broadcast-worker 단독 재기동 | `windows/start_broadcast_worker.ps1 -Restart` | 공지/브로드캐스트 워커(ADR-0029). 중복 실행은 락 파일(`node-iris-app/data/locks/broadcast_worker.lock`)로 자동 차단된다. 기본값은 `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker`이며, 둘 다 레거시(`...=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
+| Roster-worker 단독 재기동 | `windows/start_roster_worker.ps1 -Restart` | 강의 운영 워커(선택 기능). 설정 파일 `data/course_roster_worker.json`이 없으면 `start_all`/watchdog에서 자동으로 스킵된다 |
 | Web 단독 기동(prod) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` | 운영 모드(`next start`, distDir `.next-prod`). READY는 `/api/ping`(200)으로 판정 |
 | Web 단독 기동(prod, CleanBuild) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild` | `.next-prod` 삭제 후 재빌드(Next chunk 깨짐/MODULE_NOT_FOUND 복구용) |
 | Web 개발 서버(dev) | `windows/start_web.ps1 -Mode dev -Port 3100 -ForceKillPort` | 개발용(`next dev`, distDir `.next`). 시작 전 `.next` 삭제 실패 시 즉시 실패(폴백 금지) |

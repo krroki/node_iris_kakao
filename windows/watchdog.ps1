@@ -446,7 +446,7 @@ function Test-BroadcastWorkerOk {
         $sorted = @($procs | Sort-Object -Property CreationDate -Descending)
         $keepPid = [int]$sorted[0].ProcessId
         $killPids = @($sorted | Select-Object -Skip 1 | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
-        Write-Log -Level 'WARN' -Message ("broadcast-worker 중복 실행 감지(count={0}). keep(pid={1}) kill({2}). 재기동으로 정리 예정" -f $procs.Count, $keepPid, ($killPids -join ',')))
+        Write-Log -Level 'WARN' -Message ("broadcast-worker 중복 실행 감지(count={0}). keep(pid={1}) kill({2}). 재기동으로 정리 예정" -f $procs.Count, $keepPid, ($killPids -join ','))
         return $false
       }
     } catch {}
@@ -522,6 +522,9 @@ function Restart-BroadcastWorker {
 function Test-RosterWorkerOk {
   try {
     if ($env:ROSTER_WORKER_DISABLE -eq '1') { return $true }
+    # roster worker는 운영에서 선택 기능이다. 설정 파일이 없으면(미사용) watchdog도 스킵한다.
+    $cfgPath = Join-Path $root "data\course_roster_worker.json"
+    if (-not (Test-Path $cfgPath)) { return $true }
 
     $statusPath = Join-Path $root "node-iris-app\data\roster_worker_status.json"
     $workerPid = $null
@@ -560,6 +563,8 @@ function Restart-RosterWorker {
   param([string]$Reason)
 
   if ($env:ROSTER_WORKER_DISABLE -eq '1') { return }
+  $cfgPath = Join-Path $root "data\course_roster_worker.json"
+  if (-not (Test-Path $cfgPath)) { return }
 
   if (-not (Test-Path $startRosterWorkerScript)) {
     Write-Log -Level 'WARN' -Message "start_roster_worker.ps1 없음: $startRosterWorkerScript (roster-worker 재시작 불가)"

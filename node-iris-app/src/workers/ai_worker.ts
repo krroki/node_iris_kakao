@@ -34,6 +34,7 @@ const logger = new Logger("ai-worker");
 const STATE_PATH = path.join(process.cwd(), "data", "ai_worker_state.json");
 const STATUS_PATH = path.join(process.cwd(), "data", "ai_worker_status.json");
 const RUNTIME_PATH = path.join(process.cwd(), "config", "runtime.json");
+const LOCK_PATH = path.join(process.cwd(), "data", "locks", "ai_worker.lock");
 
 const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const QUERY_DEDUP = new DedupCache(15 * 1000, 15 * 1000); // 15초
@@ -46,6 +47,57 @@ function safeString(v: unknown): string {
   if (typeof v === "bigint") return v.toString();
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
   return String(v ?? "").trim();
+}
+
+function isPidAlive(pidRaw: unknown): boolean {
+  const pid = Number(pidRaw);
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireSingletonLock(): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(LOCK_PATH), { recursive: true });
+    await fs.writeFile(LOCK_PATH, String(process.pid), { encoding: "utf8", flag: "wx" });
+    return;
+  } catch (e: any) {
+    const code = String(e?.code || "");
+    if (code !== "EEXIST") {
+      logger.warn("[lock] lock 파일 생성 실패 (중복 실행 방지 비활성화)", { lockPath: LOCK_PATH, err: String(e) });
+      return;
+    }
+
+    let oldPid: number | null = null;
+    try {
+      const raw = await fs.readFile(LOCK_PATH, "utf8");
+      const n = Number.parseInt(String(raw || "").trim(), 10);
+      oldPid = Number.isFinite(n) && n > 0 ? n : null;
+    } catch {
+      oldPid = null;
+    }
+
+    if (oldPid && isPidAlive(oldPid)) {
+      logger.warn("[lock] 다른 ai-worker가 이미 실행 중이므로 종료합니다.", { pid: oldPid, lockPath: LOCK_PATH });
+      process.exit(0);
+    }
+
+    // stale lock: remove and retry once
+    try {
+      await fs.unlink(LOCK_PATH);
+    } catch {}
+    try {
+      await fs.writeFile(LOCK_PATH, String(process.pid), { encoding: "utf8", flag: "wx" });
+      logger.warn("[lock] stale lock 정리 후 재획득", { stalePid: oldPid, lockPath: LOCK_PATH });
+    } catch (e2) {
+      logger.warn("[lock] lock 재획득 실패로 종료합니다.", { lockPath: LOCK_PATH, err: String(e2) });
+      process.exit(1);
+    }
+  }
 }
 
 function tsToMs(ts: string | undefined): number {
@@ -513,6 +565,7 @@ async function connectAndRun(): Promise<void> {
 }
 
 async function main() {
+  await acquireSingletonLock();
   logger.info("ai-worker start", {
     pid: process.pid,
     realtime: process.env.REALTIME_API_BASE || "http://127.0.0.1:8650",
@@ -527,4 +580,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-

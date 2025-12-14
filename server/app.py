@@ -1019,22 +1019,74 @@ async def update_runtime(request: Request):
             cur["welcome"] = cur_w
         else:
             cur.pop("welcome", None)
-    # Recompute allowedRoomIds from features ONLY when none was provided and current list is empty
-    if not isinstance(allowed_from_body, list):
+    # Normalize/expand allowedRoomIds
+    # - 기본은 "명시적으로 받은 allowedRoomIds" 또는 "기존 값"을 유지한다.
+    # - 단, 공지(source/targets) 및 기능 토글로 실제 발신이 필요한 방은 allowlist에 반드시 포함되어야 하므로
+    #   현재 설정(cur) 기준으로 required ids를 union 한다.
+    try:
+        # excludedRoomIds는 allowlist에서 항상 제거한다.
+        excluded_set: set[str] = set()
         try:
-            existing = cur.get("allowedRoomIds") or []
-            if not existing:
-                feats = cur.get("features") or {}
-                if isinstance(feats, dict):
-                    allowed: list[str] = []
-                    for rid, flags in feats.items():
-                        if isinstance(flags, dict) and any(bool(v) for v in flags.values()):
-                            allowed.append(str(rid))
-                    allowed.sort()
-                    cur["allowedRoomIds"] = allowed
+            if isinstance(cur.get("excludedRoomIds"), list):
+                for x in cur.get("excludedRoomIds") or []:
+                    t = str(x or "").strip()
+                    if t:
+                        excluded_set.add(t)
         except Exception:
-            # On error, keep existing allowedRoomIds as-is
-            pass
+            excluded_set = set()
+
+        required: set[str] = set()
+
+        # 1) features: value가 True인 feature가 하나라도 있으면 allowlist에 포함
+        feats = cur.get("features") or {}
+        if isinstance(feats, dict):
+            for rid, flags in feats.items():
+                rid2 = str(rid or "").strip()
+                if not rid2 or not isinstance(flags, dict):
+                    continue
+                if any(v is True for v in flags.values()):
+                    required.add(rid2)
+
+        # 2) announcement routes: source/targets는 allowlist에 포함되어야 공지 전파가 동작한다.
+        ann = cur.get("announcement")
+        if isinstance(ann, dict):
+            routes = ann.get("routes")
+            if isinstance(routes, list):
+                for r in routes:
+                    if not isinstance(r, dict):
+                        continue
+                    src = str(r.get("source") or "").strip()
+                    if src:
+                        required.add(src)
+                    tgts = r.get("targets")
+                    if isinstance(tgts, list):
+                        for t in tgts:
+                            ts = str(t or "").strip()
+                            if ts:
+                                required.add(ts)
+
+        # 3) merge(keep existing order)
+        existing = cur.get("allowedRoomIds") or []
+        merged: list[str] = []
+        seen: set[str] = set()
+        if isinstance(existing, list):
+            for x in existing:
+                rid = str(x or "").strip()
+                if not rid or rid in excluded_set or rid in seen:
+                    continue
+                seen.add(rid)
+                merged.append(rid)
+
+        for rid in sorted(required):
+            if not rid or rid in excluded_set or rid in seen:
+                continue
+            seen.add(rid)
+            merged.append(rid)
+
+        cur["allowedRoomIds"] = merged
+    except Exception:
+        # On error, keep existing allowedRoomIds as-is
+        pass
     save_runtime(cur)
     return JSONResponse(content=cur)
 

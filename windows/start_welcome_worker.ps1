@@ -35,8 +35,9 @@ function Get-WorkerPidFromStatus {
 function Find-WorkerProcs {
   try {
     $absRe = [Regex]::Escape($workerEntry)
+    $relRe = 'dist[/\\]workers[/\\]welcome_worker\.js'
     return @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
-      Where-Object { $_.CommandLine -match $absRe } |
+      Where-Object { ($_.CommandLine -match $absRe) -or ($_.CommandLine -match $relRe) } |
       Select-Object ProcessId,CommandLine)
   } catch {
     return @()
@@ -50,7 +51,11 @@ if ($statusPid) {
   try {
     $p = Get-CimInstance Win32_Process -Filter "ProcessId=$statusPid" -ErrorAction SilentlyContinue
     if ($p -and ($p.Name -eq 'node.exe')) {
-      $statusProc = [pscustomobject]@{ ProcessId = [int]$p.ProcessId; CommandLine = [string]$p.CommandLine }
+      $absRe = [Regex]::Escape($workerEntry)
+      $relRe = 'dist[/\\]workers[/\\]welcome_worker\.js'
+      if (($p.CommandLine -match $absRe) -or ($p.CommandLine -match $relRe)) {
+        $statusProc = [pscustomobject]@{ ProcessId = [int]$p.ProcessId; CommandLine = [string]$p.CommandLine }
+      }
     }
   } catch {}
 }

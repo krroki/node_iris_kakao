@@ -61,11 +61,12 @@ const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const ANNOUNCE_DEDUP = new DedupCache(5 * 60 * 1000); // 5분 (source msgId/uid 기준)
 const TARGET_DEDUP = new DedupCache(5 * 60 * 1000); // 5분 (source msg -> target 전달)
 const SENT_IMAGE_DEDUP = new DedupCache(3 * 60 * 1000); // 3분 (worker가 보낸 이미지 감지용)
+const SENT_TEXT_DEDUP = new DedupCache(3 * 60 * 1000); // 3분 (worker가 보낸 텍스트 감지용)
 
-// Announcement mirror marker (text only)
-const MIRROR_MARKER_PREFIX = "\u200B[MF:"; // zero-width + marker
-const MIRROR_MARKER_SUFFIX = "]\u200B";
-const MIRROR_MARKER_REGEX = /\u200B\[MF:[^\]]+\]\u200B/;
+// (Legacy) mirror marker detection
+// - 과거에는 루프 방지용으로 텍스트 끝에 숨김 마커를 붙였으나, 일부 환경에서 zero-width가 제거되며
+//   마커가 그대로 노출되는 문제가 있어 더 이상 추가하지 않는다.
+const MIRROR_MARKER_REGEX = /\u200B?\[MF:[^\]]+\]\u200B?/;
 
 let runtimeCache: { at: number; data: RuntimeConfig } | null = null;
 const RUNTIME_CACHE_MS = 1500;
@@ -255,13 +256,14 @@ function normalizeText(text: string | undefined): string {
   return String(text || "").trim().normalize("NFC");
 }
 
+function normalizeTextForHash(text: string | undefined): string {
+  // Kakao가 공백/개행을 일부 정규화할 수 있어, 해시 비교용은 공백을 단일 스페이스로 축약한다.
+  return normalizeText(text).replace(/\s+/g, " ");
+}
+
 function hasMirrorMarker(text: string): boolean {
   if (!text) return false;
   return MIRROR_MARKER_REGEX.test(text);
-}
-
-function createMirrorMarker(sourceRoomId: string): string {
-  return `${MIRROR_MARKER_PREFIX}${sourceRoomId}${MIRROR_MARKER_SUFFIX}`;
 }
 
 async function resolveRoomNames(roomIds: string[], timeoutMs = 3000): Promise<Map<string, string>> {
@@ -326,6 +328,11 @@ function hashImageUrls(urls: string[]): string {
   return crypto.createHash("sha1").update(norm).digest("hex");
 }
 
+function hashTextForDedup(text: string): string {
+  const norm = normalizeTextForHash(text);
+  return crypto.createHash("sha1").update(norm).digest("hex");
+}
+
 function shouldIgnoreSender(entry: StreamEntry): boolean {
   const sid = safeString(entry.senderId);
   const sn = safeString(entry.senderName || entry.sender).toLowerCase();
@@ -369,7 +376,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   const RESULT_PREFIX = "[공지 전파 결과]";
   if (text && text.startsWith(RESULT_PREFIX)) return;
 
-  // loop prevent (text marker)
+  // loop prevent (legacy marker)
   if (text && hasMirrorMarker(text)) return;
 
   const senderName = safeString(entry.senderName || entry.sender);
@@ -391,7 +398,6 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       const targets = Array.isArray(route.targets) ? route.targets.map((x) => safeString(x)).filter(Boolean) : [];
       for (const t of targets) {
         if (!t) continue;
-        if (!isRoomAllowedForAnnouncement(runtime, t)) continue;
         resolveIds.add(t);
       }
     }
@@ -401,18 +407,11 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     logger.warn("[announce] 방 이름 조회 실패(결과 메시지 제한)", { err: roomNameErr });
   }
 
-  const unknownNameByRoomId = new Map<string, string>();
-  let unknownRoomSeq = 0;
   const roomNameOnly = (rid: string) => {
     const key = safeString(rid);
     const name = roomNameMap ? safeString(roomNameMap.get(key)) : "";
     if (name && name !== key) return name;
-    const cached = unknownNameByRoomId.get(key);
-    if (cached) return cached;
-    unknownRoomSeq += 1;
-    const label = `이름없음-${unknownRoomSeq}`;
-    unknownNameByRoomId.set(key, label);
-    return label;
+    return key;
   };
 
   const sourceName = roomNameOnly(roomId);
@@ -428,12 +427,27 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   }
 
   for (const route of activeRoutes) {
-    const targets = Array.isArray(route.targets) ? route.targets.map((x) => safeString(x)).filter(Boolean) : [];
-    const validTargets = targets.filter((t) => isRoomAllowedForAnnouncement(runtime, t));
+    const targetsRaw = Array.isArray(route.targets) ? route.targets.map((x) => safeString(x)).filter(Boolean) : [];
+    const targetsUniq = Array.from(new Set(targetsRaw.map((t) => safeString(t)).filter(Boolean).filter((t) => t !== roomId)));
+
+    const excluded = Array.isArray(runtime.excludedRoomIds)
+      ? runtime.excludedRoomIds.map((x) => safeString(x)).filter(Boolean)
+      : [];
+    const notAllowedTargets = targetsUniq.filter((t) => !isRoomAllowed(runtime, t));
+    const excludedTargets = targetsUniq.filter((t) => isRoomAllowed(runtime, t) && excluded.includes(t));
+    const validTargets = targetsUniq.filter((t) => isRoomAllowedForAnnouncement(runtime, t));
     if (validTargets.length === 0) {
       resultLines.push("");
       resultLines.push(`📌 ${route.id}`);
-      resultLines.push(`⚠️ 타겟 0개 (allowlist/권한/필터 확인)`);
+      resultLines.push(`⚠️ 발송 대상 0개 (설정:${targetsUniq.length}, 스킵:${targetsUniq.length})`);
+      if (notAllowedTargets.length > 0) {
+        const labels = notAllowedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
+        resultLines.push(`🚫 allowlist 제외: ${labels.join(", ")}${notAllowedTargets.length > 30 ? ` 외 ${notAllowedTargets.length - 30}개` : ""}`);
+      }
+      if (excludedTargets.length > 0) {
+        const labels = excludedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
+        resultLines.push(`🚫 excludedRoomIds: ${labels.join(", ")}${excludedTargets.length > 30 ? ` 외 ${excludedTargets.length - 30}개` : ""}`);
+      }
       continue;
     }
 
@@ -450,8 +464,6 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       finalText = `[${senderName}] ${finalText}`;
     }
 
-    const mirrorMarker = createMirrorMarker(roomId);
-
     let successCount = 0;
     let failCount = 0;
     const okNames: string[] = [];
@@ -466,13 +478,16 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
         await new Promise((r) => setTimeout(r, delayMs));
       }
 
-      const textWithMarker = finalText
-        ? `${finalText}${route.appendTargetIndex ? ` ${startIndex + idx}` : ""}${mirrorMarker}`
+      // 더 이상 숨김 마커를 텍스트 끝에 붙이지 않는다(일부 환경에서 마커가 그대로 노출됨).
+      const textToSend = finalText
+        ? `${finalText}${route.appendTargetIndex ? ` ${startIndex + idx}` : ""}`
         : "";
 
       let ok = true;
-      if (textWithMarker) {
-        ok = (await tryServerTalkApiDispatch(logger, targetId, textWithMarker, [], 12000)) && ok;
+      if (textToSend) {
+        const h = hashTextForDedup(textToSend);
+        SENT_TEXT_DEDUP.mark(`sent_txt:${targetId}:${h}`);
+        ok = (await tryServerTalkApiDispatch(logger, targetId, textToSend, [], 12000)) && ok;
       }
 
       if (includeImages && images.length > 0) {
@@ -510,8 +525,18 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     });
 
     resultLines.push("");
-    resultLines.push(`📌 ${route.id} (총 ${validTargets.length})`);
+    resultLines.push(`📌 ${route.id} (설정:${targetsUniq.length}, 발송:${validTargets.length}, 스킵:${targetsUniq.length - validTargets.length})`);
     resultLines.push(`✅ 성공: ${successCount} / ❌ 실패: ${failCount}`);
+    if (targetsUniq.length !== validTargets.length) {
+      if (notAllowedTargets.length > 0) {
+        const labels = notAllowedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
+        resultLines.push(`🚫 allowlist 제외: ${labels.join(", ")}${notAllowedTargets.length > 30 ? ` 외 ${notAllowedTargets.length - 30}개` : ""}`);
+      }
+      if (excludedTargets.length > 0) {
+        const labels = excludedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
+        resultLines.push(`🚫 excludedRoomIds: ${labels.join(", ")}${excludedTargets.length > 30 ? ` 외 ${excludedTargets.length - 30}개` : ""}`);
+      }
+    }
     if (!roomNameErr) {
       const MAX_OK = 80;
       const MAX_FAIL = 120;
@@ -593,6 +618,18 @@ function isSentByWorkerImageEcho(entry: StreamEntry): boolean {
   return SENT_IMAGE_DEDUP.has(key);
 }
 
+function isSentByWorkerTextEcho(entry: StreamEntry): boolean {
+  const roomId = safeString(entry.roomId);
+  if (!roomId) return false;
+
+  const text = normalizeTextForHash(entry.text);
+  if (!text) return false;
+
+  const h = hashTextForDedup(text);
+  const key = `sent_txt:${roomId}:${h}`;
+  return SENT_TEXT_DEDUP.has(key);
+}
+
 async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): Promise<void> {
   const roomId = safeString(entry.roomId);
   if (!roomId) return;
@@ -606,6 +643,10 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
 
   // mirrored image echo suppression (worker-sent)
   if (payloadType === "message" && isSentByWorkerImageEcho(entry)) {
+    return;
+  }
+  // mirrored text echo suppression (worker-sent)
+  if (payloadType === "message" && isSentByWorkerTextEcho(entry)) {
     return;
   }
 

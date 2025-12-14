@@ -7,11 +7,24 @@
 
 ## 진행 상황
 
-- [ ] 전체 재기동 후 상태 점검
-- [ ] `/announcement` UI 오류 재현/수정
-- [ ] 공지 전파 결과 요약(공지방 1회, 타겟방 전파 금지) 검증
-- [ ] 방 검색(이름/ID) + 타겟 결과에 방 이름 표시
-- [ ] watchdog/worker 중복 실행 방지 재검증
+- [x] 전체 재기동/부분 재기동 후 상태 점검(API 8650, Web 3100)
+- [x] `/announcement` UI 정상 로딩 확인 + 공지 설정 검색 입력 추가
+- [x] 공지 전파 결과 요약(공지방 1회, 타겟방 전파 금지) 전제 조건 보강
+  - `/rooms/resolve`가 IRIS meta 뿐 아니라 **로그 스냅샷 기반 roomName 보정**을 하도록 수정(공지 결과에 방 이름 표시 강화)
+- [x] watchdog/worker 중복 실행 방지 재검증
+  - ai-worker 싱글톤 락 추가(`node-iris-app/data/locks/ai_worker.lock`)
+  - start_*_worker.ps1의 상대경로 실행 케이스 매칭 보강(ai/welcome)
+  - watchdog 문법 오류 수정 및 roster-worker(미설정) 자동 재기동 스킵
+- [x] 공지 메시지에 노출되는 `[MF:...]` 마커 제거
+  - broadcast-worker는 더 이상 텍스트 끝에 숨김 마커를 붙이지 않는다(카톡에서 zero-width가 제거되어 마커가 노출되는 문제)
+  - 대신 워커가 보낸 텍스트/이미지는 TTL 기반 “에코 감지”로 재처리를 방지
+- [x] 공지 UI에서 타겟을 늘렸는데 발송/결과에 반영되지 않는 문제 보강
+  - `/runtime` 저장 시 공지 route의 source/targets를 allowlist(`allowedRoomIds`)에 자동 포함(단, `excludedRoomIds`는 항상 제외)
+
+## 검증
+
+- `node-iris-app`: `npm test`, `npm run build` 통과
+- `server`: `python -m compileall server` 통과
 
 ## 결정/메모
 

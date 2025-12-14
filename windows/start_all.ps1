@@ -160,9 +160,14 @@ if ((($env:ANNOUNCEMENT_DISPATCHER -as [string]).Trim().ToLower() -ne 'bot' -or 
 }
 
 if ($env:ROSTER_WORKER_DISABLE -ne '1') {
-  Write-Host '[all] starting roster-worker'
-  & (Join-Path $PSScriptRoot 'start_roster_worker.ps1') -TimeoutSec 40
-  Start-Sleep -Seconds 1
+  $rosterCfg = Join-Path $root 'data\course_roster_worker.json'
+  if (-not (Test-Path $rosterCfg)) {
+    Write-Host ("[all] roster-worker skipped (config missing: {0})" -f $rosterCfg) -ForegroundColor Yellow
+  } else {
+    Write-Host '[all] starting roster-worker'
+    & (Join-Path $PSScriptRoot 'start_roster_worker.ps1') -TimeoutSec 40
+    Start-Sleep -Seconds 1
+  }
 } else {
   Write-Host ("[all] roster-worker skipped (ROSTER_WORKER_DISABLE={0})" -f $env:ROSTER_WORKER_DISABLE) -ForegroundColor Yellow
 }

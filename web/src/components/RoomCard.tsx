@@ -67,6 +67,10 @@ export default function RoomCard({
     const [membersLoadedCount, setMembersLoadedCount] = useState<number | null>(null);
     const [membersActiveCount, setMembersActiveCount] = useState<number | null>(null);
     const [members, setMembers] = useState<RoomMember[]>([]);
+    const [membersSheetsSyncing, setMembersSheetsSyncing] = useState(false);
+    const [membersSheetsSyncMsg, setMembersSheetsSyncMsg] = useState<string | null>(null);
+    const [membersSheetsSyncErr, setMembersSheetsSyncErr] = useState<string | null>(null);
+    const [membersSheetsHintCmd, setMembersSheetsHintCmd] = useState<string | null>(null);
 
     const rosterCfg: any = (courseRosterConfig && typeof courseRosterConfig === "object") ? courseRosterConfig : {};
     const rosterSpreadsheetId = String(rosterCfg.spreadsheetId || "").trim();
@@ -118,6 +122,10 @@ export default function RoomCard({
         setMembersLoadedCount(null);
         setMembersActiveCount(null);
         setMembers([]);
+        setMembersSheetsSyncing(false);
+        setMembersSheetsSyncMsg(null);
+        setMembersSheetsSyncErr(null);
+        setMembersSheetsHintCmd(null);
     }, [room.roomId]);
 
     const avatarUrl = `${realtimeBase}/avatar/${room.roomId}?v=${avatarVersion}&t=${Math.floor(Date.now() / 300000)}`;
@@ -163,6 +171,38 @@ export default function RoomCard({
             try { clearTimeout(timer); } catch { }
         };
     }, [membersOpen, room.roomId, membersQuery, membersOffset]);
+
+    const syncMembersToSheets = async (): Promise<void> => {
+        const rid = String(room.roomId || "").trim();
+        if (!rid) return;
+        const ok = confirm(`이 방 멤버를 Google Sheets에 업서트할까요?\n\nroomId=${rid}\n\n(※ loadedMembersCount < activeMembersCount이면 실패합니다)`);
+        if (!ok) return;
+
+        setMembersSheetsSyncing(true);
+        setMembersSheetsSyncMsg(null);
+        setMembersSheetsSyncErr(null);
+        setMembersSheetsHintCmd(null);
+
+        try {
+            const r = await fetch(`/api/rooms/${encodeURIComponent(rid)}/members/sync-sheets`, { method: "POST" });
+            const j: any = await r.json().catch(() => null);
+            if (!r.ok || !j || j.ok !== true) {
+                setMembersSheetsSyncErr(String(j?.detail || j?.error || `HTTP ${r.status}`));
+                const hint = String(j?.hintCommand || "").trim();
+                if (hint) setMembersSheetsHintCmd(hint);
+                return;
+            }
+            const fetched = j?.counts?.fetched;
+            const updates = j?.sheets?.updates;
+            const appends = j?.sheets?.appends;
+            const msg = `Sheets 업서트 완료: updates=${typeof updates === "number" ? updates : "?"}, appends=${typeof appends === "number" ? appends : "?"}, fetched=${typeof fetched === "number" ? fetched : "?"}`;
+            setMembersSheetsSyncMsg(msg);
+        } catch (e: any) {
+            setMembersSheetsSyncErr(String(e?.message || e));
+        } finally {
+            setMembersSheetsSyncing(false);
+        }
+    };
 
     return (
         <div className="room-card" data-testid={`room-card-${room.roomId}`}>
@@ -392,14 +432,25 @@ export default function RoomCard({
 
             <div style={{ marginTop: 10, borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                    <button
-                        onClick={() => setMembersOpen(v => !v)}
-                        className="btn-outline"
-                        style={{ padding: '6px 10px', fontSize: 12 }}
-                        title="IRIS db2.open_chat_member 기반 멤버 목록(대형 방은 단말 스크롤로 DB 로딩이 필요할 수 있음)"
-                    >
-                        멤버 {membersOpen ? '닫기' : '보기'}
-                    </button>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button
+                            onClick={() => setMembersOpen(v => !v)}
+                            className="btn-outline"
+                            style={{ padding: '6px 10px', fontSize: 12 }}
+                            title="IRIS db2.open_chat_member 기반 멤버 목록(대형 방은 단말 스크롤로 DB 로딩이 필요할 수 있음)"
+                        >
+                            멤버 {membersOpen ? '닫기' : '보기'}
+                        </button>
+                        <button
+                            onClick={() => { void syncMembersToSheets(); }}
+                            className="btn-outline"
+                            style={{ padding: '6px 10px', fontSize: 12 }}
+                            disabled={membersSheetsSyncing}
+                            title="IRIS db2.open_chat_member → Google Sheets upsert (서비스 계정 OAuth 필요)"
+                        >
+                            {membersSheetsSyncing ? '업서트…' : 'Sheets 업서트'}
+                        </button>
+                    </div>
                     <div style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                         {membersLoading ? '로딩…' : (
                             <>
@@ -412,6 +463,29 @@ export default function RoomCard({
                         )}
                     </div>
                 </div>
+
+                {membersSheetsSyncMsg && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--success)', lineHeight: 1.4 }}>
+                        {membersSheetsSyncMsg}
+                    </div>
+                )}
+                {membersSheetsSyncErr && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--error)', lineHeight: 1.4 }}>
+                        Sheets 업서트 실패: <code>{membersSheetsSyncErr}</code>
+                    </div>
+                )}
+                {membersSheetsHintCmd && (
+                    <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <code style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{membersSheetsHintCmd}</code>
+                        <button
+                            className="btn-copy"
+                            style={{ padding: '2px 8px', fontSize: 11 }}
+                            onClick={() => { void copyToClipboard(membersSheetsHintCmd); }}
+                        >
+                            복사
+                        </button>
+                    </div>
+                )}
 
                 {membersOpen && (
                     <div style={{ marginTop: 8 }}>

@@ -69,6 +69,13 @@ API key는 주로 **공개 데이터 읽기**에만 쓰이며, 업서트(쓰기)
 
 `python scripts/sync_openchat_members_to_sheets.py --room-id <ROOM_ID>`
 
+### 3.5) (권장) UI에서 1클릭 실행
+
+- 대시보드(3100) → 해당 방(RoomCard) → **`Sheets 업서트`** 버튼
+  - 내부적으로 `scripts/sync_openchat_members_to_sheets.py`를 호출한다.
+  - `loadedMembersCount < activeMembersCount`이면(=DB 로딩 불완전) **실패**하며,
+    UI에 `openchat_load_members.ps1` 실행 커맨드가 힌트로 노출된다.
+
 기본 업서트 스키마(헤더):
 - `roomId`, `roomName`, `userId`, `nickname`
 - `linkId`, `memberType`, `profileType`, `linkMemberType`, `profileLinkId`

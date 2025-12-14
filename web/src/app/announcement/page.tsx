@@ -668,7 +668,7 @@ export default function AnnouncementPage() {
       <div style={{ marginTop: 40, color: "var(--text-muted)", fontSize: 13, textAlign: "center", paddingBottom: 40 }}>
         공지는 소스 방에 메시지가 올라오면 타겟 방들에 자동으로 복제됩니다.
         <br />
-        루프 방지를 위해 복제된 메시지에는 숨김 마커가 포함됩니다.
+        루프/중복 방지는 워커 내부 에코 감지(텍스트/이미지)로 처리합니다.
       </div>
     </div>
   );

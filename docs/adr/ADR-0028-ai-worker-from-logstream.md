@@ -65,6 +65,7 @@
 - 접두어는 반드시 문장 맨 앞 `?디하클`(공백 변형 허용)만 인식한다.
 - KB 오류/타임아웃 시 임의 추측 답변을 생성하지 않고, 고정 에러 메시지로 안내한다.
 - ai-worker는 봇 계정(예: IRIS 자체 발신) 메시지에 반응하지 않아 루프를 만들지 않는다.
+- **ai-worker는 1개만 실행되어야 한다.** 락 파일(`node-iris-app/data/locks/ai_worker.lock`)로 중복 실행을 방지하며, 락이 이미 잡혀있으면 새 프로세스는 즉시 종료한다.
 
 ## Consequences (결과)
 
@@ -94,4 +95,3 @@
   - `windows/start_ai_worker.ps1`, `windows/watchdog.ps1`, `windows/start_all.ps1`
 - Docs:
   - `docs/ops/core-feature-split-plan.md`
-
