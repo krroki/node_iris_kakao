@@ -41,6 +41,7 @@ export default function AnnouncementPage() {
   const [targetsText, setTargetsText] = useState<string>("");
   const [sourceQuery, setSourceQuery] = useState<string>("");
   const [targetQuery, setTargetQuery] = useState<string>("");
+  const [routeQuery, setRouteQuery] = useState<string>("");
 
   const normalizeTargets = (list: string[], source?: string) => {
     const src = String(source || "").trim();
@@ -203,6 +204,25 @@ export default function AnnouncementPage() {
     return `${name} (${rid})`;
   };
 
+  const filteredRoutes = useMemo(() => {
+    const q = String(routeQuery || "").trim().toLowerCase();
+    if (!q) return config.routes;
+    return (config.routes || []).filter((route) => {
+      const id = String(route.id || "").toLowerCase();
+      const sourceId = String(route.source || "").toLowerCase();
+      const sourceLabel = String(getRoomLabel(route.source) || "").toLowerCase();
+      const targets = Array.isArray(route.targets) ? route.targets : [];
+      const targetsLabel = targets.map((t) => getRoomLabel(t)).join(" ").toLowerCase();
+      return (
+        id.includes(q) ||
+        sourceId.includes(q) ||
+        sourceLabel.includes(q) ||
+        targets.some((t) => String(t || "").toLowerCase().includes(q)) ||
+        targetsLabel.includes(q)
+      );
+    });
+  }, [config.routes, getRoomLabel, routeQuery]);
+
   const filterRooms = (query: string, excludeRoomId?: string) => {
     const q = String(query || "").trim().toLowerCase();
     const ex = String(excludeRoomId || "").trim();
@@ -276,10 +296,20 @@ export default function AnnouncementPage() {
 
       {/* Route 목록 */}
       <div className="section-title" style={{ marginBottom: 16 }}>
-        <span>공지 설정 ({config.routes.length}개)</span>
+        <span>
+          공지 설정 ({filteredRoutes.length}개{filteredRoutes.length !== config.routes.length ? ` / 총 ${config.routes.length}개` : ""})
+        </span>
       </div>
 
-      {config.routes.length === 0 ? (
+      <input
+        value={routeQuery}
+        onChange={(e) => setRouteQuery(e.target.value)}
+        className="filter-input"
+        style={{ width: "100%", marginBottom: 12 }}
+        placeholder="공지 설정 검색 (route id / 방 이름 / roomId)"
+      />
+
+      {filteredRoutes.length === 0 ? (
         <div
           style={{
             textAlign: "center",
@@ -290,11 +320,13 @@ export default function AnnouncementPage() {
             border: "1px solid var(--border-color)",
           }}
         >
-          설정된 공지가 없습니다. "새 공지 설정" 버튼을 눌러 추가하세요.
+          {config.routes.length === 0
+            ? '설정된 공지가 없습니다. "새 공지 설정" 버튼을 눌러 추가하세요.'
+            : "검색 조건에 맞는 공지가 없습니다."}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {config.routes.map((route) => (
+          {filteredRoutes.map((route) => (
             <div
               key={route.id}
               className="pipeline-card"
