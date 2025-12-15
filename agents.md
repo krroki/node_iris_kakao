@@ -41,7 +41,13 @@
   - ai-worker: `windows/start_ai_worker.ps1 -Restart`
   - broadcast-worker: `windows/start_broadcast_worker.ps1 -Restart`
   - roster-worker(선택 기능): `windows/start_roster_worker.ps1 -Restart`
+  - openchat-members-sheets-worker(선택 기능): `windows/start_openchat_members_sheets_worker.ps1 -Restart`
   - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
+
+- **오픈채팅 멤버 Sheets 자동 동기화(새 기능)**:
+  - UI(3100) 상단 “오픈채팅 멤버(전체) Sheets 동기화”에서 `worker.enabled=true`로 켜고,
+    방 카드 “멤버 Sheets 자동”에서 roomId별 `enabled=true`로 설정 후 저장하면 자동 업서트가 돈다.
+  - 상태 파일: `node-iris-app/data/openchat_members_sheets_worker_status.json`, `node-iris-app/data/openchat_members_sheets_worker_state.json`
 
 - **절대 금지(중요)**: `taskkill /im node.exe`, `Stop-Process -Name node` 같이 **node 전체를 종료**하는 조치는 금지한다.  
   - 또한 `dist\\index.js` 같은 **범용 패턴 매칭으로 node를 정리하는 방식은 다른 프로젝트까지 종료**할 수 있어 금지한다.  

@@ -34,6 +34,7 @@ param(
   [int]$AiWorkerRestartCooldownSec = 120,
   [int]$BroadcastWorkerRestartCooldownSec = 120,
   [int]$RosterWorkerRestartCooldownSec = 120,
+  [int]$OpenchatMembersSheetsWorkerRestartCooldownSec = 120,
   [int]$IrisRepairCooldownSec = 300,
   [int]$IrisFailThreshold = 3
 )
@@ -56,6 +57,7 @@ $startWelcomeWorkerScript = Join-Path $root "windows\start_welcome_worker.ps1"
 $startAiWorkerScript = Join-Path $root "windows\start_ai_worker.ps1"
 $startBroadcastWorkerScript = Join-Path $root "windows\start_broadcast_worker.ps1"
 $startRosterWorkerScript = Join-Path $root "windows\start_roster_worker.ps1"
+$startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_openchat_members_sheets_worker.ps1"
 $smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
 $repairScript = Join-Path $root "windows\repair_redroid_iris.ps1"
 $kbServiceScript = Join-Path $root "windows\kb_service.ps1"
@@ -68,6 +70,7 @@ $script:lastWelcomeWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastOpenchatMembersSheetsWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
 $script:webFailCount = 0
 $script:webRestartAttemptsSinceOk = 0
@@ -589,6 +592,89 @@ function Restart-RosterWorker {
   }
 }
 
+function Test-OpenchatMembersSheetsWorkerOk {
+  try {
+    if ($env:OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE -eq '1') { return $true }
+    $cfgPath = Join-Path $root "data\openchat_members_sheets.json"
+    if (-not (Test-Path $cfgPath)) { return $true }
+
+    $cfgEnabled = $false
+    try {
+      $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($j.worker -and $j.worker.enabled -eq $true) { $cfgEnabled = $true }
+    } catch { $cfgEnabled = $false }
+    if (-not $cfgEnabled) { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\openchat_members_sheets_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-OpenchatMembersSheetsWorker {
+  param([string]$Reason)
+
+  if ($env:OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE -eq '1') { return }
+  $cfgPath = Join-Path $root "data\openchat_members_sheets.json"
+  if (-not (Test-Path $cfgPath)) { return }
+
+  $cfgEnabled = $false
+  try {
+    $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($j.worker -and $j.worker.enabled -eq $true) { $cfgEnabled = $true }
+  } catch { $cfgEnabled = $false }
+  if (-not $cfgEnabled) { return }
+
+  if (-not (Test-Path $startOpenchatMembersSheetsWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_openchat_members_sheets_worker.ps1 없음: $startOpenchatMembersSheetsWorkerScript (openchat-members-sheets-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastOpenchatMembersSheetsWorkerRestartAt.AddSeconds($OpenchatMembersSheetsWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "openchat-members-sheets-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastOpenchatMembersSheetsWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "openchat-members-sheets-worker 재시작(start_openchat_members_sheets_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startOpenchatMembersSheetsWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[openchat_members_sheets_worker] $_" }
+    Write-Log -Level 'INFO' -Message "openchat-members-sheets-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "openchat-members-sheets-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
 function Maybe-Repair-Iris {
   param([string]$Reason)
   if (-not (Test-Path $repairScript)) {
@@ -768,6 +854,14 @@ try
       $ok = Test-RosterWorkerOk
       if (-not $ok) {
         Restart-RosterWorker -Reason "roster-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # openchat-members-sheets-worker stage (feature worker) - 오픈채팅 전체 멤버 Sheets 동기화 워커 자동 복구
+    try {
+      $ok = Test-OpenchatMembersSheetsWorkerOk
+      if (-not $ok) {
+        Restart-OpenchatMembersSheetsWorker -Reason "openchat-members-sheets-worker not running/heartbeat stale"
       }
     } catch {}
 

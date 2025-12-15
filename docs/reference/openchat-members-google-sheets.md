@@ -76,6 +76,36 @@ API key는 주로 **공개 데이터 읽기**에만 쓰이며, 업서트(쓰기)
   - `loadedMembersCount < activeMembersCount`이면(=DB 로딩 불완전) **실패**하며,
     UI에 `openchat_load_members.ps1` 실행 커맨드가 힌트로 노출된다.
 
+### 3.6) (권장) UI 설정 후 “자동 동기화 워커”로 상시 업서트
+
+“매번 업서트를 누르는 방식”이 아니라, **UI에서 roomId별 시트 타겟을 저장**해두고
+워커가 주기적으로 자동 업서트를 수행하도록 구성할 수 있다.
+
+- 설정 UI:
+  1) 대시보드(3100) 상단 카드 **“오픈채팅 멤버(전체) Sheets 동기화”**
+     - 서비스 계정 업로드(없다면)
+     - `자동 동기화 워커` ON
+     - `기본 주기(분)` / `기본 Spreadsheet ID/URL` / `기본 시트 탭 이름` 설정
+  2) 각 방(RoomCard) → **“멤버 Sheets 자동”**
+     - `자동 동기화` ON
+     - 강의별 분리가 필요하면 roomId별 `Spreadsheet ID/URL` 또는 `시트 탭`을 override
+     - 저장 버튼을 눌러 반영
+
+- 워커:
+  - 스크립트: `scripts/openchat_members_sheets_worker.py`
+  - 기동:
+    - 콜드 부팅: `windows/start_all.cmd` (config에 `worker.enabled=true`일 때만 자동 기동)
+    - 단독 재기동: `windows/start_openchat_members_sheets_worker.ps1 -Restart`
+  - watchdog가 heartbeat stale/종료를 감지하면 자동 재기동한다(단, `worker.enabled=false`면 스킵).
+
+- 상태 파일:
+  - `node-iris-app/data/openchat_members_sheets_worker_status.json`
+  - `node-iris-app/data/openchat_members_sheets_worker_state.json`
+
+- 완전성 정책:
+  - 기본은 `loadedMembersCount < activeMembersCount`이면 **업서트하지 않고 스킵/실패**한다(폴백 금지).
+  - UI 상태에 “멤버 DB 불완전 → 스크롤 로딩 후 재시도” 힌트가 표시된다.
+
 기본 업서트 스키마(헤더):
 - `roomId`, `roomName`, `userId`, `nickname`
 - `linkId`, `memberType`, `profileType`, `linkMemberType`, `profileLinkId`

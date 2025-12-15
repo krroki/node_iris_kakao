@@ -79,6 +79,7 @@
 - **데이터 수집**: `cafe_crawler.py`, `iris_board_collector.py`, `simple_cafe_collector.js`.
 - **검증/테스트**: `test_room_registration.py`, `test_real_kakao_integration.py`, `verify_safe_mode_wsl.sh`.
 - **강의 운영 자동화**: `course_roster_worker.py` (오픈채팅 입장자 카페/닉네임 검증 + Sheets 업서트, 운영 스크립트: `windows/start_roster_worker.ps1`)
+- **오픈채팅 멤버 Sheets 자동 동기화**: `openchat_members_sheets_worker.py` (IRIS `db2.open_chat_member` → Google Sheets upsert, 운영 스크립트: `windows/start_openchat_members_sheets_worker.ps1`, 설정: `data/openchat_members_sheets.json`)
 - 스크립트마다 의존성이 다르므로 실행 전 README/주석과 `docs/op` 자료를 확인한다.
 
 ### 3.5 `docs/` – 운영 문서 및 레퍼런스

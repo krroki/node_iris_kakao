@@ -410,6 +410,14 @@ def main() -> int:
 
     cfg = _load_local_config(str(args.config or DEFAULT_SHEETS_CONFIG))
 
+    def _room_cfg(room_id: str) -> dict:
+        rooms = cfg.get("rooms")
+        if isinstance(rooms, dict):
+            v = rooms.get(room_id)
+            if isinstance(v, dict):
+                return v
+        return {}
+
     if args.init_config:
         raw_sheet = str(args.spreadsheet_id or "").strip()
         if not raw_sheet:
@@ -430,10 +438,11 @@ def main() -> int:
             if default_sa.exists():
                 sa_raw = DEFAULT_SERVICE_ACCOUNT_JSON
 
-        out = {
-            "spreadsheetId": spreadsheet_id,
-            "sheetName": sheet_name,
-        }
+        # NOTE: init-config는 spreadsheetId/sheetName/serviceAccountJson만 갱신한다.
+        # rooms/worker 등 다른 설정을 덮어쓰지 않도록 기존 config를 보존한다.
+        out = dict(cfg) if isinstance(cfg, dict) else {}
+        out["spreadsheetId"] = spreadsheet_id
+        out["sheetName"] = sheet_name
         if sa_raw:
             out["serviceAccountJson"] = sa_raw
 
@@ -446,6 +455,8 @@ def main() -> int:
         print("[오류] room-id가 비어 있습니다.", file=sys.stderr)
         return 2
 
+    room_cfg = _room_cfg(room_id)
+
     room_name, active_cnt = fetch_room_meta(room_id)
     loaded_cnt = fetch_loaded_member_count(room_id)
     members = fetch_members(room_id)
@@ -453,7 +464,13 @@ def main() -> int:
     print(f"[room] id={room_id}, name={room_name}")
     print(f"[count] activeMembersCount={active_cnt if active_cnt is not None else 'N/A'} / loadedMembersCount={loaded_cnt} / fetched={len(members)}")
 
-    if active_cnt is not None and loaded_cnt < active_cnt and not args.allow_incomplete:
+    allow_incomplete = bool(
+        args.allow_incomplete
+        or bool(room_cfg.get("allowIncomplete") or room_cfg.get("allow_incomplete"))
+        or bool(cfg.get("allowIncomplete") or cfg.get("allow_incomplete"))
+    )
+
+    if active_cnt is not None and loaded_cnt < active_cnt and not allow_incomplete:
         print(
             "[오류] 멤버 DB가 불완전합니다(loadedMembersCount < activeMembersCount). "
             "단말에서 멤버 목록을 충분히 스크롤하여 db2.open_chat_member를 채운 뒤 다시 실행하세요.\n"
@@ -470,6 +487,7 @@ def main() -> int:
     raw_sheet = (
         str(args.spreadsheet_id or "").strip()
         or str(os.getenv("SHEETS_SPREADSHEET_ID") or "").strip()
+        or str(room_cfg.get("spreadsheetId") or room_cfg.get("spreadsheet_id") or room_cfg.get("spreadsheet") or "").strip()
         or str(cfg.get("spreadsheetId") or cfg.get("spreadsheet_id") or cfg.get("spreadsheet") or "").strip()
     )
     if not raw_sheet:
@@ -487,6 +505,7 @@ def main() -> int:
     sheet_name = (
         str(args.sheet_name or "").strip()
         or str(os.getenv("SHEETS_SHEET_NAME") or "").strip()
+        or str(room_cfg.get("sheetName") or room_cfg.get("sheet_name") or "").strip()
         or str(cfg.get("sheetName") or cfg.get("sheet_name") or "").strip()
         or "members"
     )
@@ -495,6 +514,7 @@ def main() -> int:
         str(args.service_account_json or "").strip()
         or str(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
         or str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+        or str(room_cfg.get("serviceAccountJson") or room_cfg.get("service_account_json") or "").strip()
         or str(cfg.get("serviceAccountJson") or cfg.get("service_account_json") or "").strip()
     )
     if not sa_json:

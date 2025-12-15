@@ -68,6 +68,7 @@ Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\welcome_worker_statu
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\ai_worker_status.json') 'ai-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\broadcast_worker_status.json') 'broadcast-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\roster_worker_status.json') 'roster-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\openchat_members_sheets_worker_status.json') 'openchat-members-sheets-worker'
 Stop-ProcsByPredicate { $_.CommandLine -match 'web\\node_modules\\next' -and $_.CommandLine -match $repoPath }
 Stop-ProcsByPredicate { $_.CommandLine -match 'web\\node_modules\\\.bin\\' -and $_.CommandLine -match 'next' -and $_.CommandLine -match $repoPath }
 Stop-ProcsByPredicate { $_.CommandLine -match 'next\\dist\\server\\lib\\start-server.js' -and $_.CommandLine -match $repoPath }
@@ -170,6 +171,28 @@ if ($env:ROSTER_WORKER_DISABLE -ne '1') {
   }
 } else {
   Write-Host ("[all] roster-worker skipped (ROSTER_WORKER_DISABLE={0})" -f $env:ROSTER_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
+if ($env:OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE -ne '1') {
+  $cfgPath = Join-Path $root 'data\openchat_members_sheets.json'
+  if (-not (Test-Path $cfgPath)) {
+    Write-Host ("[all] openchat-members-sheets-worker skipped (config missing: {0})" -f $cfgPath) -ForegroundColor Yellow
+  } else {
+    $enabled = $false
+    try {
+      $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($j.worker -and $j.worker.enabled -eq $true) { $enabled = $true }
+    } catch { $enabled = $false }
+    if (-not $enabled) {
+      Write-Host ("[all] openchat-members-sheets-worker skipped (worker.enabled=false in {0})" -f $cfgPath) -ForegroundColor Yellow
+    } else {
+      Write-Host '[all] starting openchat-members-sheets-worker'
+      & (Join-Path $PSScriptRoot 'start_openchat_members_sheets_worker.ps1') -TimeoutSec 40
+      Start-Sleep -Seconds 1
+    }
+  }
+} else {
+  Write-Host ("[all] openchat-members-sheets-worker skipped (OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE={0})" -f $env:OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE) -ForegroundColor Yellow
 }
 
 Write-Host '[all] starting web'

@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useState } from 'react';
-import { CourseRosterRoomConfig, LogEntry, RoomInfo, RoomFeatures, RoomMember, RoomMembersResponse } from '../types';
+import { CourseRosterRoomConfig, LogEntry, OpenchatMembersSheetsRoomConfig, RoomInfo, RoomFeatures, RoomMember, RoomMembersResponse } from '../types';
 import LogViewer from './LogViewer';
 
 interface RoomCardProps {
@@ -11,6 +11,13 @@ interface RoomCardProps {
     courseRosterHasServiceAccount?: boolean;
     courseRosterConfigDirty?: boolean;
     onUpdateCourseRosterConfig?: (roomId: string, patch: Partial<CourseRosterRoomConfig>) => void;
+    openchatMembersSheetsConfig?: OpenchatMembersSheetsRoomConfig | null;
+    openchatMembersSheetsConfigExists?: boolean;
+    openchatMembersSheetsHasServiceAccount?: boolean;
+    openchatMembersSheetsConfigDirty?: boolean;
+    openchatMembersSheetsWorkerEnabled?: boolean;
+    openchatMembersSheetsRoomState?: any | null;
+    onUpdateOpenchatMembersSheetsConfig?: (roomId: string, patch: Partial<OpenchatMembersSheetsRoomConfig>) => void;
     excluded: boolean;
     saving: "idle" | "saving" | "saved" | "error";
     onToggleFeature: (roomId: string, feature: keyof RoomFeatures, value: boolean) => void;
@@ -30,6 +37,13 @@ export default function RoomCard({
     courseRosterHasServiceAccount,
     courseRosterConfigDirty,
     onUpdateCourseRosterConfig,
+    openchatMembersSheetsConfig,
+    openchatMembersSheetsConfigExists,
+    openchatMembersSheetsHasServiceAccount,
+    openchatMembersSheetsConfigDirty,
+    openchatMembersSheetsWorkerEnabled,
+    openchatMembersSheetsRoomState,
+    onUpdateOpenchatMembersSheetsConfig,
     excluded,
     saving,
     onToggleFeature,
@@ -81,6 +95,36 @@ export default function RoomCard({
     const rosterParsedSheetId = String(rosterCfg.parsedSpreadsheetId || "").trim();
     const rosterConfigIncomplete = !rosterSpreadsheetId || !rosterCafeCsvPath;
     const rosterCanOperate = !!features.courseRoster && !rosterConfigIncomplete && !!courseRosterHasServiceAccount;
+
+    const openchatSheetsCfg: any = (openchatMembersSheetsConfig && typeof openchatMembersSheetsConfig === "object") ? openchatMembersSheetsConfig : {};
+    const openchatSheetsEnabled = openchatSheetsCfg.enabled === true;
+    const openchatSheetsSpreadsheetId = String(openchatSheetsCfg.spreadsheetId || "").trim();
+    const openchatSheetsSheetName = String(openchatSheetsCfg.sheetName || "").trim();
+    const openchatSheetsIntervalSec = Number(openchatSheetsCfg.intervalSec);
+    const openchatSheetsIntervalMin = Number.isFinite(openchatSheetsIntervalSec) && openchatSheetsIntervalSec > 0
+        ? Math.max(1, Math.floor(openchatSheetsIntervalSec / 60))
+        : "";
+    const openchatSheetsAllowIncomplete = openchatSheetsCfg.allowIncomplete === true;
+
+    const openchatSheetsState: any = (openchatMembersSheetsRoomState && typeof openchatMembersSheetsRoomState === "object")
+        ? openchatMembersSheetsRoomState
+        : {};
+    const openchatSheetsLastResult = String(openchatSheetsState.lastResult || "").trim();
+    const openchatSheetsLastOkTs = String(openchatSheetsState.lastOkTs || "").trim();
+    const openchatSheetsLastAttemptTs = String(openchatSheetsState.lastAttemptTs || "").trim();
+    const openchatSheetsLastError = String(openchatSheetsState.lastError || "").trim();
+
+    const fmtTs = (ts: string): string => {
+        const s = String(ts || "").trim();
+        if (!s) return "";
+        try {
+            const d = new Date(s);
+            if (Number.isNaN(d.getTime())) return s;
+            return d.toLocaleString();
+        } catch {
+            return s;
+        }
+    };
 
     const copyToClipboard = async (text: string): Promise<void> => {
         const v = String(text || "");
@@ -486,6 +530,109 @@ export default function RoomCard({
                         </button>
                     </div>
                 )}
+
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border-color)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-primary)' }}>멤버 Sheets 자동</div>
+                        {openchatMembersSheetsConfigDirty && <span className="tag tag-inactive" title="openchat_members_sheets.json 저장 필요">저장 필요</span>}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 8 }}>
+                        <label className="control-label" title="해당 방 전체 멤버 목록을 주기적으로 Google Sheets에 업서트">
+                            <input
+                                type="checkbox"
+                                checked={openchatSheetsEnabled}
+                                onChange={e => onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { enabled: e.target.checked })}
+                            />
+                            자동 동기화
+                        </label>
+                        <input
+                            value={openchatSheetsSpreadsheetId}
+                            onChange={(e) => onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { spreadsheetId: e.target.value })}
+                            placeholder="Spreadsheet ID/URL (빈칸=기본값 사용)"
+                            className="filter-input"
+                            style={{ flex: 1, minWidth: 220, height: 34, marginBottom: 0 }}
+                            disabled={!openchatSheetsEnabled}
+                        />
+                        <input
+                            value={openchatSheetsSheetName}
+                            onChange={(e) => onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { sheetName: e.target.value })}
+                            placeholder="시트 탭(빈칸=기본값)"
+                            className="filter-input"
+                            style={{ width: 200, height: 34, marginBottom: 0 }}
+                            disabled={!openchatSheetsEnabled}
+                        />
+                        <input
+                            type="number"
+                            min={1}
+                            value={openchatSheetsIntervalMin as any}
+                            onChange={(e) => {
+                                const raw = String(e.target.value || "").trim();
+                                if (!raw) {
+                                    onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { intervalSec: undefined });
+                                    return;
+                                }
+                                const n = Math.max(1, Number(raw) || 1);
+                                onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { intervalSec: Math.floor(n) * 60 });
+                            }}
+                            placeholder="주기(분)"
+                            className="filter-input"
+                            style={{ width: 120, height: 34, marginBottom: 0 }}
+                            disabled={!openchatSheetsEnabled}
+                            title="빈칸이면 상단 '기본 주기'를 사용합니다."
+                        />
+                        <label className="control-label" title="권장하지 않음: loadedMembersCount < activeMembersCount이어도 강제 업서트">
+                            <input
+                                type="checkbox"
+                                checked={openchatSheetsAllowIncomplete}
+                                onChange={(e) => onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { allowIncomplete: e.target.checked })}
+                                disabled={!openchatSheetsEnabled}
+                            />
+                            불완전 허용(권장x)
+                        </label>
+                    </div>
+
+                    <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                        워커: {openchatMembersSheetsWorkerEnabled ? 'ON' : 'OFF'}{' · '}
+                        서비스계정: {openchatMembersSheetsHasServiceAccount ? 'OK' : '없음'}{' · '}
+                        설정파일: {openchatMembersSheetsConfigExists ? 'OK' : '없음'}
+                        {openchatSheetsLastResult && (
+                            <>
+                                {' · '}최근 결과: <b>{openchatSheetsLastResult}</b>
+                            </>
+                        )}
+                        {openchatSheetsLastOkTs && (
+                            <>
+                                {' · '}OK: {fmtTs(openchatSheetsLastOkTs)}
+                            </>
+                        )}
+                        {!openchatSheetsLastOkTs && openchatSheetsLastAttemptTs && (
+                            <>
+                                {' · '}시도: {fmtTs(openchatSheetsLastAttemptTs)}
+                            </>
+                        )}
+                    </div>
+
+                    {openchatSheetsLastResult === "INCOMPLETE_MEMBER_DB" && (
+                        <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 11, color: 'var(--error)' }}>멤버 DB 불완전 → 스크롤 로딩 후 재시도</span>
+                            <code style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                                {`pwsh scripts/openchat_load_members.ps1 -RoomId ${room.roomId} -Scrolls 600`}
+                            </code>
+                            <button
+                                className="btn-copy"
+                                style={{ padding: '2px 8px', fontSize: 11 }}
+                                onClick={() => { void copyToClipboard(`pwsh scripts/openchat_load_members.ps1 -RoomId ${room.roomId} -Scrolls 600`); }}
+                            >
+                                복사
+                            </button>
+                        </div>
+                    )}
+                    {openchatSheetsLastError && openchatSheetsLastResult && openchatSheetsLastResult !== "OK" && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--error)', whiteSpace: 'pre-wrap' }}>
+                            {openchatSheetsLastError.slice(0, 600)}
+                        </div>
+                    )}
+                </div>
 
                 {membersOpen && (
                     <div style={{ marginTop: 8 }}>

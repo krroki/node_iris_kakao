@@ -9,6 +9,8 @@ import {
   RoomFeatures,
   CourseRosterConfig,
   CourseRosterRoomConfig,
+  OpenchatMembersSheetsConfig,
+  OpenchatMembersSheetsRoomConfig,
   BulkLogsResponse,
   RuntimeConfig,
 } from "../types";
@@ -77,6 +79,17 @@ export default function Home() {
   const [courseRosterServiceAccount, setCourseRosterServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
   const [rosterWorkerStatus, setRosterWorkerStatus] = useState<any | null>(null);
   const [rosterWorkerStatusError, setRosterWorkerStatusError] = useState<string | null>(null);
+
+  // 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 설정/상태
+  const [openchatMembersSheetsConfig, setOpenchatMembersSheetsConfig] = useState<OpenchatMembersSheetsConfig | null>(null);
+  const [openchatMembersSheetsConfigExists, setOpenchatMembersSheetsConfigExists] = useState<boolean>(false);
+  const [openchatMembersSheetsConfigPath, setOpenchatMembersSheetsConfigPath] = useState<string | null>(null);
+  const [openchatMembersSheetsConfigDirty, setOpenchatMembersSheetsConfigDirty] = useState<boolean>(false);
+  const [openchatMembersSheetsConfigSaving, setOpenchatMembersSheetsConfigSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [openchatMembersSheetsConfigError, setOpenchatMembersSheetsConfigError] = useState<string | null>(null);
+  const [openchatMembersSheetsServiceAccount, setOpenchatMembersSheetsServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
+  const [openchatMembersSheetsWorkerStatus, setOpenchatMembersSheetsWorkerStatus] = useState<any | null>(null);
+  const [openchatMembersSheetsWorkerStatusError, setOpenchatMembersSheetsWorkerStatusError] = useState<string | null>(null);
 
   // Debug: React 상태 기준 로그 개수 확인용 (UI에 노출)
   const debugCounts = useMemo(() => {
@@ -197,12 +210,60 @@ export default function Home() {
     }
   }, []);
 
+  const loadOpenchatMembersSheetsConfig = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/openchat-members-sheets/config`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setOpenchatMembersSheetsConfigExists(!!j.exists);
+      setOpenchatMembersSheetsConfigPath(j.path ? String(j.path) : null);
+      setOpenchatMembersSheetsServiceAccount({
+        exists: !!j?.serviceAccount?.exists,
+        path: j?.serviceAccount?.path ? String(j.serviceAccount.path) : undefined,
+        clientEmail: j?.serviceAccount?.clientEmail ? String(j.serviceAccount.clientEmail) : null,
+        error: j?.serviceAccount?.error ? String(j.serviceAccount.error) : null,
+      });
+      const cfg: OpenchatMembersSheetsConfig = (j.config && typeof j.config === "object")
+        ? (j.config as OpenchatMembersSheetsConfig)
+        : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+      setOpenchatMembersSheetsConfig(cfg);
+      setOpenchatMembersSheetsConfigError(null);
+    } catch (e: any) {
+      setOpenchatMembersSheetsConfigError(String(e?.message || e));
+      setOpenchatMembersSheetsConfig((prev) => prev || ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig));
+    }
+  }, []);
+
+  const loadOpenchatMembersSheetsWorkerStatus = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/openchat-members-sheets/status`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setOpenchatMembersSheetsWorkerStatus(j);
+      setOpenchatMembersSheetsWorkerStatusError(null);
+    } catch (e: any) {
+      setOpenchatMembersSheetsWorkerStatus(null);
+      setOpenchatMembersSheetsWorkerStatusError(String(e?.message || e));
+    }
+  }, []);
+
   useEffect(() => {
     void loadCourseRosterConfig();
     void loadRosterWorkerStatus();
     const t = setInterval(() => { void loadRosterWorkerStatus(); }, 5000);
     return () => clearInterval(t);
   }, [loadCourseRosterConfig, loadRosterWorkerStatus]);
+
+  useEffect(() => {
+    void loadOpenchatMembersSheetsConfig();
+    void loadOpenchatMembersSheetsWorkerStatus();
+    const t = setInterval(() => { void loadOpenchatMembersSheetsWorkerStatus(); }, 5000);
+    return () => clearInterval(t);
+  }, [loadOpenchatMembersSheetsConfig, loadOpenchatMembersSheetsWorkerStatus]);
 
   const onUpdateCourseRosterRoomConfig = useCallback((roomId: string, patch: Partial<CourseRosterRoomConfig>) => {
     const rid = String(roomId || "").trim();
@@ -221,6 +282,21 @@ export default function Home() {
       return { ...base, version: Number(base.version) || 1, rooms: nextRooms };
     });
     setCourseRosterConfigDirty(true);
+  }, []);
+
+  const onUpdateOpenchatMembersSheetsRoomConfig = useCallback((roomId: string, patch: Partial<OpenchatMembersSheetsRoomConfig>) => {
+    const rid = String(roomId || "").trim();
+    if (!rid) return;
+    setOpenchatMembersSheetsConfig((prev) => {
+      const base: OpenchatMembersSheetsConfig = (prev && typeof prev === "object")
+        ? prev
+        : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+      const nextRooms: Record<string, any> = { ...(base.rooms || {}) };
+      const cur = (nextRooms[rid] && typeof nextRooms[rid] === "object") ? nextRooms[rid] : {};
+      nextRooms[rid] = { ...cur, ...patch };
+      return { ...base, version: Number(base.version) || 1, rooms: nextRooms };
+    });
+    setOpenchatMembersSheetsConfigDirty(true);
   }, []);
 
   const saveCourseRosterConfig = useCallback(async (): Promise<boolean> => {
@@ -250,6 +326,33 @@ export default function Home() {
     }
   }, [courseRosterConfig, loadCourseRosterConfig]);
 
+  const saveOpenchatMembersSheetsConfig = useCallback(async (): Promise<boolean> => {
+    try {
+      setOpenchatMembersSheetsConfigSaving("saving");
+      const cfg = openchatMembersSheetsConfig && typeof openchatMembersSheetsConfig === "object"
+        ? openchatMembersSheetsConfig
+        : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+      const r = await fetch(`/api/openchat-members-sheets/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: cfg }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setOpenchatMembersSheetsConfigDirty(false);
+      setOpenchatMembersSheetsConfigSaving("saved");
+      setTimeout(() => setOpenchatMembersSheetsConfigSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      await loadOpenchatMembersSheetsConfig();
+      return true;
+    } catch (e: any) {
+      setOpenchatMembersSheetsConfigSaving("error");
+      setOpenchatMembersSheetsConfigError(String(e?.message || e));
+      return false;
+    }
+  }, [openchatMembersSheetsConfig, loadOpenchatMembersSheetsConfig]);
+
   const uploadServiceAccount = useCallback(async (file: File): Promise<boolean> => {
     try {
       const fd = new FormData();
@@ -260,12 +363,14 @@ export default function Home() {
         throw new Error(String(j?.error || `HTTP ${r.status}`));
       }
       await loadCourseRosterConfig();
+      await loadOpenchatMembersSheetsConfig();
       return true;
     } catch (e: any) {
       setCourseRosterConfigError(String(e?.message || e));
+      setOpenchatMembersSheetsConfigError(String(e?.message || e));
       return false;
     }
-  }, [loadCourseRosterConfig]);
+  }, [loadCourseRosterConfig, loadOpenchatMembersSheetsConfig]);
 
   const restartRosterWorker = useCallback(async () => {
     try {
@@ -277,6 +382,19 @@ export default function Home() {
       // 상태는 polling으로 갱신됨
     } catch (e: any) {
       setRosterWorkerStatusError(String(e?.message || e));
+    }
+  }, []);
+
+  const restartOpenchatMembersSheetsWorker = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/openchat-members-sheets/restart`, { method: "POST" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      // 상태는 polling으로 갱신됨
+    } catch (e: any) {
+      setOpenchatMembersSheetsWorkerStatusError(String(e?.message || e));
     }
   }, []);
 
@@ -520,7 +638,8 @@ export default function Home() {
     next[rid] = next[rid] || {};
     const okRuntime = await updateRuntime({ features: next, excludedRoomIds: excluded });
     const okCourse = courseRosterConfigDirty ? await saveCourseRosterConfig() : true;
-    const ok = okRuntime && okCourse;
+    const okMembersSheets = openchatMembersSheetsConfigDirty ? await saveOpenchatMembersSheetsConfig() : true;
+    const ok = okRuntime && okCourse && okMembersSheets;
     setSavingRooms(prev => ({ ...prev, [rid]: ok ? "saved" : "error" }));
     if (ok) {
       setTimeout(() => {
@@ -690,6 +809,135 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 오픈채팅 멤버(전체) Sheets 동기화 워커 */}
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>오픈채팅 멤버(전체) Sheets 동기화</h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+          <span className={`tag ${openchatMembersSheetsConfigDirty ? 'tag-inactive' : 'tag-active'}`}>
+            설정 {openchatMembersSheetsConfigDirty ? '저장 필요' : 'OK'}
+          </span>
+          <span className="tag tag-excluded" title={openchatMembersSheetsConfigPath || ''}>
+            설정파일 {openchatMembersSheetsConfigExists ? 'OK' : '없음'}
+          </span>
+          <span className="tag tag-excluded" title={openchatMembersSheetsServiceAccount.path || ''}>
+            서비스계정 {openchatMembersSheetsServiceAccount.exists ? 'OK' : '없음'}
+          </span>
+          {openchatMembersSheetsServiceAccount.clientEmail && (
+            <span className="tag tag-excluded" title="서비스계정 이메일">
+              {openchatMembersSheetsServiceAccount.clientEmail}
+            </span>
+          )}
+          <span className="tag tag-excluded" title="openchat-members-sheets-worker heartbeat/status">
+            워커 {openchatMembersSheetsWorkerStatus?.status?.pid ? `RUN(pid=${openchatMembersSheetsWorkerStatus.status.pid})` : 'N/A'}
+          </span>
+          <button
+            className="btn-outline"
+            style={{ padding: '6px 10px', fontSize: 12 }}
+            onClick={() => void restartOpenchatMembersSheetsWorker()}
+            title="windows/start_openchat_members_sheets_worker.ps1 -Restart"
+          >
+            워커 재시작
+          </button>
+          <button
+            className="btn-save"
+            style={{ padding: '6px 10px', fontSize: 12 }}
+            disabled={openchatMembersSheetsConfigSaving === 'saving' || !openchatMembersSheetsConfigDirty}
+            onClick={() => void saveOpenchatMembersSheetsConfig()}
+            title="data/openchat_members_sheets.json 저장"
+          >
+            {openchatMembersSheetsConfigSaving === 'saving' ? '저장 중…' : '멤버설정 저장'}
+          </button>
+          <label className="btn-outline" style={{ padding: '6px 10px', fontSize: 12, cursor: 'pointer' }} title="data/gcp_service_account.json 업로드">
+            서비스계정 업로드
+            <input
+              type="file"
+              accept="application/json"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void uploadServiceAccount(f);
+              }}
+            />
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <label className="control-label" style={{ display: 'flex', gap: 8, alignItems: 'center' }} title="openchat_members_sheets.json의 worker.enabled">
+            <input
+              type="checkbox"
+              checked={!!openchatMembersSheetsConfig?.worker?.enabled}
+              onChange={(e) => {
+                setOpenchatMembersSheetsConfig((prev) => {
+                  const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                  const worker = { ...(base.worker || {}), enabled: e.target.checked };
+                  return { ...base, worker };
+                });
+                setOpenchatMembersSheetsConfigDirty(true);
+              }}
+            />
+            자동 동기화 워커
+          </label>
+          <label className="control-label" style={{ display: 'flex', gap: 8, alignItems: 'center' }} title="worker.intervalSec (분 단위 입력)">
+            기본 주기(분)
+            <input
+              type="number"
+              min={1}
+              value={Math.max(1, Math.floor(Number(openchatMembersSheetsConfig?.worker?.intervalSec || 3600) / 60))}
+              onChange={(e) => {
+                const min = Math.max(1, Number(e.target.value || 0) || 1);
+                setOpenchatMembersSheetsConfig((prev) => {
+                  const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                  const worker = { ...(base.worker || {}), intervalSec: min * 60 };
+                  return { ...base, worker };
+                });
+                setOpenchatMembersSheetsConfigDirty(true);
+              }}
+              className="filter-input"
+              style={{ width: 120, height: 34, marginBottom: 0 }}
+            />
+          </label>
+          <input
+            value={String(openchatMembersSheetsConfig?.spreadsheetId || "")}
+            onChange={(e) => {
+              setOpenchatMembersSheetsConfig((prev) => {
+                const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                return { ...base, spreadsheetId: e.target.value };
+              });
+              setOpenchatMembersSheetsConfigDirty(true);
+            }}
+            placeholder="기본 Spreadsheet ID/URL (빈칸이면 방별 값 필요)"
+            className="filter-input"
+            style={{ flex: 1, minWidth: 260, height: 34, marginBottom: 0 }}
+          />
+          <input
+            value={String(openchatMembersSheetsConfig?.sheetName || "")}
+            onChange={(e) => {
+              setOpenchatMembersSheetsConfig((prev) => {
+                const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                return { ...base, sheetName: e.target.value };
+              });
+              setOpenchatMembersSheetsConfigDirty(true);
+            }}
+            placeholder="기본 시트 탭 이름 (예: members)"
+            className="filter-input"
+            style={{ width: 220, height: 34, marginBottom: 0 }}
+          />
+        </div>
+
+        {(openchatMembersSheetsConfigError || openchatMembersSheetsWorkerStatusError || openchatMembersSheetsServiceAccount.error) && (
+          <div style={{ fontSize: 12, color: 'var(--error)', lineHeight: 1.5, marginTop: 8 }}>
+            {openchatMembersSheetsConfigError && (<div>설정 로드/저장 오류: <code>{openchatMembersSheetsConfigError}</code></div>)}
+            {openchatMembersSheetsServiceAccount.error && (<div>서비스계정 파싱 오류: <code>{openchatMembersSheetsServiceAccount.error}</code></div>)}
+            {openchatMembersSheetsWorkerStatusError && (<div>워커 상태 조회 오류: <code>{openchatMembersSheetsWorkerStatusError}</code></div>)}
+          </div>
+        )}
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          - 방 카드의 <b>멤버 Sheets 자동</b>에서 roomId별 시트 타겟/주기를 설정하고 <b>저장</b>하면, 워커가 주기적으로 전체 멤버 목록을 업서트합니다.
+          {' '}
+          (<code>loadedMembersCount &lt; activeMembersCount</code>면 폴백 없이 스킵/실패 처리)
+        </div>
+      </div>
+
       <div className="filters-bar">
         <div className="filter-group">
           <label className="filter-label">방 선택</label>
@@ -800,6 +1048,13 @@ export default function Home() {
               courseRosterHasServiceAccount={courseRosterServiceAccount.exists}
               courseRosterConfigDirty={courseRosterConfigDirty}
               onUpdateCourseRosterConfig={onUpdateCourseRosterRoomConfig}
+              openchatMembersSheetsConfig={(openchatMembersSheetsConfig?.rooms as any)?.[r.roomId] || null}
+              openchatMembersSheetsConfigExists={openchatMembersSheetsConfigExists}
+              openchatMembersSheetsHasServiceAccount={openchatMembersSheetsServiceAccount.exists}
+              openchatMembersSheetsConfigDirty={openchatMembersSheetsConfigDirty}
+              openchatMembersSheetsWorkerEnabled={!!openchatMembersSheetsConfig?.worker?.enabled}
+              openchatMembersSheetsRoomState={(openchatMembersSheetsWorkerStatus?.state as any)?.rooms?.[r.roomId] || null}
+              onUpdateOpenchatMembersSheetsConfig={onUpdateOpenchatMembersSheetsRoomConfig}
               excluded={excluded.includes(r.roomId)}
               saving={savingRooms[r.roomId] || "idle"}
               onToggleFeature={onToggleFeature}

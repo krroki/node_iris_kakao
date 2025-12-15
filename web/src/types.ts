@@ -81,6 +81,27 @@ export type CourseRosterConfig = {
   rooms?: Record<string, CourseRosterRoomConfig>;
 };
 
+export type OpenchatMembersSheetsRoomConfig = {
+  enabled?: boolean;
+  spreadsheetId?: string;
+  sheetName?: string;
+  intervalSec?: number;
+  allowIncomplete?: boolean;
+  serviceAccountJson?: string;
+};
+
+export type OpenchatMembersSheetsConfig = {
+  version?: number;
+  spreadsheetId?: string;
+  sheetName?: string;
+  serviceAccountJson?: string;
+  worker?: {
+    enabled?: boolean;
+    intervalSec?: number;
+  };
+  rooms?: Record<string, OpenchatMembersSheetsRoomConfig>;
+};
+
 // FastAPI /logs/bulk 응답 형태
 export type BulkLogsResponse = {
   rooms?: Record<string, LogEntry[]>;

@@ -276,6 +276,24 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ---
 
+## 0.1) (중요) 이 워킹트리에서는 `main`만 사용
+
+현재 `C:\\dev\\12.kakao` 워킹트리를 **여러 세션/프로세스가 동시에 공유**하고 있다.
+
+따라서 다음을 **절대 하지 않는다**:
+
+- `git checkout <branch>` / `git switch <branch>` (워킹트리 흔들림 → 다른 세션 작업 파손)
+- 새 브랜치 생성 후 체크아웃(동일 이유)
+
+이 워킹트리에서 허용되는 Git 작업은 아래뿐이다:
+
+- `main`에서 변경 반영 → `git commit` (필요 시 여러 커밋)
+- PR/Epic 워크플로가 필요하면 **별도 clone/worktree**에서 수행
+
+운영 재기동 원칙: *부분 재기동 우선*. `windows/start_all.cmd`는 콜드 부팅/전체 복구 때만 사용한다. (상세: `docs/reference/verification-commands.md`)
+
+---
+
 ## 1. 세션 부팅 시퀀스
 1. **현재 위치/브랜치 확인**: `pwd`, `git status -sb`로 작업 디렉터리와 브랜치를 점검.  
 2. **워크플로 재확인**: `docs/workflow/solo-dev-epic-pr.md`를 빠르게 훑고 Epic Draft PR 규칙을 상기한다.  

@@ -80,6 +80,7 @@
 | 2025-12-14 | Welcome-worker 템플릿 이미지 발신 복구(IRIS /reply) | `docs/adr/ADR-0030-welcome-worker-image-send-via-iris-reply.md` |
 | 2025-12-14 | 강의 운영(카페/닉네임 검증) roster-worker 도입(15분/24시간 안내 + Sheets 업서트) | `docs/adr/ADR-0032-course-roster-worker.md` |
 | 2025-12-15 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | `docs/adr/ADR-0031-messagestore-emfile-mitigation.md` |
+| 2025-12-15 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 추가 | `docs/adr/ADR-0033-openchat-members-sheets-worker.md` |
 | 2025-12-13 | Welcome 템플릿 세트 + 기본닉 분기 정책 도입 | `docs/adr/ADR-0022-welcome-template-sets-and-kakao-default-nickname.md` |
 | 2025-12-13 | `/status` 기반 watchdog 자동 재시작 도입 | `docs/adr/ADR-0023-watchdog-auto-restart.md` |
 | 2025-12-13 | Talk-API authHeader 캡처(Frida) 및 저장/반영 가드레일 | `docs/adr/ADR-0024-talkapi-authheader-capture.md` |

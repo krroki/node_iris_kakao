@@ -135,6 +135,7 @@
 | AI-worker 단독 재기동 | `windows/start_ai_worker.ps1 -Restart` | `?디하클` AI 응답 워커(ADR-0028). 중복 실행은 락 파일(`node-iris-app/data/locks/ai_worker.lock`)로 자동 차단된다. 기본값은 `AI_DISPATCHER=worker`이며, 레거시(`AI_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
 | Broadcast-worker 단독 재기동 | `windows/start_broadcast_worker.ps1 -Restart` | 공지/브로드캐스트 워커(ADR-0029). 중복 실행은 락 파일(`node-iris-app/data/locks/broadcast_worker.lock`)로 자동 차단된다. 기본값은 `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker`이며, 둘 다 레거시(`...=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
 | Roster-worker 단독 재기동 | `windows/start_roster_worker.ps1 -Restart` | 강의 운영 워커(선택 기능). 설정 파일 `data/course_roster_worker.json`이 없으면 `start_all`/watchdog에서 자동으로 스킵된다 |
+| Openchat-members-sheets-worker 단독 재기동 | `windows/start_openchat_members_sheets_worker.ps1 -Restart` | 오픈채팅 전체 멤버 Sheets 동기화 워커(선택 기능). `data/openchat_members_sheets.json`이 없거나 `worker.enabled=false`면 `start_all`/watchdog에서 자동으로 스킵된다 |
 | Web 단독 기동(prod) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` | 운영 모드(`next start`, distDir `.next-prod`). READY는 `/api/ping`(200)으로 판정 |
 | Web 단독 기동(prod, CleanBuild) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild` | `.next-prod` 삭제 후 재빌드(Next chunk 깨짐/MODULE_NOT_FOUND 복구용) |
 | Web 개발 서버(dev) | `windows/start_web.ps1 -Mode dev -Port 3100 -ForceKillPort` | 개발용(`next dev`, distDir `.next`). 시작 전 `.next` 삭제 실패 시 즉시 실패(폴백 금지) |
