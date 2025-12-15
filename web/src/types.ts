@@ -85,7 +85,6 @@ export type OpenchatMembersSheetsRoomConfig = {
   enabled?: boolean;
   spreadsheetId?: string;
   sheetName?: string;
-  intervalSec?: number;
   allowIncomplete?: boolean;
   serviceAccountJson?: string;
 };

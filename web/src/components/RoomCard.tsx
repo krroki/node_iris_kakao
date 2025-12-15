@@ -100,10 +100,6 @@ export default function RoomCard({
     const openchatSheetsEnabled = openchatSheetsCfg.enabled === true;
     const openchatSheetsSpreadsheetId = String(openchatSheetsCfg.spreadsheetId || "").trim();
     const openchatSheetsSheetName = String(openchatSheetsCfg.sheetName || "").trim();
-    const openchatSheetsIntervalSec = Number(openchatSheetsCfg.intervalSec);
-    const openchatSheetsIntervalMin = Number.isFinite(openchatSheetsIntervalSec) && openchatSheetsIntervalSec > 0
-        ? Math.max(1, Math.floor(openchatSheetsIntervalSec / 60))
-        : "";
     const openchatSheetsAllowIncomplete = openchatSheetsCfg.allowIncomplete === true;
 
     const openchatSheetsState: any = (openchatMembersSheetsRoomState && typeof openchatMembersSheetsRoomState === "object")
@@ -112,6 +108,7 @@ export default function RoomCard({
     const openchatSheetsLastResult = String(openchatSheetsState.lastResult || "").trim();
     const openchatSheetsLastOkTs = String(openchatSheetsState.lastOkTs || "").trim();
     const openchatSheetsLastAttemptTs = String(openchatSheetsState.lastAttemptTs || "").trim();
+    const openchatSheetsNextRunTs = String(openchatSheetsState.nextRunTs || "").trim();
     const openchatSheetsLastError = String(openchatSheetsState.lastError || "").trim();
 
     const fmtTs = (ts: string): string => {
@@ -561,25 +558,9 @@ export default function RoomCard({
                             style={{ width: 200, height: 34, marginBottom: 0 }}
                             disabled={!openchatSheetsEnabled}
                         />
-                        <input
-                            type="number"
-                            min={1}
-                            value={openchatSheetsIntervalMin as any}
-                            onChange={(e) => {
-                                const raw = String(e.target.value || "").trim();
-                                if (!raw) {
-                                    onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { intervalSec: undefined });
-                                    return;
-                                }
-                                const n = Math.max(1, Number(raw) || 1);
-                                onUpdateOpenchatMembersSheetsConfig?.(room.roomId, { intervalSec: Math.floor(n) * 60 });
-                            }}
-                            placeholder="주기(분)"
-                            className="filter-input"
-                            style={{ width: 120, height: 34, marginBottom: 0 }}
-                            disabled={!openchatSheetsEnabled}
-                            title="빈칸이면 상단 '기본 주기'를 사용합니다."
-                        />
+                        <span className="tag tag-excluded" title="스케줄링 ON 시 고정: 매 10분 업서트">
+                            주기 10분(고정)
+                        </span>
                         <label className="control-label" title="권장하지 않음: loadedMembersCount < activeMembersCount이어도 강제 업서트">
                             <input
                                 type="checkbox"
@@ -589,12 +570,26 @@ export default function RoomCard({
                             />
                             불완전 허용(권장x)
                         </label>
+                        <button
+                            onClick={() => { void syncMembersToSheets(); }}
+                            className="btn-outline"
+                            style={{ padding: '6px 10px', fontSize: 12 }}
+                            disabled={membersSheetsSyncing}
+                            title="즉시 1회 업서트(수동). 자동 동기화는 다음 주기부터 실행됩니다."
+                        >
+                            {membersSheetsSyncing ? '업서트…' : '지금 업서트'}
+                        </button>
                     </div>
 
                     <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
                         워커: {openchatMembersSheetsWorkerEnabled ? 'ON' : 'OFF'}{' · '}
                         서비스계정: {openchatMembersSheetsHasServiceAccount ? 'OK' : '없음'}{' · '}
                         설정파일: {openchatMembersSheetsConfigExists ? 'OK' : '없음'}
+                        {openchatSheetsNextRunTs && (
+                            <>
+                                {' · '}다음: {fmtTs(openchatSheetsNextRunTs)}
+                            </>
+                        )}
                         {openchatSheetsLastResult && (
                             <>
                                 {' · '}최근 결과: <b>{openchatSheetsLastResult}</b>

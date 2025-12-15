@@ -13,10 +13,10 @@
 설정 파일(기본, gitignore)
 - data/openchat_members_sheets.json
   - spreadsheetId/sheetName/serviceAccountJson: 기본값
-  - worker.enabled/worker.intervalSec: 워커 동작 여부/기본 주기
+  - worker.enabled: 워커 동작 여부
+  - 스케줄: ON이면 10분마다 업서트(고정, 즉시 실행 금지; 다음 주기부터)
   - rooms[roomId].enabled: 해당 방 자동 동기화 ON/OFF
   - rooms[roomId].spreadsheetId/sheetName/serviceAccountJson: 방별 override
-  - rooms[roomId].intervalSec: 방별 주기 override(선택)
   - rooms[roomId].allowIncomplete: 불완전 업서트 허용(권장하지 않음)
 
 상태 파일
@@ -39,8 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import requests
+
 
 DEFAULT_CONFIG_PATH = "data/openchat_members_sheets.json"
+SCHEDULE_INTERVAL_SEC = 10 * 60  # 스케줄링 ON 시 고정: 10분
+TEST_ALERT_ROOM_ID = "18462226881291012"  # 테스트용 오픈채팅방(알림 전용)
 
 
 def _repo_root() -> Path:
@@ -53,6 +57,13 @@ def _iso_now() -> str:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _iso_from_ms(ms: int) -> str:
+    try:
+        return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).replace(microsecond=0).isoformat()
+    except Exception:
+        return _iso_now()
 
 
 def _read_text(path: Path) -> str:
@@ -164,7 +175,6 @@ def _is_incomplete_error(text: str) -> bool:
 @dataclass
 class RoomPlan:
     room_id: str
-    interval_sec: int
     allow_incomplete: bool
 
 
@@ -172,6 +182,9 @@ class OpenchatMembersSheetsWorker:
     def __init__(self, repo_root: Path, config_path: Path):
         self.root = repo_root
         self.config_path = config_path
+        self.realtime_base = (
+            str(os.getenv("REALTIME_API_BASE") or os.getenv("REALTIME_API_URL") or "").strip() or "http://127.0.0.1:8650"
+        ).rstrip("/")
         self.status_path = self.root / "node-iris-app" / "data" / "openchat_members_sheets_worker_status.json"
         self.state_path = self.root / "node-iris-app" / "data" / "openchat_members_sheets_worker_state.json"
         self.lock_path = self.root / "node-iris-app" / "data" / "locks" / "openchat_members_sheets_worker.lock"
@@ -240,17 +253,10 @@ class OpenchatMembersSheetsWorker:
         # 안전: 명시되지 않으면 OFF
         return False
 
-    def _get_worker_interval_sec(self, cfg: dict) -> int:
-        worker = cfg.get("worker")
-        v = worker.get("intervalSec") if isinstance(worker, dict) else None
-        sec = _parse_int(v) or 3600
-        return max(60, sec)
-
     def _build_room_plans(self, cfg: dict) -> list[RoomPlan]:
         rooms = cfg.get("rooms")
         if not isinstance(rooms, dict):
             return []
-        default_interval = self._get_worker_interval_sec(cfg)
         out: list[RoomPlan] = []
         for rid, v in rooms.items():
             rid2 = str(rid or "").strip()
@@ -261,22 +267,104 @@ class OpenchatMembersSheetsWorker:
             # 안전: roomId별 자동 동기화는 enabled=true 를 명시한 방만 수행한다.
             if not bool(v.get("enabled")):
                 continue
-            interval_sec = _parse_int(v.get("intervalSec")) or default_interval
-            interval_sec = max(60, int(interval_sec))
             allow_incomplete = bool(v.get("allowIncomplete") or v.get("allow_incomplete"))
-            out.append(RoomPlan(room_id=rid2, interval_sec=interval_sec, allow_incomplete=allow_incomplete))
+            out.append(RoomPlan(room_id=rid2, allow_incomplete=allow_incomplete))
         out.sort(key=lambda x: x.room_id)
         return out
 
-    def _due(self, room_id: str, interval_sec: int, now_ms: int) -> bool:
-        rooms_state: dict = self.state.get("rooms") if isinstance(self.state.get("rooms"), dict) else {}
-        st = rooms_state.get(room_id)
-        if not isinstance(st, dict):
-            return True
-        last_ok_ms = _parse_int(st.get("lastOkMs")) or 0
-        if last_ok_ms <= 0:
-            return True
-        return (now_ms - last_ok_ms) >= interval_sec * 1000
+    def _mark_disabled_rooms(self, cfg: dict) -> bool:
+        rooms = cfg.get("rooms")
+        if not isinstance(rooms, dict):
+            return False
+        now_ms = _now_ms()
+        changed = False
+        for rid, v in rooms.items():
+            rid2 = str(rid or "").strip()
+            if not rid2 or not isinstance(v, dict):
+                continue
+            if bool(v.get("enabled")):
+                continue
+            rs = self._room_state(rid2)
+            if rs.get("enabled") is False:
+                continue
+            rs["enabled"] = False
+            rs["disabledAtMs"] = now_ms
+            rs["disabledAtTs"] = _iso_now()
+            # 재활성화 시 "다음 주기"에서 실행되도록 nextRun을 제거한다.
+            rs.pop("nextRunMs", None)
+            rs.pop("nextRunTs", None)
+            changed = True
+        return changed
+
+    def _room_state(self, room_id: str) -> dict:
+        rooms_state = self.state.get("rooms")
+        if not isinstance(rooms_state, dict):
+            rooms_state = {}
+            self.state["rooms"] = rooms_state
+        rs = rooms_state.get(room_id)
+        if not isinstance(rs, dict):
+            rs = {}
+            rooms_state[room_id] = rs
+        return rs
+
+    def _schedule_next_cycle(self, rs: dict, now_ms: int) -> None:
+        interval_ms = SCHEDULE_INTERVAL_SEC * 1000
+        next_ms = now_ms + interval_ms
+        rs["nextRunMs"] = next_ms
+        rs["nextRunTs"] = _iso_from_ms(next_ms)
+
+    def _send_alert_to_test_room(self, text: str, timeout_sec: float = 12.0) -> Tuple[bool, str]:
+        url = f"{self.realtime_base}/send/talkapi/dispatch"
+        body = {"roomId": TEST_ALERT_ROOM_ID, "message": text, "mentionees": []}
+        try:
+            r = requests.post(url, json=body, timeout=timeout_sec)
+            j = r.json() if r.content else {}
+            if r.status_code >= 400:
+                detail = str((j or {}).get("detail") or (j or {}).get("error") or f"HTTP {r.status_code}")
+                return False, detail
+            ok = bool((j or {}).get("ok"))
+            if not ok:
+                err = str(((j or {}).get("talkApi") or {}).get("errMsg") or (j or {}).get("detail") or "send_failed")
+                return False, err
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def _compose_alert(self, room_id: str, result: str, parsed: dict, err_text: str, next_run_ts: str) -> str:
+        room_name = ""
+        try:
+            room_name = str((parsed or {}).get("roomName") or "").strip()
+        except Exception:
+            room_name = ""
+        counts = (parsed or {}).get("counts") if isinstance(parsed, dict) else None
+        active = None
+        loaded = None
+        fetched = None
+        if isinstance(counts, dict):
+            active = counts.get("activeMembersCount")
+            loaded = counts.get("loadedMembersCount")
+            fetched = counts.get("fetched")
+        head = f"[openchat-members-sheets] 업서트 {result}"
+        meta = f"roomId={room_id}" + (f", roomName={room_name}" if room_name else "")
+        cnt = ""
+        if active is not None or loaded is not None or fetched is not None:
+            cnt = f"count: active={active if active is not None else 'N/A'}, loaded={loaded if loaded is not None else 'N/A'}, fetched={fetched if fetched is not None else 'N/A'}"
+        hint = ""
+        if result == "INCOMPLETE_MEMBER_DB":
+            hint = f"힌트: pwsh scripts/openchat_load_members.ps1 -RoomId {room_id} -Scrolls 600"
+        detail = (err_text or "").strip().replace("\r", "")
+        if len(detail) > 300:
+            detail = detail[:300] + "…"
+        lines = [head, meta]
+        if cnt:
+            lines.append(cnt)
+        if detail:
+            lines.append(f"detail: {detail}")
+        if hint:
+            lines.append(hint)
+        if next_run_ts:
+            lines.append(f"다음 시도: {next_run_ts}")
+        return "\n".join(lines)
 
     def _run_sync_once(self, room_id: str, allow_incomplete: bool) -> Tuple[int, str, str, float]:
         script = self.root / "scripts" / "sync_openchat_members_to_sheets.py"
@@ -341,7 +429,7 @@ class OpenchatMembersSheetsWorker:
         self._acquire_lock()
 
         log("INFO", "openchat-members-sheets-worker 시작", config=str(self.config_path))
-        self._write_status(state="STARTING")
+        self._write_status(state="STARTING", intervalSec=SCHEDULE_INTERVAL_SEC, alertRoomId=TEST_ALERT_ROOM_ID)
 
         last_hb_ms = 0
         while True:
@@ -358,11 +446,18 @@ class OpenchatMembersSheetsWorker:
                 self._write_status(state="DISABLED", workerEnabled=False)
                 return 0
 
+            # re-enable 시 "다음 주기" 실행을 보장하기 위해, 현재 disabled인 방을 state에 반영한다.
+            if self._mark_disabled_rooms(cfg):
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
+
             plans = self._build_room_plans(cfg)
             if not plans:
                 # 설정은 켜져있지만 대상 방이 없으면 주기적으로 status만 갱신한다.
                 if now_ms - last_hb_ms > 30_000:
-                    self._write_status(state="IDLE", workerEnabled=True, roomsEnabled=0)
+                    self._write_status(state="IDLE", workerEnabled=True, roomsEnabled=0, intervalSec=SCHEDULE_INTERVAL_SEC)
                     last_hb_ms = now_ms
                 time.sleep(5)
                 continue
@@ -372,25 +467,60 @@ class OpenchatMembersSheetsWorker:
             fail_cnt = 0
             skip_cnt = 0
             for plan in plans:
-                if not self._due(plan.room_id, plan.interval_sec, now_ms):
+                rs = self._room_state(plan.room_id)
+                # 요구: 자동 동기화는 "다음 주기"에서 실행한다(즉시 실행 금지).
+                # => room enabled 전환 시 nextRunMs를 now+10분으로 예약하고 이번 루프에서는 스킵한다.
+                if rs.get("enabled") is not True:
+                    rs["enabled"] = True
+                    rs["enabledAtMs"] = now_ms
+                    rs["enabledAtTs"] = _iso_now()
+                    self._schedule_next_cycle(rs, now_ms)
+                    rs["lastResult"] = rs.get("lastResult") or "SCHEDULED_NEXT_CYCLE"
+                    try:
+                        self._save_state()
+                    except Exception:
+                        pass
                     continue
+
+                next_run_ms = _parse_int(rs.get("nextRunMs")) or 0
+                if next_run_ms <= 0:
+                    self._schedule_next_cycle(rs, now_ms)
+                    try:
+                        self._save_state()
+                    except Exception:
+                        pass
+                    continue
+
+                # 너무 늦었으면(워커 다운/설정 변경 등) catch-up 하지 말고 다음 주기로 미룬다.
+                if now_ms >= next_run_ms and (now_ms - next_run_ms) > (SCHEDULE_INTERVAL_SEC * 1000):
+                    rs["lastResult"] = "SKIPPED_MISSED_SCHEDULE"
+                    self._schedule_next_cycle(rs, now_ms)
+                    try:
+                        self._save_state()
+                    except Exception:
+                        pass
+                    continue
+
+                if now_ms < next_run_ms:
+                    continue
+
                 ran_any = True
                 log(
                     "INFO",
                     "동기화 시작",
                     roomId=plan.room_id,
-                    intervalSec=plan.interval_sec,
+                    intervalSec=SCHEDULE_INTERVAL_SEC,
                     allowIncomplete=plan.allow_incomplete,
                 )
                 try:
                     code, stdout, stderr, dur = self._run_sync_once(plan.room_id, plan.allow_incomplete)
                     parsed = _parse_sync_output(stdout)
+                    err_text = (stdout + "\n" + stderr).strip()
                     if code == 0:
                         ok_cnt += 1
                         self._update_room_state(plan.room_id, "OK", stdout, stderr, dur, parsed)
                         log("INFO", "동기화 완료(OK)", roomId=plan.room_id, durationSec=round(dur, 3))
                     else:
-                        err_text = (stdout + "\n" + stderr).strip()
                         if _is_incomplete_error(err_text):
                             skip_cnt += 1
                             self._update_room_state(plan.room_id, "INCOMPLETE_MEMBER_DB", stdout, stderr, dur, parsed)
@@ -403,10 +533,28 @@ class OpenchatMembersSheetsWorker:
                     fail_cnt += 1
                     self._update_room_state(plan.room_id, "TIMEOUT", "", "timeout", 300.0, {})
                     log("ERROR", "동기화 시간초과", roomId=plan.room_id)
+                    parsed = {}
+                    err_text = "timeout"
                 except Exception as e:
                     fail_cnt += 1
                     self._update_room_state(plan.room_id, "ERROR", "", str(e), 0.0, {})
                     log("ERROR", "동기화 예외", roomId=plan.room_id, err=str(e))
+                    parsed = {}
+                    err_text = str(e)
+
+                # 성공/실패 무관하게 다음 주기로 예약(재시도 없음)
+                now2 = _now_ms()
+                rs2 = self._room_state(plan.room_id)
+                self._schedule_next_cycle(rs2, now2)
+
+                # 실패/스킵(INCOMPLETE 포함)은 테스트 방에 알림(재시도 없이 1회)
+                result = str(rs2.get("lastResult") or "").strip()
+                if result and result != "OK":
+                    msg = self._compose_alert(plan.room_id, result, parsed, err_text, str(rs2.get("nextRunTs") or ""))
+                    ok_alert, err_alert = self._send_alert_to_test_room(msg)
+                    rs2["lastAlertTs"] = _iso_now()
+                    rs2["lastAlertOk"] = bool(ok_alert)
+                    rs2["lastAlertError"] = "" if ok_alert else str(err_alert)[:600]
 
                 # 매 룸 처리 후 상태 저장/하트비트 갱신
                 try:
@@ -421,13 +569,15 @@ class OpenchatMembersSheetsWorker:
                     ok=ok_cnt,
                     failed=fail_cnt,
                     skipped=skip_cnt,
+                    intervalSec=SCHEDULE_INTERVAL_SEC,
+                    alertRoomId=TEST_ALERT_ROOM_ID,
                 )
                 last_hb_ms = _now_ms()
 
             if not ran_any:
                 # due인 방이 없으면 heartbeat만 유지
                 if now_ms - last_hb_ms > 30_000:
-                    self._write_status(state="IDLE", workerEnabled=True, roomsEnabled=len(plans))
+                    self._write_status(state="IDLE", workerEnabled=True, roomsEnabled=len(plans), intervalSec=SCHEDULE_INTERVAL_SEC)
                     last_hb_ms = now_ms
                 time.sleep(5)
                 continue

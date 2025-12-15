@@ -47,6 +47,12 @@
 - **오픈채팅 멤버 Sheets 자동 동기화(새 기능)**:
   - UI(3100) 상단 “오픈채팅 멤버(전체) Sheets 동기화”에서 `worker.enabled=true`로 켜고,
     방 카드 “멤버 Sheets 자동”에서 roomId별 `enabled=true`로 설정 후 저장하면 자동 업서트가 돈다.
+  - 스케줄:
+    - **ON이면 10분마다 업서트(고정)** (`intervalSec` 설정으로 변경 불가)
+    - 방/워커를 켜도 **즉시 실행하지 않고 다음 주기(10분 후)** 부터 실행
+    - 즉시 1회 실행은 방 카드의 **`지금 업서트`(수동)** 버튼으로만 수행
+    - **재시도 없음**: 실패해도 즉시 재시도하지 않고 다음 주기로 넘어감
+    - 실패/스킵 발생 시 테스트용 오픈채팅방(`18462226881291012`)으로 1회 알림 발신(전제: `safeMode=false`, `talkApi.enabled=true`)
   - 상태 파일: `node-iris-app/data/openchat_members_sheets_worker_status.json`, `node-iris-app/data/openchat_members_sheets_worker_state.json`
 
 - **절대 금지(중요)**: `taskkill /im node.exe`, `Stop-Process -Name node` 같이 **node 전체를 종료**하는 조치는 금지한다.  

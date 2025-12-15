@@ -227,12 +227,12 @@ export default function Home() {
       });
       const cfg: OpenchatMembersSheetsConfig = (j.config && typeof j.config === "object")
         ? (j.config as OpenchatMembersSheetsConfig)
-        : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+        : ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig);
       setOpenchatMembersSheetsConfig(cfg);
       setOpenchatMembersSheetsConfigError(null);
     } catch (e: any) {
       setOpenchatMembersSheetsConfigError(String(e?.message || e));
-      setOpenchatMembersSheetsConfig((prev) => prev || ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig));
+      setOpenchatMembersSheetsConfig((prev) => prev || ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig));
     }
   }, []);
 
@@ -290,7 +290,7 @@ export default function Home() {
     setOpenchatMembersSheetsConfig((prev) => {
       const base: OpenchatMembersSheetsConfig = (prev && typeof prev === "object")
         ? prev
-        : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+        : ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig);
       const nextRooms: Record<string, any> = { ...(base.rooms || {}) };
       const cur = (nextRooms[rid] && typeof nextRooms[rid] === "object") ? nextRooms[rid] : {};
       nextRooms[rid] = { ...cur, ...patch };
@@ -331,7 +331,7 @@ export default function Home() {
       setOpenchatMembersSheetsConfigSaving("saving");
       const cfg = openchatMembersSheetsConfig && typeof openchatMembersSheetsConfig === "object"
         ? openchatMembersSheetsConfig
-        : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+        : ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig);
       const r = await fetch(`/api/openchat-members-sheets/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -861,15 +861,16 @@ export default function Home() {
           </label>
         </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
           <label className="control-label" style={{ display: 'flex', gap: 8, alignItems: 'center' }} title="openchat_members_sheets.json의 worker.enabled">
             <input
               type="checkbox"
               checked={!!openchatMembersSheetsConfig?.worker?.enabled}
               onChange={(e) => {
                 setOpenchatMembersSheetsConfig((prev) => {
-                  const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
-                  const worker = { ...(base.worker || {}), enabled: e.target.checked };
+                  const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                  // 스케줄링 ON 시 고정: 10분
+                  const worker = { ...(base.worker || {}), enabled: e.target.checked, intervalSec: 600 };
                   return { ...base, worker };
                 });
                 setOpenchatMembersSheetsConfigDirty(true);
@@ -877,30 +878,14 @@ export default function Home() {
             />
             자동 동기화 워커
           </label>
-          <label className="control-label" style={{ display: 'flex', gap: 8, alignItems: 'center' }} title="worker.intervalSec (분 단위 입력)">
-            기본 주기(분)
-            <input
-              type="number"
-              min={1}
-              value={Math.max(1, Math.floor(Number(openchatMembersSheetsConfig?.worker?.intervalSec || 3600) / 60))}
-              onChange={(e) => {
-                const min = Math.max(1, Number(e.target.value || 0) || 1);
-                setOpenchatMembersSheetsConfig((prev) => {
-                  const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
-                  const worker = { ...(base.worker || {}), intervalSec: min * 60 };
-                  return { ...base, worker };
-                });
-                setOpenchatMembersSheetsConfigDirty(true);
-              }}
-              className="filter-input"
-              style={{ width: 120, height: 34, marginBottom: 0 }}
-            />
-          </label>
+          <span className="tag tag-excluded" title="스케줄링 ON 시 고정: 매 10분 업서트">
+            주기 10분(고정)
+          </span>
           <input
             value={String(openchatMembersSheetsConfig?.spreadsheetId || "")}
             onChange={(e) => {
               setOpenchatMembersSheetsConfig((prev) => {
-                const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig);
                 return { ...base, spreadsheetId: e.target.value };
               });
               setOpenchatMembersSheetsConfigDirty(true);
@@ -913,7 +898,7 @@ export default function Home() {
             value={String(openchatMembersSheetsConfig?.sheetName || "")}
             onChange={(e) => {
               setOpenchatMembersSheetsConfig((prev) => {
-                const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 3600 }, rooms: {} } as OpenchatMembersSheetsConfig);
+                const base = (prev && typeof prev === "object") ? prev : ({ version: 1, worker: { enabled: false, intervalSec: 600 }, rooms: {} } as OpenchatMembersSheetsConfig);
                 return { ...base, sheetName: e.target.value };
               });
               setOpenchatMembersSheetsConfigDirty(true);
@@ -932,7 +917,7 @@ export default function Home() {
           </div>
         )}
         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          - 방 카드의 <b>멤버 Sheets 자동</b>에서 roomId별 시트 타겟/주기를 설정하고 <b>저장</b>하면, 워커가 주기적으로 전체 멤버 목록을 업서트합니다.
+          - 방 카드의 <b>멤버 Sheets 자동</b>에서 roomId별 시트 타겟/옵션을 설정하고 <b>저장</b>하면, 워커가 주기적으로 전체 멤버 목록을 업서트합니다.
           {' '}
           (<code>loadedMembersCount &lt; activeMembersCount</code>면 폴백 없이 스킵/실패 처리)
         </div>

@@ -9,17 +9,14 @@ export const dynamic = "force-dynamic";
 
 function normalizeWorker(v: any) {
   const enabled = Boolean(v?.enabled);
-  const intervalSecRaw = Number(v?.intervalSec ?? v?.interval_sec);
-  const intervalSec = Number.isFinite(intervalSecRaw) ? Math.max(60, Math.floor(intervalSecRaw)) : 3600;
-  return { enabled, intervalSec };
+  // 스케줄링 ON 시 고정: 10분
+  return { enabled, intervalSec: 600 };
 }
 
 function normalizeRoomConfig(v: any) {
   const enabled = Boolean(v?.enabled);
   const spreadsheetId = String(v?.spreadsheetId || v?.sheetId || "").trim();
   const sheetName = String(v?.sheetName || v?.sheet_name || "").trim();
-  const intervalSecRaw = Number(v?.intervalSec ?? v?.interval_sec);
-  const intervalSec = Number.isFinite(intervalSecRaw) ? Math.max(60, Math.floor(intervalSecRaw)) : null;
   const allowIncomplete = Boolean(v?.allowIncomplete ?? v?.allow_incomplete);
   const serviceAccountJson = String(v?.serviceAccountJson || v?.service_account_json || "").trim();
   return {
@@ -27,7 +24,6 @@ function normalizeRoomConfig(v: any) {
     spreadsheetId,
     parsedSpreadsheetId: parseSpreadsheetId(spreadsheetId),
     sheetName,
-    intervalSec,
     allowIncomplete,
     serviceAccountJson,
   };
@@ -131,7 +127,6 @@ export async function POST(req: Request) {
       enabled: Boolean(vv?.enabled),
       spreadsheetId: String(vv?.spreadsheetId || "").trim(),
       sheetName: String(vv?.sheetName || "").trim(),
-      intervalSec: vv?.intervalSec === undefined || vv?.intervalSec === null ? undefined : Math.max(60, Number(vv.intervalSec) || 0),
       allowIncomplete: Boolean(vv?.allowIncomplete),
       serviceAccountJson: String(vv?.serviceAccountJson || "").trim(),
     };
@@ -140,7 +135,8 @@ export async function POST(req: Request) {
   const inWorker = (input as any).worker;
   const outWorker = {
     enabled: Boolean(inWorker?.enabled),
-    intervalSec: Math.max(60, Number(inWorker?.intervalSec) || 3600),
+    // 스케줄링 ON 시 고정: 10분
+    intervalSec: 600,
   };
 
   const out = {
@@ -160,4 +156,3 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true, path: cfgPath }, { status: 200 });
 }
-
