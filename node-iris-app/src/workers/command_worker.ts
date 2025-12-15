@@ -283,31 +283,23 @@ function parseCommand(textRaw: string): ParsedCommand | null {
   const lines = text.split(/\r?\n/);
   const firstLine = String(lines[0] || "").trim();
   if (!firstLine.startsWith("!")) return null;
-  const rest = firstLine.slice(1).trim();
+  const rest = firstLine
+    .slice(1)
+    .trim()
+    .replace(/\s+/g, " ");
   if (!rest) return null;
 
   const lower = rest.toLowerCase();
   if (lower === "명령어") return { kind: "list" };
 
-  const mReg = /^등록\s+(.+)$/.exec(rest);
-  if (mReg) {
-    const key = safeString(mReg[1]);
-    const body = lines.slice(1).join("\n");
-    return { kind: "register", key, body };
-  }
+  const mReg = /^등록(?:\s+(.+))?$/.exec(rest);
+  if (mReg) return { kind: "register", key: safeString(mReg[1] || ""), body: lines.slice(1).join("\n") };
 
-  const mDel = /^삭제\s+(.+)$/.exec(rest);
-  if (mDel) {
-    const key = safeString(mDel[1]);
-    return { kind: "delete", key };
-  }
+  const mDel = /^삭제(?:\s+(.+))?$/.exec(rest);
+  if (mDel) return { kind: "delete", key: safeString(mDel[1] || "") };
 
-  const mG = /^전체등록\s+(.+)$/.exec(rest);
-  if (mG) {
-    const key = safeString(mG[1]);
-    const body = lines.slice(1).join("\n");
-    return { kind: "global_register", key, body };
-  }
+  const mG = /^전체등록(?:\s+(.+))?$/.exec(rest);
+  if (mG) return { kind: "global_register", key: safeString(mG[1] || ""), body: lines.slice(1).join("\n") };
 
   return { kind: "trigger", key: rest };
 }
