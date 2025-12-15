@@ -35,6 +35,7 @@ const STATUS_PATH_BY_KIND: Record<ExpectedKind, string> = {
 };
 
 const TALKAPI_STATUS_PATH = path.join(ROOT, 'node-iris-app', 'data', 'talkapi_status.json');
+const TALKAPI_AUTH_APPLY_STATUS_PATH = path.join(ROOT, 'node-iris-app', 'data', 'talkapi_auth_apply_status.json');
 
 const toRepoRelativePath = (p: string) => {
   try {
@@ -96,6 +97,7 @@ export async function GET() {
     );
     const statusFiles = Object.fromEntries(statusFilesEntries) as Record<ExpectedKind, StatusFileResult>;
     const talkApiStatusFile = await readJsonFile(TALKAPI_STATUS_PATH);
+    const talkApiAuthApplyStatusFile = await readJsonFile(TALKAPI_AUTH_APPLY_STATUS_PATH);
 
     const kinds = EXPECTED_KINDS.map((kind) => {
       const running = [...(byKind[kind] || [])].sort((a, b) => {
@@ -144,6 +146,7 @@ export async function GET() {
       kinds,
       summary,
       talkApiStatusFile,
+      talkApiAuthApplyStatusFile,
     });
   } catch (error: any) {
     return NextResponse.json({

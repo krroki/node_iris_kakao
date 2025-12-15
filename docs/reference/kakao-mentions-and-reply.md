@@ -174,3 +174,34 @@
 다음 조치(근본 해결):
 - Redroid 카카오톡 **로그인 상태/세션 유지** 확인
 - Talk-API `authHeader(accessToken-deviceUUID)` 재캡처/갱신(관련 ADR 참고: `docs/adr/ADR-0024-talkapi-authheader-capture.md`)
+
+### 5.1 빠른 복구 절차(운영자 셀프, 3~5분)
+
+> 원칙: **테스트는 테스트방에서만** 한다. (테스트용 오픈채팅방: `18462226881291012`)
+
+1) **SAFE_MODE / Talk-API 설정 확인**
+   - UI(3100) → `/settings`:
+     - `safeMode=false`(발신 허용)인지
+     - `talkApi.enabled=true`인지
+
+2) **authHeader “재적용”(파일 → 런타임)**
+   - PowerShell(Repo root)에서 실행:
+     - `powershell -ExecutionPolicy Bypass -File scripts/ensure_talkapi_auth_applied.ps1 -Force`
+   - 의미: `data/talkapi_auth.txt`의 값을 `/runtime`에 다시 밀어 넣어 **드리프트를 즉시 복구**한다.
+
+3) **실발송 1회로 authHeader 유효성 검증(필수)**
+   - 아래 스크립트는 `--confirm-send` 없이는 실행되지 않는다:
+     - `python scripts/verify_talkapi_auth_candidates.py --chat-id 18462226881291012 --confirm-send --auth-header-file data/talkapi_auth.txt --apply-runtime`
+   - 기대 결과: `status=0`
+   - 주의: Talk-API `/talkapi/health`가 200이어도, authHeader가 만료/불일치면 발신은 실패할 수 있다.
+
+4) **여전히 `status!=0`(예: -500)면 “재캡처”가 필요**
+   - 캡처(Frida, 권장):
+     - `python scripts/capture_talkapi_auth_frida.py --serial <REDROID_IP>:5555 --apply-runtime`
+   - ADB 연결이 안 되면:
+     - `adb devices`에서 디바이스가 보이는지 확인
+     - Redroid VM/컨테이너가 꺼졌으면 먼저 기동(예: VM IP에서 `:5555` 포트가 살아 있어야 함)
+
+5) **재캡처 후 2)→3) 다시 수행**
+   - 재캡처 성공 = `data/talkapi_auth.txt` 갱신 + `/runtime` 반영
+   - 이후 실발송 검증에서 `status=0`이 나오면 멘션/Reply는 정상화된다.

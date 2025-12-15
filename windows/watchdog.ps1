@@ -247,7 +247,12 @@ function Restart-Pipeline {
   $apiPort = Get-ApiPort
   Write-Log -Level 'ACTION' -Message "파이프라인 재기동(start_all.ps1) 실행. 사유: $Reason"
   try {
-    & $startAllScript -IrisUrl $IrisBase -ApiPort $apiPort -WebPort $WebPort 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[start_all] $_" }
+    # 중요: watchdog가 start_all을 직접 호출할 때, start_all의 pre-clean이 watchdog를 종료시키면
+    # "자가복구 로직 자체가 중단"되는 케이스가 발생한다.
+    # - start_all은 watchdog를 죽이지 않도록 PreserveWatchdog를 켠다.
+    # - start_all은 watchdog를 다시 띄우지 않도록 NoWatchdog를 켠다(현재 watchdog가 계속 실행됨).
+    & $startAllScript -IrisUrl $IrisBase -ApiPort $apiPort -WebPort $WebPort -NoWatchdog -PreserveWatchdog 2>&1 |
+      ForEach-Object { Write-Log -Level 'INFO' -Message "[start_all] $_" }
     Write-Log -Level 'INFO' -Message "파이프라인 재기동(start_all.ps1) 호출 완료"
   } catch {
     Write-Log -Level 'ERROR' -Message "파이프라인 재기동 실패: $($_.Exception.Message)"

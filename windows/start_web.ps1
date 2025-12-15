@@ -224,6 +224,49 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     $prodDir = Join-Path $web '.next-prod'
     $buildId = Join-Path $prodDir 'BUILD_ID'
 
+    # 소스 변경 감지(운영 편의):
+    # - `npm run build`를 사용자가 "언제 해야 하는지" 판단하기 어렵기 때문에,
+    #   빌드 산출물(BUILD_ID)보다 최신인 소스/설정 파일이 있으면 자동으로 재빌드한다.
+    # - `-SkipBuild`는 "이미 빌드가 확실"한 경우에만 사용(기본은 자동 감지).
+    if (-not $attemptClean -and -not $SkipBuild -and (Test-Path $buildId)) {
+      try {
+        $buildTimeUtc = (Get-Item -LiteralPath $buildId -ErrorAction Stop).LastWriteTimeUtc
+        $newerPath = $null
+        $watchFiles = @(
+          (Join-Path $web 'next.config.mjs'),
+          (Join-Path $web 'package.json'),
+          (Join-Path $web 'package-lock.json'),
+          (Join-Path $web 'tsconfig.json')
+        )
+        foreach ($wf in $watchFiles) {
+          if (-not (Test-Path $wf)) { continue }
+          $t = (Get-Item -LiteralPath $wf -ErrorAction SilentlyContinue).LastWriteTimeUtc
+          if ($t -and $t -gt $buildTimeUtc) { $newerPath = $wf; break }
+        }
+
+        if (-not $newerPath) {
+          $srcDir = Join-Path $web 'src'
+          if (Test-Path $srcDir) {
+            $newer = Get-ChildItem -LiteralPath $srcDir -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.LastWriteTimeUtc -gt $buildTimeUtc -and $_.Extension -in @('.ts','.tsx','.js','.jsx','.css','.mjs')
+              } |
+              Select-Object -First 1
+            if ($newer -and $newer.FullName) { $newerPath = $newer.FullName }
+          }
+        }
+
+        if ($newerPath) {
+          Write-Host ("[web] 소스 변경 감지 → .next-prod 삭제 후 재빌드 ({0})" -f $newerPath) -ForegroundColor Yellow
+          if (Test-Path $prodDir) {
+            try { Remove-Item -Recurse -Force $prodDir } catch { throw ".next-prod 삭제 실패(잠금/권한): $($_.Exception.Message)" }
+          }
+        }
+      } catch {
+        Write-Host ("[web] 소스 변경 감지 스킵(오류): {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+      }
+    }
+
     # `.next-prod` 산출물이 부분 삭제/불일치 상태면(next chunk require 실패 등)
     # BUILD_ID가 있어도 실행 중에 MODULE_NOT_FOUND가 반복될 수 있으므로, 필수 디렉터리 누락을 감지해 강제 재빌드한다.
     if (-not $attemptClean -and -not $SkipBuild -and (Test-Path $buildId)) {

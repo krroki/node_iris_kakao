@@ -38,6 +38,7 @@ type ApiResponse = {
   kinds?: KindOverview[];
   summary?: any;
   talkApiStatusFile?: StatusFileResult;
+  talkApiAuthApplyStatusFile?: StatusFileResult;
   error?: string;
 };
 
@@ -78,6 +79,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
   const [expectedKinds, setExpectedKinds] = useState<string[]>([]);
   const [summary, setSummary] = useState<any | null>(null);
   const [talkApiStatusFile, setTalkApiStatusFile] = useState<StatusFileResult | null>(null);
+  const [talkApiAuthApplyStatusFile, setTalkApiAuthApplyStatusFile] = useState<StatusFileResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [killing, setKilling] = useState<number | null>(null);
@@ -92,6 +94,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
         setExpectedKinds(Array.isArray(data.expectedKinds) ? data.expectedKinds : []);
         setSummary(data.summary || null);
         setTalkApiStatusFile(data.talkApiStatusFile || null);
+        setTalkApiAuthApplyStatusFile(data.talkApiAuthApplyStatusFile || null);
         setError(null);
       } else {
         setError(String((data as any)?.error || 'unknown error'));
@@ -200,6 +203,57 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
     return { cls: 'tag-error', text: `Talk-API: 실패${status != null ? `(${status})` : ''}`, ageSec, status, updatedAt };
   }, [talkApiStatusFile]);
 
+  const talkApiAuthTag = useMemo(() => {
+    const sf = talkApiAuthApplyStatusFile;
+    const data = sf?.data || null;
+    const ok = data?.ok === true;
+    const appliedAt = typeof data?.appliedAt === 'string' ? data.appliedAt : null;
+    const ageSec = appliedAt ? Math.floor(Math.max(0, Date.now() - new Date(appliedAt).getTime()) / 1000) : null;
+    if (!sf) return { cls: 'tag-excluded', text: 'auth: 미확인', ageSec: null as number | null, appliedAt: null as string | null, ok: null as boolean | null };
+    if (!sf.exists) return { cls: 'tag-excluded', text: 'auth: 상태파일 없음', ageSec, appliedAt, ok: null as boolean | null };
+    if (sf.error) return { cls: 'tag-inactive', text: 'auth: 상태파일 오류', ageSec, appliedAt, ok: null as boolean | null };
+    if (ok) return { cls: 'tag-active', text: 'auth: 적용됨', ageSec, appliedAt, ok: true as const };
+    return { cls: 'tag-error', text: 'auth: 적용 실패', ageSec, appliedAt, ok: false as const };
+  }, [talkApiAuthApplyStatusFile]);
+
+  const talkApiHint = useMemo(() => {
+    const status = talkApiStatusFile?.data || null;
+    const apply = talkApiAuthApplyStatusFile?.data || null;
+
+    const statusUpdatedAt = typeof status?.updatedAt === 'string' ? status.updatedAt : null;
+    const appliedAt = typeof apply?.appliedAt === 'string' ? apply.appliedAt : null;
+    const statusMs = statusUpdatedAt ? Date.parse(statusUpdatedAt) : NaN;
+    const appliedMs = appliedAt ? Date.parse(appliedAt) : NaN;
+    const appliedAfterStatus = Number.isFinite(statusMs) && Number.isFinite(appliedMs) ? appliedMs > statusMs : null;
+
+    const ok = status?.ok === true;
+    const talkStatus = typeof status?.talkStatus === 'number' ? status.talkStatus : null;
+    if (ok) return { kind: 'ok' as const, text: null as string | null, appliedAfterStatus };
+
+    // 최근 실패 기록이 있어도 auth 재적용이 더 최신이면 “재검증 필요”로 표시(실패로 단정하지 않음).
+    if (status?.ok === false && appliedAfterStatus === true) {
+      return {
+        kind: 'needs_verify' as const,
+        appliedAfterStatus,
+        text:
+          `최근 실패 기록(${talkStatus ?? '?'})이 있지만 authHeader가 더 최근에 적용되었습니다. ` +
+          `테스트 방에서 1회 검증을 권장합니다.`,
+      };
+    }
+
+    if (status?.ok === false) {
+      return {
+        kind: 'fail' as const,
+        appliedAfterStatus,
+        text:
+          `전송이 실패하면 멘션/답장(Reply)은 “진짜 멘션”으로 렌더링되지 못하고 ` +
+          `텍스트(@닉네임)로만 보일 수 있습니다. (상태: ${talkStatus ?? '?'})`,
+      };
+    }
+
+    return { kind: 'unknown' as const, text: null as string | null, appliedAfterStatus };
+  }, [talkApiAuthApplyStatusFile?.data, talkApiStatusFile?.data]);
+
   const cleanupAllDuplicates = async () => {
     const duplicateKinds = kindKeys.filter((k) => (byKind[k]?.length || 0) > 1);
     if (duplicateKinds.length === 0) return;
@@ -283,6 +337,9 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
           <span className={`tag ${talkApiTag.cls}`} title={talkApiTag.updatedAt ? `updatedAt=${talkApiTag.updatedAt}` : undefined}>
             {talkApiTag.text}{talkApiTag.ageSec != null ? ` · ${formatAge(talkApiTag.ageSec)}` : ''}
           </span>
+          <span className={`tag ${talkApiAuthTag.cls}`} title={talkApiAuthTag.appliedAt ? `appliedAt=${talkApiAuthTag.appliedAt}` : undefined}>
+            {talkApiAuthTag.text}{talkApiAuthTag.ageSec != null ? ` · ${formatAge(talkApiAuthTag.ageSec)}` : ''}
+          </span>
           {missingKinds.length === 0 && !hasDuplicate && staleKinds.length === 0 && (
             <span className="tag tag-active">모든 워커 정상 실행 중</span>
           )}
@@ -292,7 +349,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
         </div>
       )}
 
-      {!loading && (missingKinds.length > 0 || staleKinds.length > 0 || hasDuplicate) && (
+      {!loading && (missingKinds.length > 0 || staleKinds.length > 0 || hasDuplicate || !!talkApiHint.text) && (
         <div className="process-hints">
           {missingKinds.includes('bot') && (
             <div className="process-hint">
@@ -329,9 +386,9 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
               - 중복 실행은 동일 메시지 다중 발송의 대표 원인입니다. 가능하면 <span className="process-mono">중복 일괄 정리(최신 유지)</span>로 정리하세요.
             </div>
           )}
-          {talkApiStatusFile?.exists && talkApiStatusFile?.data?.ok === false && (
+          {talkApiHint.text && (
             <div className="process-hint">
-              - <span className="process-mono">Talk-API</span> 전송이 실패하면 멘션/답장(Reply)은 카카오톡에서 “진짜 멘션”으로 렌더링되지 못하고, 텍스트(<span className="process-mono">@닉네임</span>)로만 보일 수 있습니다. (상태: {safeText(talkApiStatusFile?.data?.talkStatus)})
+              - <span className="process-mono">Talk-API</span>: {talkApiHint.text}
             </div>
           )}
         </div>

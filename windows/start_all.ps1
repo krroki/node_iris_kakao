@@ -5,7 +5,11 @@
   # 기본은 IPv6 dual-stack(::) 바인딩으로 `localhost`(::1) / `127.0.0.1` 모두에서 접근 가능하게 한다.
   # VM/다른 기기에서 접근이 필요하면 0.0.0.0(IPv4) 또는 ::(IPv6)로 지정.
   [string]$WebHostname = '::',
-  [switch]$NoWatchdog
+  [switch]$NoWatchdog,
+  # watchdog에서 start_all을 호출해 파이프라인을 복구할 때는,
+  # start_all이 watchdog 프로세스를 죽이면(현재 PowerShell) 자기 자신을 종료시키는 문제가 생긴다.
+  # 이 옵션이 켜져 있으면 기존 watchdog를 종료하지 않는다(대신 start_all은 -NoWatchdog로 호출하는 것을 권장).
+  [switch]$PreserveWatchdog
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,16 +54,18 @@ function Stop-PidFromStatusJson {
 
 $repoPath = [Regex]::Escape($root)
 Write-Host '[all] pre-cleaning old processes'
-# 기존 watchdog가 실행 중이면, 기동 도중 web/bot을 다시 올려 로그 핸들을 잡는 경쟁이 발생할 수 있으므로 먼저 종료한다.
-try {
-  Get-CimInstance Win32_Process |
-    Where-Object { $_.Name -in @('powershell.exe','pwsh.exe') } |
-    Where-Object { $_.CommandLine -match 'watchdog\.ps1' -and $_.CommandLine -match $repoPath } |
-    ForEach-Object {
-      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
-      try { wmic process where "ProcessId=$($_.ProcessId)" call terminate | Out-Null } catch {}
-    }
-} catch {}
+if (-not $PreserveWatchdog) {
+  # 기존 watchdog가 실행 중이면, 기동 도중 web/bot을 다시 올려 로그 핸들을 잡는 경쟁이 발생할 수 있으므로 먼저 종료한다.
+  try {
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.Name -in @('powershell.exe','pwsh.exe') } |
+      Where-Object { $_.CommandLine -match 'watchdog\.ps1' -and $_.CommandLine -match $repoPath } |
+      ForEach-Object {
+        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+        try { wmic process where "ProcessId=$($_.ProcessId)" call terminate | Out-Null } catch {}
+      }
+  } catch {}
+}
 Stop-ProcsByPredicate { $_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'server.app:app' }
 Stop-ProcsByPredicate { $_.CommandLine -match 'node-iris-app' -and $_.CommandLine -match $repoPath }
 # 상태 파일 PID 기반 정리(안전): node-iris-app 및 각 worker가 직접 기록한 PID만 종료한다.

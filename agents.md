@@ -154,6 +154,8 @@
       - 스냅샷: `scripts/snapshot_talkapi_auth.ps1` → `data/talkapi_auth_snapshots/`
       - 런타임 반영: `scripts/ensure_talkapi_auth_applied.ps1` (상태 파일: `node-iris-app/data/talkapi_auth_apply_status.json`)
       - 자동 실행: `windows/start_all.ps1`(부팅 시 1회) + `windows/watchdog.ps1`(기본 30분 주기)
+    - UI(3100)에는 `auth: 적용됨/실패` 태그도 함께 노출된다(`node-iris-app/data/talkapi_auth_apply_status.json`).
+      - `Talk-API: 실패`가 보여도 `auth: 적용됨`이 더 최신이면, “실패로 확정”이 아니라 **테스트 방에서 1회 재검증**이 필요한 상태일 수 있다. (런북: `docs/reference/kakao-mentions-and-reply.md`의 “빠른 복구 절차”)
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
     - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 AI 응답 텍스트는 `/send/iris/reply_text`로 대체 발신한다.
@@ -171,6 +173,10 @@
     - `windows/start_all.cmd`는 **콜드 부팅/전체 복구**(PC 재부팅 직후, 포트/프로세스 꼬임, web 404/산출물 파손, env 드리프트 등) 때만 사용한다.
     - 평소 배포/수정은 **변경한 컴포넌트만** 재기동한다(코어는 유지).
     - watchdog(`windows/watchdog.ps1`)가 살아있으면 대부분 자동 복구되므로, 수동 개입은 “죽은 컴포넌트만” 대상으로 한다.
+      - 재발 방지: watchdog가 파이프라인 복구를 위해 `start_all.ps1`를 호출할 때,
+        `start_all.ps1`의 pre-clean이 watchdog를 죽여 “자가복구 루프가 중단”되는 문제가 있었다.
+        현재는 `watchdog.ps1` → `start_all.ps1 -NoWatchdog -PreserveWatchdog`로 호출해
+        watchdog 자기 자신을 종료시키지 않도록 고정했다.
 
     | 상황 | 권장 명령 |
     |---|---|
