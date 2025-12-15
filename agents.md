@@ -169,6 +169,9 @@
     - **중복 실행 방지(중요)**: `broadcast-worker`는 `node-iris-app/data/locks/broadcast_worker.lock` 싱글톤 락으로 1개만 동작한다. watchdog도 중복 실행 감지 시 자동 재기동으로 정리한다.
   - 기본값: `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker` (레거시 롤백: 각각 `...=bot`)
   - **중복 실행 방지(코어/bot)**: bot은 `node-iris-app/data/bot.lock` 싱글톤 락으로 1개만 동작한다(잘못된 cwd로 `node dist/index.js`를 실행해도 즉시 종료).
+  - **/logs/stream 스냅샷 주의(중요)**:
+    - Realtime API `GET /logs/stream`은 연결 직후 `type=snapshot`을 1회 보낸다(대시보드 UI용).
+    - feature workers(welcome/ai/broadcast/command)는 **`type=append`(증분)만 처리**해야 하며, snapshot을 처리하면 TTL reconnect/재기동 시 과거 이벤트를 다시 실행해 “테스트방에 이전 메시지가 주기적으로 반복 발송”되는 문제가 생긴다.
   - **재기동 원칙(필독)**: *부분 재기동 우선*. “항상 start_all”은 모듈화(코어/워커 분리) 취지에 반한다.
     - `windows/start_all.cmd`는 **콜드 부팅/전체 복구**(PC 재부팅 직후, 포트/프로세스 꼬임, web 404/산출물 파손, env 드리프트 등) 때만 사용한다.
     - 평소 배포/수정은 **변경한 컴포넌트만** 재기동한다(코어는 유지).
@@ -177,6 +180,13 @@
         `start_all.ps1`의 pre-clean이 watchdog를 죽여 “자가복구 루프가 중단”되는 문제가 있었다.
         현재는 `watchdog.ps1` → `start_all.ps1 -NoWatchdog -PreserveWatchdog`로 호출해
         watchdog 자기 자신을 종료시키지 않도록 고정했다.
+      - **watchdog 자동 기동(중요)**: watchdog가 꺼져 있으면 자동 복구는 절대 동작하지 않는다.
+        - Task Scheduler 등록(권장): `windows/register_watchdog_task.ps1` (기본 1분 주기, watchdog 미실행 시 자동 기동)
+        - 부팅/로그온 자동 기동(선택): `windows/register_start_all_task.ps1` (콜드 부팅 시 파이프라인 전체 기동)
+      - **IRIS(:5050) 복구가 안 될 때(중요)**: PortProxy가 `0.0.0.0:5050 -> 127.0.0.1:5050` 루프백으로 잡혀 있으면(iphlpsvc가 포트 점유)
+        ADB forward가 `access denied(10013)`로 실패하며 IRIS가 장시간 다운될 수 있다.
+        - `windows/repair_redroid_iris.ps1 -Fix`는 이제 이 루프백 PortProxy를 자동 정리하고 재시도한다.
+        - `windows/setup_iris_port.ps1`는 기본적으로 PortProxy를 $LocalPort에 직접 걸지 않으며, 필요 시 `-ExposePort <포트>`로만 노출한다(충돌 방지).
 
     | 상황 | 권장 명령 |
     |---|---|

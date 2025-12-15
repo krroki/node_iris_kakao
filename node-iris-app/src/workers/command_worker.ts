@@ -888,6 +888,10 @@ async function connectAndRun(): Promise<void> {
             if (!jsonText) continue;
             try {
               const payload = JSON.parse(jsonText) as any;
+              // /logs/stream은 연결 직후 "snapshot"을 1회 내보낸다.
+              // 워커는 snapshot을 처리하면 (특히 TTL reconnect 시) 과거 메시지를 다시 실행하는 문제가 생기므로,
+              // "append"(증분)만 처리한다.
+              if (payload?.type && String(payload.type) !== "append") continue;
               const roomsObj = payload?.rooms;
               if (roomsObj && typeof roomsObj === "object") {
                 for (const [rid, entries] of Object.entries(roomsObj as Record<string, unknown>)) {

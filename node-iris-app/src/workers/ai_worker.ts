@@ -548,6 +548,10 @@ async function connectAndRun(): Promise<void> {
             if (!jsonText) continue;
             try {
               const payload = JSON.parse(jsonText) as any;
+              // /logs/stream은 연결 직후 "snapshot"을 1회 내보낸다.
+              // AI 워커는 snapshot을 처리하면 과거 질문을 다시 답변하는 문제가 생길 수 있으므로,
+              // "append"(증분)만 처리한다.
+              if (payload?.type && String(payload.type) !== "append") continue;
               const roomsObj = payload?.rooms;
               if (roomsObj && typeof roomsObj === "object") {
                 for (const [rid, entries] of Object.entries(roomsObj as Record<string, unknown>)) {

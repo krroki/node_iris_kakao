@@ -370,8 +370,22 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   if (!msgId) return;
   if (ANNOUNCE_DEDUP.isDuplicate(`${roomId}:${msgId}`)) return;
 
-  const text = normalizeText(entry.text);
   const images = normalizeImageUrls((entry as any).imageUrls);
+
+  // 이미지 메시지는 messageText가 "사진"/"photo"로 들어오는 경우가 많다.
+  // 공지 미러링에서는 placeholder 텍스트를 그대로 전파하지 않고, 실제 이미지 전송만 수행한다.
+  const rawType = Number(entry.messageType);
+  const msgType = Number.isFinite(rawType) ? rawType : NaN;
+  const baseType = Number.isFinite(msgType) ? (msgType & ~16384) : NaN;
+  const isImageMsg = baseType === 2 || baseType === 27 || baseType === 71;
+
+  let text = normalizeText(entry.text);
+  if (images.length > 0 && isImageMsg) {
+    const t = text.trim();
+    if (t === "사진" || t.toLowerCase() === "photo") {
+      text = "";
+    }
+  }
   if (!text && images.length === 0) return;
 
   // 공지 결과 메시지는 소스방에만 남기고, 타겟으로 재전파되면 안 된다.
@@ -771,6 +785,10 @@ async function connectAndRun(): Promise<void> {
             if (!jsonText) continue;
             try {
               const payload = JSON.parse(jsonText) as any;
+              // /logs/stream은 연결 직후 "snapshot"을 1회 내보낸다.
+              // 공지 워커는 snapshot을 처리하면 과거 소스 메시지를 다시 미러링할 수 있으므로,
+              // "append"(증분)만 처리한다.
+              if (payload?.type && String(payload.type) !== "append") continue;
               const roomsObj = payload?.rooms;
               if (roomsObj && typeof roomsObj === "object") {
                 for (const [rid, entries] of Object.entries(roomsObj as Record<string, unknown>)) {

@@ -49,7 +49,9 @@
    - **첫 이미지 메시지 1회**만 트리거
    - 이미지 판별이 어려운 경우를 고려해 **“이미지면 전부 하트 인증샷”** 으로 간주(Option B).
 3. **답장 문구**는 여러 개를 설정하고 **랜덤 선택**한다.
-4. **재시도**는 0회로 한다. (실패 시 즉시 트래킹 종료)
+4. **link_id 조회는 보수적으로 강화**한다.
+   - 우선순위: **최근 로그에서 `src_linkId` 추론 → IRIS `/query` 2회(타임아웃 증가/재시도)**
+   - `src_linkId`를 끝내 얻지 못하면 **Reply(type=26)는 포기하고**, 일반 메시지(텍스트)로 1회라도 안내를 발신한 뒤 트래킹을 종료한다.
 5. **적용 범위**:
    - welcome이 켜진 방에서 기본 활성
    - 방별로 추가 옵션으로 끄고/킬 수 있어야 한다.
@@ -100,6 +102,10 @@
   - `src_type`: (오픈채팅 로그에서는 string으로 관측되지만) Talk-API 발신 시에는 **int(number)** 가 필요 (원본 메시지 type; 예: 이미지 `2`)
   - `src_message`: string (원본 메시지 text; 이미지면 `"사진"` 등)
 - `src_linkId`는 IRIS `/query`로 `select link_id from chat_rooms where id=?` 를 조회해 캐시한다.
+- IRIS `/query`가 일시적으로 느리거나 죽는 케이스가 있어, 운영 안정성을 위해:
+  - 최근 room 로그에 포함된 Reply attachment의 `src_linkId`로 **추론**을 먼저 시도하고,
+  - 그래도 없으면 IRIS `/query`를 **재시도**한다.
+- 최종적으로 `src_linkId`를 확보하지 못하면 Reply(type=26)는 불가능하므로, **일반 텍스트 안내**로 degrade 한다(임의 link_id 생성 금지).
 - Node에서 `senderId`는 64-bit 범위 숫자(2^53 초과)가 많아 **JS number로 정확히 표현할 수 없다**.
   - 따라서 Node → Realtime API에서는 `src_userId/src_linkId/src_type`를 문자열로 전달하고,
   - `server/app.py`의 `/send/talkapi/dispatch_raw`(및 `prepare_raw`)에서 **숫자형 문자열을 int로 강제 변환(coerce)** 한 뒤 Talk-API로 전달한다.
@@ -118,8 +124,10 @@
 
 1. SAFE_MODE가 켜진 상태에서는 **후속 답장도 절대 발신하지 않는다**.
 2. allowlist 밖 방에는 발신하지 않는다.
-3. **폴백 금지**:
+3. **임의 값 폴백 금지**:
    - `runtime.json` 로드/파싱 실패, 설정 누락/형식 오류 시 조용히 진행하지 않고 스킵을 기록한다.
+   - `src_linkId` 등 Reply 메타는 **추측/가공으로 만들지 않는다**.
+   - 단, `src_linkId`를 확보할 수 없는 경우에는 Reply를 강행하지 않고 **일반 텍스트 안내로 degrade** 할 수 있다.
 4. 트래킹 상태는 TTL/상한으로 bounded 되어야 한다(무한 누적 금지).
 5. Reply는 반드시 `src_logId/src_userId` 기반으로 수행한다(단순 `@이름` 텍스트는 멘션/답장이 아님).
    - 오픈채팅에서는 `src_linkId/src_type/src_message`까지 포함해야 UI에서 답장으로 렌더링되는 케이스가 확인됨.

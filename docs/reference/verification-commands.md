@@ -109,6 +109,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
   - `windows/logs/broadcast_worker.out.log`에 `[announce] triggered` / `[announce] completed` 로그가 찍히는지 확인
   - 실패 시 같은 로그에 `[talkapi] dispatch non-OK`가 찍히며, `roomId`/`talkStatus`로 어떤 타겟이 실패하는지 확인 가능
   - 워커 상태 파일: `node-iris-app/data/broadcast_worker_status.json`의 `lastAnnouncement*` 필드 확인
+  - (이미지) 소스 방에서 사진(이미지)만 올렸을 때 타겟 방에도 **실제 이미지가 전송되는지** 확인
+    - 타겟에 텍스트 `사진`만 가고 이미지가 안 가면: Realtime API 로그 변환에서 이미지 URL이 `imageUrls`로 노출되지 않은 상태일 수 있다. (`server/log_utils.py`의 `attachment.url` → `imageUrls` 추출 경로)
   - 소스 방에 `[공지 전파 결과]` 요약 메시지가 1회 남고, **이 메시지가 타겟 방으로는 복제되지 않는지** 확인
 
 ---
@@ -147,6 +149,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 |------|-------------------------|------|
 | 전체 스택 기동(API+KB+Bot+Web) | `windows/start_all.cmd` | 사용자 실행 권장 엔트리포인트(cmd 래퍼, 내부적으로 `windows/start_all.ps1` 호출). 기본 포트: API 8650, Web 3100. 실행 후 watchdog가 **자동으로 백그라운드 기동**되며(`windows/watchdog.log` 기록), 필요 시 `windows/start_all.ps1 -NoWatchdog`로 비활성화 |
 | 부팅 자동 기동 등록(Task Scheduler) | `windows/register_start_all_task.ps1` | Windows 작업 스케줄러에 로그인/부팅 트리거로 `start_all.cmd` 자동 실행 작업을 등록. 삭제는 `windows/register_start_all_task.ps1 -Delete` |
+| Watchdog 자동 유지 등록(Task Scheduler) | `windows/register_watchdog_task.ps1` | watchdog가 죽어 있으면 자동 복구가 동작하지 않으므로, 1분 주기로 watchdog 실행 여부를 확인해 자동 기동하는 작업을 등록한다. 삭제는 `windows/register_watchdog_task.ps1 -Delete` |
 | Bot 단독 재기동(빌드 포함) | `windows/start_bot.ps1 -Restart` | `node-iris-app/dist`가 최신이 아니면 자동으로 `npm run build` 후 기동. 운영 중 “코드 변경이 반영되지 않음”이 의심되면 이 명령으로 확인 |
 | Bot 단독 재기동(빌드 생략) | `windows/start_bot.ps1 -Restart -SkipBuild` | 빠른 재기동(이미 빌드가 최신이라는 확신이 있을 때만) |
 | Welcome-worker 단독 재기동 | `windows/start_welcome_worker.ps1 -Restart` | Welcome/후속 Reply 기능 워커(ADR-0027). 중복 실행은 락 파일(`node-iris-app/data/locks/welcome_worker.lock`)로 자동 차단된다. 기본값은 `WELCOME_DISPATCHER=worker`이며, 레거시(`WELCOME_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장. 설정 변경 반영을 위해 SSE 재연결 TTL(기본 60초, `WELCOME_WORKER_STREAM_TTL_MS`)이 적용된다 |
@@ -159,7 +162,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 | Web 단독 기동(prod, CleanBuild) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild` | `.next-prod` 삭제 후 재빌드(Next chunk 깨짐/MODULE_NOT_FOUND 복구용) |
 | Web 개발 서버(dev) | `windows/start_web.ps1 -Mode dev -Port 3100 -ForceKillPort` | 개발용(`next dev`, distDir `.next`). 시작 전 `.next` 삭제 실패 시 즉시 실패(폴백 금지) |
 | Watchdog 단독 기동 | `windows/watchdog.ps1` | `/status` 기반으로 bot/logStore 이상을 감지해 자동 재시작. 로그는 `windows/watchdog.log`에 기록되며 Web 홈에서 “Watchdog” 카드로 확인 가능 |
-| 포트프록시/ADB 설정 | `windows/setup_iris_port.ps1 -LocalPort 5050` | 기본 포트 5050. `adb cannot bind 127.0.0.1:5050 (10048)`이면 `netsh interface portproxy show v4tov4`에서 5050 listen 규칙 삭제 후 재실행 |
+| 포트/ADB 설정 | `windows/setup_iris_port.ps1 -LocalPort 5050` | 기본 포트 5050. 기본 동작은 ADB forward만 설정한다. 외부/WSL 노출이 필요하면 `-ExposePort <포트>`로 별도 포트에 PortProxy를 건다(충돌 방지) |
 | IRIS 자동 복구(ADB) | `windows/repair_redroid_iris.ps1 -Fix` | `http://127.0.0.1:5050/config`이 죽었을 때 ADB forward(5050→device:3000) 재설정 + Iris.apk(`party.qwer.iris.Main`) 프로세스를 재기동한다. watchdog가 IRIS 장애를 감지하면 자동으로 이 스크립트를 호출한다 |
 | 상태 점검 | `windows/probe_iris.ps1` | HTTP 200 여부 체크 |
 | WSL 봇 로그 모니터링 | `windows/tail_wsl_bot.ps1` | 실시간 로그 tail |

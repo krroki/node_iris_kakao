@@ -243,6 +243,47 @@ def parse_line(line: str):
                         image_urls = [str(x).strip() for x in iu2 if str(x).strip()]
                     elif isinstance(iu2, str) and iu2.strip():
                         image_urls = [iu2.strip()]
+                    # IRIS message payloads often store a single image URL under `attachment.url`/`thumbnailUrl`.
+                    # Expose it as imageUrls=[...] so announcement/broadcast workers can forward media.
+                    if not image_urls:
+                        cand: list[str] = []
+                        # Prefer the original URL. Only fall back to thumbnail when original is missing.
+                        primary: list[str] = []
+                        fallback: list[str] = []
+                        for key in ("url", "originalUrl", "original_url"):
+                            v = att4.get(key)
+                            if isinstance(v, str) and v.strip():
+                                primary.append(v.strip())
+                        if not primary:
+                            for key in ("thumbnailUrl", "thumbnail_url"):
+                                v = att4.get(key)
+                                if isinstance(v, str) and v.strip():
+                                    fallback.append(v.strip())
+                        cand.extend(primary if primary else fallback)
+                        for key in ("urls", "urlList", "imageUrlList", "imageURLs"):
+                            v = att4.get(key)
+                            if isinstance(v, list):
+                                for x in v:
+                                    s = str(x).strip()
+                                    if s:
+                                        cand.append(s)
+                        if cand:
+                            # keep order + dedupe + cap (avoid large SSE payloads)
+                            seen: set[str] = set()
+                            out_urls: list[str] = []
+                            for u in cand:
+                                if u in seen:
+                                    continue
+                                seen.add(u)
+                                out_urls.append(u)
+                                if len(out_urls) >= 10:
+                                    break
+                            # Drop thumbnail variants if we have at least one non-thumbnail URL.
+                            if len(out_urls) > 1:
+                                non_thumb = [u for u in out_urls if "convert=resize" not in u]
+                                if non_thumb:
+                                    out_urls = non_thumb
+                            image_urls = out_urls if out_urls else None
         except Exception:
             image_urls = None
 

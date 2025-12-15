@@ -63,3 +63,21 @@
     - `windows/setup_iris_port.ps1`로 ADB forward(5050→device:3000) 재설정
     - `windows/repair_redroid_iris.ps1 -Fix`를 **SSH 의존 없이 ADB 기반**으로 개편해, watchdog가 IRIS를 자동 재기동할 수 있도록 수정
   - 검증: `http://127.0.0.1:5050/config` 200 복구 + Node fetch `/query` 정상화 확인
+
+- “웰컴 후 첫 이미지 답장”이 간헐적으로 미발동하는 케이스를 확인(근본 원인: `src_linkId` 조회용 IRIS `/query` 타임아웃 → Reply(type=26) 스킵).
+  - 조치: `welcome-worker`에서 `src_linkId`를 **최근 room 로그로 우선 추론 → IRIS `/query` 2회 재시도(타임아웃 증가)**로 강화하고,
+    끝내 link_id가 없으면 Reply 대신 **일반 텍스트 안내로 degrade** 하도록 수정(침묵/무반응 방지).
+  - 결정/문서: `docs/adr/ADR-0026-welcome-followup-first-image-reply.md` 업데이트
+
+---
+
+## 2025-12-16
+
+- 장애: Realtime API(:8650) 다운 + watchdog 미기동으로 자동 복구가 동작하지 않아, bot/worker가 “무반응”처럼 보이는 케이스 발생.
+- 근본 원인:
+  - Task Scheduler에 watchdog 보장 작업이 없으면, watchdog가 죽는 순간부터 “자동 복구”는 0%가 된다.
+  - PortProxy `0.0.0.0:5050 -> 127.0.0.1:5050` 루프백이 iphlpsvc로 5050을 점유해, `repair_redroid_iris.ps1`의 ADB forward가 `access denied(10013)`로 실패하며 IRIS 복구가 막혔다.
+- 조치:
+  - watchdog 보장: `windows/ensure_watchdog.ps1` + `windows/register_watchdog_task.ps1` 추가(1분 주기)
+  - IRIS 복구 신뢰성: `windows/repair_redroid_iris.ps1`에서 루프백 PortProxy 자동 정리 + 디바이스 캐시(`data/redroid_device.json`) 도입
+  - watchdog 로그 품질: IRIS 복구 스크립트의 `exitCode`와 실제 `IRIS /config`(200) 여부를 함께 기록하도록 보강

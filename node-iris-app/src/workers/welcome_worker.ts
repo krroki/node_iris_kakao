@@ -47,6 +47,7 @@ type PendingFollowUp = {
 type WorkerState = {
   lastSeenMs: number;
   pending: PendingFollowUp[];
+  roomLinkIds?: Record<string, { linkId: string; at: number }>;
   updatedAt: string;
 };
 
@@ -82,6 +83,8 @@ const pendingByUser = new Map<string, PendingFollowUp>();
 // roomId -> linkId cache (reply attachment requires src_linkId)
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
 const LINK_ID_CACHE_MS = 30 * 60 * 1000;
+const LINK_ID_QUERY_TIMEOUT_MS = 15_000;
+const LINK_ID_LOG_SCAN_BYTES = 512 * 1024;
 
 let runtimeCache: { at: number; data: RuntimeConfig } | null = null;
 const RUNTIME_CACHE_MS = 1500;
@@ -309,8 +312,10 @@ async function loadState(): Promise<WorkerState> {
     const parsed = JSON.parse(raw) as Partial<WorkerState>;
     const lastSeenMs = typeof parsed.lastSeenMs === "number" && Number.isFinite(parsed.lastSeenMs) ? parsed.lastSeenMs : 0;
     const pending = Array.isArray(parsed.pending) ? (parsed.pending as PendingFollowUp[]) : [];
+    const roomLinkIds =
+      parsed.roomLinkIds && typeof parsed.roomLinkIds === "object" ? (parsed.roomLinkIds as Record<string, { linkId: string; at: number }>) : undefined;
     const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
-    return { lastSeenMs, pending, updatedAt };
+    return { lastSeenMs, pending, roomLinkIds, updatedAt };
   } catch {
     return { lastSeenMs: 0, pending: [], updatedAt: new Date().toISOString() };
   }
@@ -545,11 +550,68 @@ function countPendingByRoom(roomId: string): number {
   return n;
 }
 
+async function inferOpenLinkIdFromLogs(roomId: string): Promise<string | null> {
+  try {
+    const dir = path.join(APP_ROOT, "data", "logs", roomId);
+    const names = await fs.readdir(dir).catch(() => []);
+    const files = names
+      .filter((n) => typeof n === "string" && n.endsWith(".log"))
+      .sort()
+      .reverse()
+      .slice(0, 3);
+    if (files.length === 0) return null;
+
+    const re = /"src_linkId"\s*:\s*"?(?<id>\d+)"?/;
+    for (const name of files) {
+      const p = path.join(dir, name);
+      let fh: fs.FileHandle | null = null;
+      try {
+        const st = await fs.stat(p).catch(() => null);
+        if (!st || !st.isFile()) continue;
+
+        const start = Math.max(0, Number(st.size) - LINK_ID_LOG_SCAN_BYTES);
+        const len = Math.max(0, Number(st.size) - start);
+        if (len <= 0) continue;
+
+        fh = await fs.open(p, "r");
+        const buf = Buffer.allocUnsafe(len);
+        await fh.read(buf, 0, len, start);
+        const txt = buf.toString("utf8");
+        const lines = txt.split(/\r?\n/);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i] || "";
+          if (!line.includes("src_linkId")) continue;
+          const m = re.exec(line);
+          const id = safeString((m as any)?.groups?.id ?? "");
+          if (id) return id;
+        }
+      } catch {
+        // ignore
+      } finally {
+        try {
+          await fh?.close();
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 async function resolveOpenLinkIdForRoom(roomId: string): Promise<string | null> {
   const now = Date.now();
   const cached = linkIdByRoom.get(roomId);
   if (cached && now - cached.at < LINK_ID_CACHE_MS) {
     return cached.linkId;
+  }
+
+  const inferred = await inferOpenLinkIdFromLogs(roomId);
+  if (inferred) {
+    linkIdByRoom.set(roomId, { linkId: inferred, at: now });
+    return inferred;
   }
 
   const base = safeString(process.env.IRIS_QUERY_BASE || process.env.IRIS_URL || "http://127.0.0.1:5050").replace(/\/+$/, "");
@@ -559,30 +621,37 @@ async function resolveOpenLinkIdForRoom(roomId: string): Promise<string | null> 
     bind: [roomId],
   };
 
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const timeoutMs = Math.min(25_000, Math.max(8000, LINK_ID_QUERY_TIMEOUT_MS + (attempt - 1) * 5000));
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
 
-    const j: any = await res.json().catch(() => null);
-    const linkId = safeString(j?.data?.[0]?.link_id ?? j?.data?.[0]?.linkId ?? "");
-    if (!linkId) {
-      logger.warn("[followup] resolveOpenLinkIdForRoom: empty link_id", { roomId, httpStatus: res?.status });
-      return null;
+      const j: any = await res.json().catch(() => null);
+      const linkId = safeString(j?.data?.[0]?.link_id ?? j?.data?.[0]?.linkId ?? "");
+      if (!linkId) {
+        logger.warn("[followup] resolveOpenLinkIdForRoom: empty link_id", { roomId, httpStatus: res?.status, attempt });
+      } else {
+        linkIdByRoom.set(roomId, { linkId, at: now });
+        return linkId;
+      }
+    } catch (e) {
+      logger.warn("[followup] resolveOpenLinkIdForRoom failed", { roomId, err: String(e), attempt, timeoutMs });
     }
 
-    linkIdByRoom.set(roomId, { linkId, at: now });
-    return linkId;
-  } catch (e) {
-    logger.warn("[followup] resolveOpenLinkIdForRoom failed", { roomId, err: String(e) });
-    return null;
+    if (attempt < 2) {
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
+
+  return null;
 }
 
 async function enqueueWelcome(roomId: string, roomName: string, entrants: WelcomeEntrant[]): Promise<void> {
@@ -897,7 +966,24 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
 
   const srcLinkId = await resolveOpenLinkIdForRoom(roomId);
   if (!srcLinkId) {
-    pendingByUser.delete(key);
+    // IRIS /query가 일시적으로 느리거나 죽으면 Reply(26)가 막혀 "첫 이미지 답장"이 체감상 고장난 것으로 보인다.
+    // 이 경우에는 Reply 대신 일반 메시지로라도 후속 안내를 보낸다.
+    let okFallback = false;
+    try {
+      okFallback = await tryServerTalkApiDispatch(logger, roomId, replyText, [], 12000);
+      if (!okFallback) okFallback = await tryServerIrisReplyText(logger, roomId, replyText, 12000);
+    } catch (e) {
+      okFallback = false;
+      logger.warn("[followup] fallback dispatch threw", { roomId, userId: senderId, err: String(e) });
+    } finally {
+      pendingByUser.delete(key);
+    }
+    await updateStatus({
+      lastFollowUpAttemptTs: new Date().toISOString(),
+      lastFollowUpRoomId: roomId,
+      lastFollowUpOk: okFallback,
+      lastFollowUpReason: "NO_LINK_ID_FALLBACK",
+    });
     return;
   }
 
@@ -980,6 +1066,16 @@ async function connectAndRun(): Promise<void> {
       pendingByUser.set(`${p.roomId}:${p.userId}`, p);
     }
   }
+  // restore link_id cache (best-effort)
+  if (state.roomLinkIds && typeof state.roomLinkIds === "object") {
+    for (const [rid, v] of Object.entries(state.roomLinkIds)) {
+      const roomId = safeString(rid);
+      const linkId = safeString((v as any)?.linkId);
+      const at = Number((v as any)?.at);
+      if (!roomId || !linkId || !Number.isFinite(at) || at <= 0) continue;
+      linkIdByRoom.set(roomId, { linkId, at });
+    }
+  }
 
   let lastSeenMs = state.lastSeenMs || 0;
   const lastSeenMsRef = { v: lastSeenMs };
@@ -1004,6 +1100,7 @@ async function connectAndRun(): Promise<void> {
     const snapshot: WorkerState = {
       lastSeenMs: lastSeenMsRef.v,
       pending: Array.from(pendingByUser.values()),
+      roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
       updatedAt: new Date().toISOString(),
     };
     void saveState(snapshot).catch((e) => logger.warn("[state] save failed", { err: String(e) }));
@@ -1076,6 +1173,10 @@ async function connectAndRun(): Promise<void> {
             if (!jsonText) continue;
             try {
               const payload = JSON.parse(jsonText) as any;
+              // /logs/stream은 연결 직후 "snapshot"을 1회 내보낸다.
+              // welcome 워커는 snapshot을 처리하면 과거 join 이벤트를 다시 처리할 수 있으므로,
+              // "append"(증분)만 처리한다.
+              if (payload?.type && String(payload.type) !== "append") continue;
               const roomsObj = payload?.rooms;
               if (roomsObj && typeof roomsObj === "object") {
                 for (const [rid, entries] of Object.entries(roomsObj as Record<string, unknown>)) {

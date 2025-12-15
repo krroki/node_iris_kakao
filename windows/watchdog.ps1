@@ -84,6 +84,7 @@ $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
 $script:webFailCount = 0
 $script:webRestartAttemptsSinceOk = 0
 $script:irisFailCount = 0
+$script:apiStatusFailCount = 0
 $script:lastSummaryAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastSummary = ""
 
@@ -851,7 +852,14 @@ function Maybe-Repair-Iris {
   Write-Log -Level 'ACTION' -Message "IRIS 복구 시도(repair_redroid_iris.ps1 -Fix). 사유: $Reason"
   try {
     & $repairScript -Fix 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[repair] $_" }
-    Write-Log -Level 'INFO' -Message "IRIS 복구 스크립트 실행 완료"
+    $exitCode = $LASTEXITCODE
+    $irisOk = $false
+    try { $irisOk = Test-Http200 -Url ("$IrisBase/config") -TimeoutSec 3 } catch { $irisOk = $false }
+    if ($exitCode -ne 0 -or -not $irisOk) {
+      Write-Log -Level 'ERROR' -Message ("IRIS 복구 실패(exitCode={0}, irisOk={1}). 추가 점검 필요." -f $exitCode, $irisOk)
+    } else {
+      Write-Log -Level 'INFO' -Message "IRIS 복구 성공(IRIS /config 200 OK)"
+    }
   } catch {
     Write-Log -Level 'ERROR' -Message "IRIS 복구 실패: $($_.Exception.Message)"
   }
@@ -904,12 +912,25 @@ try
     $apiStatus = $null
     try
     {
-      $apiStatus = Invoke-HttpJson -Url ("$ApiBase/status") -TimeoutSec 4
+      # /status는 내부적으로 IRIS/로그/KB 등을 점검하므로, 순간적으로 4초를 초과할 수 있다.
+      # 단발성 타임아웃에 곧바로 start_all(전체 재기동)로 이어지면, 워커 재시작 → 최근 로그 재처리로
+      # "테스트방에 이전 메시지가 반복 발송"되는 체감 문제가 생긴다.
+      # 따라서:
+      # - 타임아웃을 넉넉히(10s) 주고
+      # - 연속 실패 3회 이상일 때만 파이프라인을 재기동한다.
+      $apiStatus = Invoke-HttpJson -Url ("$ApiBase/status") -TimeoutSec 10
+      $script:apiStatusFailCount = 0
     }
     catch
     {
-      Write-Log -Level 'WARN' -Message "API /status 연결 실패: $($_.Exception.Message)"
-      Restart-Pipeline -Reason "API /status 연결 실패"
+      $script:apiStatusFailCount = [int]($script:apiStatusFailCount + 1)
+      Write-Log -Level 'WARN' -Message "API /status 연결 실패(${script:apiStatusFailCount}회): $($_.Exception.Message)"
+      if ($script:apiStatusFailCount -ge 3) {
+        Restart-Pipeline -Reason "API /status 연결 실패(연속 ${script:apiStatusFailCount}회)"
+        $script:apiStatusFailCount = 0
+      } else {
+        Write-Log -Level 'WARN' -Message "API /status 실패는 일시적일 수 있어 파이프라인 재기동을 보류합니다(연속 3회부터)."
+      }
       Start-Sleep -Seconds $IntervalSec
       continue
     }

@@ -9,6 +9,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$root = Split-Path $PSScriptRoot -Parent
+$deviceCachePath = Join-Path $root 'data\redroid_device.json'
 
 function Write-Info($msg)  { Write-Host "[repair] $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "[repair] $msg" -ForegroundColor Green }
@@ -70,6 +72,78 @@ function Get-RedroidVmIp {
   return $null
 }
 
+function Read-DeviceCache {
+  param([string]$Path)
+  try {
+    if (-not (Test-Path $Path)) { return $null }
+    $j = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $dev = [string]$j.device
+    if ($dev -and $dev.Trim()) { return $dev.Trim() }
+  } catch {}
+  return $null
+}
+
+function Write-DeviceCache {
+  param([string]$Path, [string]$Device)
+  try {
+    $dir = Split-Path $Path -Parent
+    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $obj = [ordered]@{ device = $Device; updatedAt = (Get-Date).ToUniversalTime().ToString("o") }
+    ($obj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $Path -Encoding UTF8
+  } catch {}
+}
+
+function Get-PortProxyMappingsForPort {
+  param([int]$Port)
+  $items = @()
+  try {
+    $out = (netsh interface portproxy show v4tov4) 2>$null
+    foreach ($line in ($out -split "`n")) {
+      $t = $line.Trim()
+      if (-not $t) { continue }
+      # <listenaddr> <listenport> <connectaddr> <connectport>
+      if ($t -match '^([0-9\.]+)\s+(\d+)\s+([0-9\.]+)\s+(\d+)\s*$') {
+        $lp = [int]$Matches[2]
+        if ($lp -eq $Port) {
+          $items += [pscustomobject]@{
+            listenAddress  = [string]$Matches[1]
+            listenPort     = $lp
+            connectAddress = [string]$Matches[3]
+            connectPort    = [int]$Matches[4]
+          }
+        }
+      }
+    }
+  } catch {}
+  return $items
+}
+
+function Remove-LoopbackPortProxyIfConflicts {
+  param([int]$Port)
+  $mappings = @(Get-PortProxyMappingsForPort -Port $Port)
+  if ($mappings.Count -eq 0) { return }
+
+  $removed = 0
+  foreach ($m in $mappings) {
+    $isLoopback = ($m.connectAddress -eq '127.0.0.1' -and $m.connectPort -eq $Port)
+    if (-not $isLoopback) { continue }
+
+    # PortProxy 0.0.0.0:$Port -> 127.0.0.1:$Port 형태는 iphlpsvc가 포트를 점유해
+    # adb forward가 access denied(10013)로 실패할 수 있다. (레거시 잔재)
+    Write-Warn ("Found PortProxy mapping occupying {0}:{1} -> {2}:{3}. This breaks ADB forward; removing it." -f $m.listenAddress, $m.listenPort, $m.connectAddress, $m.connectPort)
+    try {
+      netsh interface portproxy delete v4tov4 listenport=$Port listenaddress=$m.listenAddress 2>$null | Out-Null
+      $removed++
+    } catch {
+      Write-Warn ("Failed to delete PortProxy mapping (admin may be required): {0}" -f $_.Exception.Message)
+    }
+  }
+
+  if ($removed -gt 0) {
+    Write-Info ("PortProxy cleanup done (removed {0} mapping(s) for port {1})." -f $removed, $Port)
+  }
+}
+
 if (Test-IrisConfig -Port $IrisLocalPort) {
   Write-Ok "IRIS /config OK (http://127.0.0.1:$IrisLocalPort/config)"
   exit 0
@@ -116,6 +190,13 @@ if (-not $Device) {
   $Device = Get-FirstAdbDeviceId -AdbPath $AdbPath
 }
 if (-not $Device) {
+  $cached = Read-DeviceCache -Path $deviceCachePath
+  if ($cached) {
+    $Device = $cached
+    Write-Info "Using cached ADB device: $Device ($deviceCachePath)"
+  }
+}
+if (-not $Device) {
   $vmIp = Get-RedroidVmIp -Name $VmName
   if ($vmIp) { $Device = "$vmIp:5555" }
 }
@@ -126,10 +207,20 @@ if (-not $Device) {
 
 Write-Info "ADB connect: $Device"
 try { & $AdbPath connect $Device | Out-Host } catch {}
+Write-DeviceCache -Path $deviceCachePath -Device $Device
+
+# PortProxy 루프백 매핑(0.0.0.0:$IrisLocalPort -> 127.0.0.1:$IrisLocalPort)이 남아있으면
+# adb forward가 로컬 포트를 바인딩하지 못한다.
+Remove-LoopbackPortProxyIfConflicts -Port $IrisLocalPort
 
 Write-Info "ADB forward: $IrisLocalPort -> device:$IrisRemotePort"
 try { & $AdbPath -s $Device forward --remove "tcp:$IrisLocalPort" 2>$null | Out-Null } catch {}
-& $AdbPath -s $Device forward "tcp:$IrisLocalPort" "tcp:$IrisRemotePort" | Out-Host
+try {
+  & $AdbPath -s $Device forward "tcp:$IrisLocalPort" "tcp:$IrisRemotePort" | Out-Host
+} catch {
+  Write-Err "ADB forward failed. The local port $IrisLocalPort may be occupied (PortProxy/Firewall/etc)."
+  throw
+}
 
 Write-Info "Starting IRIS on device (party.qwer.iris.Main)"
 $startCmd = "nohup sh -c 'CLASSPATH=/data/local/tmp/Iris.apk app_process / party.qwer.iris.Main' >/dev/null 2>&1 &"
