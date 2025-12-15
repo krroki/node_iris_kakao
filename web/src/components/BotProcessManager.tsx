@@ -37,6 +37,7 @@ type ApiResponse = {
   expectedKinds?: string[];
   kinds?: KindOverview[];
   summary?: any;
+  talkApiStatusFile?: StatusFileResult;
   error?: string;
 };
 
@@ -76,6 +77,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
   const [kinds, setKinds] = useState<KindOverview[]>([]);
   const [expectedKinds, setExpectedKinds] = useState<string[]>([]);
   const [summary, setSummary] = useState<any | null>(null);
+  const [talkApiStatusFile, setTalkApiStatusFile] = useState<StatusFileResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [killing, setKilling] = useState<number | null>(null);
@@ -89,6 +91,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
         setKinds(Array.isArray(data.kinds) ? data.kinds : []);
         setExpectedKinds(Array.isArray(data.expectedKinds) ? data.expectedKinds : []);
         setSummary(data.summary || null);
+        setTalkApiStatusFile(data.talkApiStatusFile || null);
         setError(null);
       } else {
         setError(String((data as any)?.error || 'unknown error'));
@@ -183,6 +186,20 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
     return { cls: 'tag-active', text: '정상' };
   }, [hasDuplicate, loading, missingKinds.length, staleKinds.length, totalCount]);
 
+  const talkApiTag = useMemo(() => {
+    const sf = talkApiStatusFile;
+    const data = sf?.data || null;
+    const ok = data?.ok === true;
+    const updatedAt = typeof data?.updatedAt === 'string' ? data.updatedAt : null;
+    const ageSec = updatedAt ? Math.floor(Math.max(0, Date.now() - new Date(updatedAt).getTime()) / 1000) : null;
+    const status = typeof data?.talkStatus === 'number' ? data.talkStatus : null;
+    if (!sf) return { cls: 'tag-excluded', text: 'Talk-API: 미확인', ageSec: null as number | null, status: null as number | null, updatedAt: null as string | null };
+    if (!sf.exists) return { cls: 'tag-excluded', text: 'Talk-API: 상태파일 없음', ageSec, status, updatedAt };
+    if (sf.error) return { cls: 'tag-inactive', text: 'Talk-API: 상태파일 오류', ageSec, status, updatedAt };
+    if (ok) return { cls: 'tag-active', text: `Talk-API: 정상${status != null ? `(${status})` : ''}`, ageSec, status, updatedAt };
+    return { cls: 'tag-error', text: `Talk-API: 실패${status != null ? `(${status})` : ''}`, ageSec, status, updatedAt };
+  }, [talkApiStatusFile]);
+
   const cleanupAllDuplicates = async () => {
     const duplicateKinds = kindKeys.filter((k) => (byKind[k]?.length || 0) > 1);
     if (duplicateKinds.length === 0) return;
@@ -263,6 +280,9 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
           {staleKinds.length > 0 && (
             <span className="tag tag-inactive">하트비트 경고(3분+): {staleKinds.join(', ')}</span>
           )}
+          <span className={`tag ${talkApiTag.cls}`} title={talkApiTag.updatedAt ? `updatedAt=${talkApiTag.updatedAt}` : undefined}>
+            {talkApiTag.text}{talkApiTag.ageSec != null ? ` · ${formatAge(talkApiTag.ageSec)}` : ''}
+          </span>
           {missingKinds.length === 0 && !hasDuplicate && staleKinds.length === 0 && (
             <span className="tag tag-active">모든 워커 정상 실행 중</span>
           )}
@@ -307,6 +327,11 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
           {hasDuplicate && (
             <div className="process-hint">
               - 중복 실행은 동일 메시지 다중 발송의 대표 원인입니다. 가능하면 <span className="process-mono">중복 일괄 정리(최신 유지)</span>로 정리하세요.
+            </div>
+          )}
+          {talkApiStatusFile?.exists && talkApiStatusFile?.data?.ok === false && (
+            <div className="process-hint">
+              - <span className="process-mono">Talk-API</span> 전송이 실패하면 멘션/답장(Reply)은 카카오톡에서 “진짜 멘션”으로 렌더링되지 못하고, 텍스트(<span className="process-mono">@닉네임</span>)로만 보일 수 있습니다. (상태: {safeText(talkApiStatusFile?.data?.talkStatus)})
             </div>
           )}
         </div>

@@ -160,6 +160,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 | Web 개발 서버(dev) | `windows/start_web.ps1 -Mode dev -Port 3100 -ForceKillPort` | 개발용(`next dev`, distDir `.next`). 시작 전 `.next` 삭제 실패 시 즉시 실패(폴백 금지) |
 | Watchdog 단독 기동 | `windows/watchdog.ps1` | `/status` 기반으로 bot/logStore 이상을 감지해 자동 재시작. 로그는 `windows/watchdog.log`에 기록되며 Web 홈에서 “Watchdog” 카드로 확인 가능 |
 | 포트프록시/ADB 설정 | `windows/setup_iris_port.ps1 -LocalPort 5050` | 기본 포트 5050. `adb cannot bind 127.0.0.1:5050 (10048)`이면 `netsh interface portproxy show v4tov4`에서 5050 listen 규칙 삭제 후 재실행 |
+| IRIS 자동 복구(ADB) | `windows/repair_redroid_iris.ps1 -Fix` | `http://127.0.0.1:5050/config`이 죽었을 때 ADB forward(5050→device:3000) 재설정 + Iris.apk(`party.qwer.iris.Main`) 프로세스를 재기동한다. watchdog가 IRIS 장애를 감지하면 자동으로 이 스크립트를 호출한다 |
 | 상태 점검 | `windows/probe_iris.ps1` | HTTP 200 여부 체크 |
 | WSL 봇 로그 모니터링 | `windows/tail_wsl_bot.ps1` | 실시간 로그 tail |
 | 포트프록시 해제/재설정 | `windows/tcp_proxy_iris.ps1` | 고급 네트워크 설정 |
@@ -219,6 +220,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 | Talk-API authHeader 추출(자동 스캔, root 필요) | `powershell -ExecutionPolicy Bypass -File scripts/extract_talkapi_auth.ps1` | 카카오톡 로컬 경로에서 토큰/UUID 후보를 스캔(성공 시 `data/`에 저장). 실패 시 후보를 레드랙트 출력 후 종료 |
 | Talk-API authHeader 캡처(Frida) | `python scripts/capture_talkapi_auth_frida.py` | KakaoTalk 앱에서 실제 Authorization/Duuid 헤더를 캡처해 `data/`에 저장(값은 레드랙트만 출력) |
 | Talk-API authHeader 검증(실발송, confirm 필요) | `python scripts/verify_talkapi_auth_candidates.py --chat-id <ROOM_ID> --confirm-send --auth-header-file data/talkapi_auth.txt` | 저장된 authHeader로 1회 전송하여 `status==0` 성공 여부를 확인(테스트 방 권장) |
+| Talk-API authHeader 스냅샷(보관) | `powershell -ExecutionPolicy Bypass -File scripts/snapshot_talkapi_auth.ps1` | 현재 `data/talkapi_auth.txt`를 `data/talkapi_auth_snapshots/`로 타임스탬프 스냅샷 보관(값은 레드랙트만 출력) |
+| Talk-API authHeader 재적용(파일 → 런타임) | `powershell -ExecutionPolicy Bypass -File scripts/ensure_talkapi_auth_applied.ps1 -Force` | `data/talkapi_auth.txt`를 Realtime API(`/runtime`)에 반영해 runtime.json 드리프트를 복구(응답은 토큰을 포함하므로 출력하지 않음) |
 | RAG 회귀 단독 실행 | `python scripts/verify_rag.py --base-url http://127.0.0.1:8610` | “사알못 다시보기 링크”, “12월 3일에 강의 있나”, “엉뚱한 질문” 등 핵심 질의를 자동화로 검증 |
 | RAG 예상 질문 20개 평가 | `python scripts/eval_rag_20_questions.py --suite member --base-url http://127.0.0.1:8610 --dump-md tmp\\rag_eval_member_20.md` | 카페 회원 관점 20문항을 일괄 호출해 라우팅/금지문구/URL 정책/가독성을 PASS/FAIL로 점검 (`--suite trained|creative|creative2|member|room455|edge|all`, LLM 모델 강제: `--llm-model gpt-4.1`) |
 | (추가) 창의/엣지 질문 20개(v2) | `python scripts/eval_rag_creative_20_v2.py` | 실사용/엣지 질문 20개로 빠르게 점검하고 `tmp/rag_eval_creative_20_v2.md`를 생성(금지문구/URL 중복/일반 상식 URL 정책 위반 자동 체크) |

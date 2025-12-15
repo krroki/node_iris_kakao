@@ -1,8 +1,11 @@
 param(
   [string]$VmName = 'redroid',
-  [string]$VmUser = 'kakao',
-  [int]$AdbPort = 5555,
-  [switch]$Fix
+  [int]$IrisLocalPort = 5050,
+  [int]$IrisRemotePort = 3000,
+  [switch]$Fix,
+  # ADB 대상(예: 172.30.x.x:5555). 미지정 시 `adb devices` 또는 Hyper-V MAC/ARP로 자동 추정.
+  [string]$Device = '',
+  [string]$AdbPath = "$env:USERPROFILE\scrcpy\scrcpy-win64-v3.1\adb.exe"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +14,16 @@ function Write-Info($msg)  { Write-Host "[repair] $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "[repair] $msg" -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "[repair] $msg" -ForegroundColor Yellow }
 function Write-Err($msg)   { Write-Host "[repair] $msg" -ForegroundColor Red }
+
+function Test-IrisConfig {
+  param([int]$Port)
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/config" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+    return ($r.StatusCode -eq 200)
+  } catch {
+    return $false
+  }
+}
 
 function Select-IPv4 {
   param([string[]]$Candidates)
@@ -57,14 +70,35 @@ function Get-RedroidVmIp {
   return $null
 }
 
-function Invoke-Vm {
-  param(
-    [string]$VmIp,
-    [string]$VmUser,
-    [string]$Command
-  )
-  Write-Info "ssh $VmUser@$VmIp $Command"
-  & ssh -i "$env:USERPROFILE\.ssh\redroid" -o BatchMode=yes -o ConnectTimeout=3 "$VmUser@$VmIp" $Command
+if (Test-IrisConfig -Port $IrisLocalPort) {
+  Write-Ok "IRIS /config OK (http://127.0.0.1:$IrisLocalPort/config)"
+  exit 0
+}
+
+if (-not $Fix) {
+  Write-Warn "IRIS /config 접속 실패(포트 $IrisLocalPort). -Fix로 자동 복구를 시도할 수 있습니다."
+  exit 1
+}
+
+# --- Fix path (ADB 기반) ---
+if (-not (Test-Path $AdbPath)) {
+  Write-Err "adb.exe not found: $AdbPath (scrcpy 설치/경로를 확인하세요)"
+  exit 1
+}
+
+function Get-FirstAdbDeviceId {
+  param([string]$AdbPath)
+  try {
+    $out = & $AdbPath devices 2>$null
+    if (-not $out) { return $null }
+    $lines = $out -split "`n"
+    foreach ($ln in $lines) {
+      $t = $ln.Trim()
+      if (-not $t -or $t -like 'List of devices*') { continue }
+      if ($t -match '^([^\s]+)\s+device$') { return $Matches[1] }
+    }
+  } catch {}
+  return $null
 }
 
 Write-Info "Checking Hyper-V VM state: $VmName"
@@ -74,83 +108,45 @@ if (-not $vm) {
   exit 1
 }
 if ($vm.State -ne 'Running') {
-  Write-Warn "VM '$VmName' is not running. Run 'Start-VM $VmName' and try again."
+  Write-Err "VM '$VmName' is not running. Run 'Start-VM $VmName' and try again."
   exit 1
 }
 
-$vmIp = Get-RedroidVmIp -Name $VmName
-if (-not $vmIp) {
-  Write-Err "IPv4 address for VM '$VmName' not found. Check Hyper-V network configuration."
+if (-not $Device) {
+  $Device = Get-FirstAdbDeviceId -AdbPath $AdbPath
+}
+if (-not $Device) {
+  $vmIp = Get-RedroidVmIp -Name $VmName
+  if ($vmIp) { $Device = "$vmIp:5555" }
+}
+if (-not $Device) {
+  Write-Err "ADB device를 자동 감지하지 못했습니다. -Device '<ip>:5555' 로 지정하세요."
   exit 1
 }
-Write-Ok "VM '$VmName' is running, IP=$vmIp"
 
-# Step 1: adb devices inside VM
-Write-Info "Checking adb devices inside VM"
+Write-Info "ADB connect: $Device"
+try { & $AdbPath connect $Device | Out-Host } catch {}
+
+Write-Info "ADB forward: $IrisLocalPort -> device:$IrisRemotePort"
+try { & $AdbPath -s $Device forward --remove "tcp:$IrisLocalPort" 2>$null | Out-Null } catch {}
+& $AdbPath -s $Device forward "tcp:$IrisLocalPort" "tcp:$IrisRemotePort" | Out-Host
+
+Write-Info "Starting IRIS on device (party.qwer.iris.Main)"
+$startCmd = "nohup sh -c 'CLASSPATH=/data/local/tmp/Iris.apk app_process / party.qwer.iris.Main' >/dev/null 2>&1 &"
 try {
-  $adbOutput = Invoke-Vm -VmIp $vmIp -VmUser $VmUser -Command "adb devices"
+  & $AdbPath -s $Device shell su root sh -c $startCmd | Out-Null
 } catch {
-  Write-Err "Failed to run 'adb devices' via ssh. Verify ssh $VmUser@$vmIp."
-  exit 1
+  Write-Warn "IRIS start command failed via adb: $($_.Exception.Message)"
 }
 
-$lines = $adbOutput -split "`n"
-$deviceLines = @()
-foreach ($ln in $lines) {
-  $t = $ln.Trim()
-  if ($t -and -not $t.StartsWith('List of devices attached')) {
-    $deviceLines += $t
-  }
-}
-
-if ($deviceLines.Count -gt 0 -and ($deviceLines | Where-Object { $_ -like '*device' }).Count -gt 0) {
-  Write-Ok "adb devices OK in VM: $($deviceLines -join ', ')"
-} else {
-  Write-Warn "No adb devices reported in VM."
-  if (-not $Fix) {
-    Write-Info "Dry mode: status only. Run with -Fix to attempt automatic adb recovery."
-  } else {
-    Write-Info "Restarting adb server and reconnecting 127.0.0.1:$AdbPort"
-    Invoke-Vm -VmIp $vmIp -VmUser $VmUser -Command "adb kill-server; adb start-server; adb connect 127.0.0.1:$AdbPort; adb devices"
-  }
-}
-
-# Step 2: IRIS /config health check inside VM
-Write-Info "Checking IRIS /config inside VM"
-try {
-  $httpCode = Invoke-Vm -VmIp $vmIp -VmUser $VmUser -Command "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/config"
-} catch {
-  $httpCode = "000"
-}
-
-if ($httpCode -eq "200") {
-  Write-Ok "IRIS /config 200 OK (inside VM)"
-  Write-Ok "Done. Redroid/IRIS device looks healthy based on current logs."
-  exit 0
-}
-
-Write-Warn "IRIS /config returned non-200 (code=$httpCode)."
-if ($Fix) {
-  Write-Info "Attempting iris_control restart"
-  # Run start + status in VM regardless of start result
-  Invoke-Vm -VmIp $vmIp -VmUser $VmUser -Command "cd ~/iris; ./iris_control start; ./iris_control status"
-
-  Write-Info "Re-checking IRIS /config after restart"
-  try {
-    $httpCode = Invoke-Vm -VmIp $vmIp -VmUser $VmUser -Command "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/config"
-  } catch {
-    $httpCode = "000"
-  }
-
-  if ($httpCode -eq "200") {
-    Write-Ok "IRIS /config 200 OK after restart"
-    Write-Ok "Done. Redroid/IRIS device looks healthy after restart."
+$deadline = (Get-Date).AddSeconds(20)
+do {
+  Start-Sleep -Milliseconds 800
+  if (Test-IrisConfig -Port $IrisLocalPort) {
+    Write-Ok "IRIS /config OK after recovery (http://127.0.0.1:$IrisLocalPort/config)"
     exit 0
-  } else {
-    Write-Err "IRIS /config still non-200 after restart (code=$httpCode). Manual investigation required."
-    exit 1
   }
-} else {
-  Write-Info "Fix mode is off. No restart was attempted. Run with -Fix to let iris_control restart IRIS."
-  exit 1
-}
+} while ((Get-Date) -lt $deadline)
+
+Write-Err "IRIS /config still not responding after ADB recovery. Manual investigation required."
+exit 1

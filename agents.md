@@ -148,6 +148,12 @@
   - Welcome(ADR-0027): 코어(bot)는 신규 입장 이벤트를 `member_joined`로 로그에 기록하고, welcome/후속답장은 `welcome-worker`가 담당한다.
   - Welcome 이미지(ADR-0030): welcome 템플릿의 `images`는 welcome-worker가 `/templates/assets/...`에서 다운로드→base64 변환 후 Realtime API `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달해 발신한다(SAFE_MODE 최종 차단 유지).
   - Talk-API 장애 폴백(ADR-0034): Talk-API 발신이 502로 실패할 때(`talkStatus != 0`) welcome-worker는 텍스트를 Realtime API `/send/iris/reply_text`로 **대체 발신**한다(멘션/Reply는 불가, 일반 텍스트만).
+    - 혼란 방지를 위해 폴백 텍스트에서는 `@닉네임`을 `닉네임`으로 치환한다(가짜 멘션 금지).
+    - 최근 실패/성공 상태: `node-iris-app/data/talkapi_status.json` (UI: 3100 `봇/워커 프로세스` 카드의 Talk-API 태그)
+    - authHeader 운영(캡처는 수동, 반영은 자동):
+      - 스냅샷: `scripts/snapshot_talkapi_auth.ps1` → `data/talkapi_auth_snapshots/`
+      - 런타임 반영: `scripts/ensure_talkapi_auth_applied.ps1` (상태 파일: `node-iris-app/data/talkapi_auth_apply_status.json`)
+      - 자동 실행: `windows/start_all.ps1`(부팅 시 1회) + `windows/watchdog.ps1`(기본 30분 주기)
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
     - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 AI 응답 텍스트는 `/send/iris/reply_text`로 대체 발신한다.
@@ -197,7 +203,10 @@
 - Google Sheets 업서트용 서비스 계정/시트 타겟은 **로컬 `data/`에서만** 관리한다(커밋 금지).
   - 서비스 계정 키: `data/gcp_service_account.json`
   - 시트 타겟(1회 등록): `data/openchat_members_sheets.json` (`python scripts/sync_openchat_members_to_sheets.py --init-config --spreadsheet-id <SHEET_ID_OR_URL>`)
-- IRIS 포트프록시는 `windows/setup_iris_port.ps1`(관리자 PowerShell) → `scripts/probe_iris.sh` 순으로 점검한다.  
+- IRIS(ADB forward + 로컬 포트) 점검/복구:
+  - 포트/ADB forward 설정: `windows/setup_iris_port.ps1 -LocalPort 5050 -Device '<REDROID_IP>:5555'`
+  - 상태 점검: `windows/probe_iris.ps1 -Port 5050`
+  - IRIS 프로세스가 죽었으면(HTTP 0/Empty reply 등): `windows/repair_redroid_iris.ps1 -Fix` (ADB로 Iris.apk `app_process` 재기동)
 - 데이터/로그 파일은 보관 목적일 경우 `data/`, `logs/` 하위에만 저장한다. 외부 경로에는 쓰지 않는다.
 - 경로 추측 금지: 변경 전 `ls`, `cat`으로 파일 존재를 직접 확인한다.
 - **Windows 기동 엔트리포인트(중요)**:

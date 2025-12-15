@@ -8,6 +8,7 @@ import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/
 import { tryServerIrisReplyMedia, tryServerIrisReplyText } from "../utils/iris";
 import { APP_ROOT } from "../utils/paths";
 import { resolveTemplateImageUrls } from "../utils/sender";
+import { stripAtMentionsForFallback } from "../utils/mentions";
 import DedupCache from "../services/dedupCache";
 
 type WelcomeEntrant = { name: string; senderId: string; joinedAt: number };
@@ -769,7 +770,8 @@ async function flushWelcome(roomId: string): Promise<void> {
   if (!okTalk) {
     // Talk-API가 불안정할 때 운영 연속성을 위해 IRIS /reply(text)로 대체 발신한다.
     // (멘션/Reply는 불가, 단순 텍스트만)
-    okIris = await tryServerIrisReplyText(logger, roomId, message, 12000);
+    const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
+    okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
   }
 
   const ok = okTalk || okIris;

@@ -188,6 +188,11 @@ if ($AccessToken -and $DeviceUUID) {
     Save-Secret -path $OutFile -content ($auth + "`n")
     Write-Log "authHeader 저장 완료: $OutFile (값은 미출력)"
     Write-Log ("accessToken=" + (Redact $AccessToken) + ", deviceUUID=" + (Redact $DeviceUUID))
+    # Snapshot (best-effort, do not fail capture flow)
+    try {
+        $snap = Join-Path $PSScriptRoot "snapshot_talkapi_auth.ps1"
+        if (Test-Path $snap) { & $snap -AuthFile $OutFile | Out-Null }
+    } catch {}
     if ($ApplyRuntime) {
         Apply-Runtime -base $RealtimeApiBase -authHeader $auth
         Write-Log "Realtime API runtime.json 반영 완료: talkApi.authHeader 업데이트"
@@ -286,6 +291,12 @@ $auth = ($access.Trim() + "-" + $device.Trim())
 Save-Secret -path $OutFile -content ($auth + "`n")
 Write-Log "authHeader 저장 완료: $OutFile (값은 미출력)"
 Write-Log ("accessToken=" + (Redact $access) + ", deviceUUID=" + (Redact $device))
+
+# Snapshot (best-effort, do not fail capture flow)
+try {
+    $snap = Join-Path $PSScriptRoot "snapshot_talkapi_auth.ps1"
+    if (Test-Path $snap) { & $snap -AuthFile $OutFile | Out-Null }
+} catch {}
 if ($ApplyRuntime) {
     Apply-Runtime -base $RealtimeApiBase -authHeader $auth
     Write-Log "Realtime API runtime.json 반영 완료: talkApi.authHeader 업데이트"

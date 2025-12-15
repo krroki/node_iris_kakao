@@ -12,7 +12,10 @@
 
 ## 채팅 명령어 사용법
 
-> 모든 응답은 **카카오톡 “답장(Reply)”** 형태(`type=26 + attachment.src_*`)로 발신된다.
+> 기본 응답은 **카카오톡 “답장(Reply)”** 형태(`type=26 + attachment.src_*`)로 발신된다.  
+> 단, Talk-API가 502/-500 등으로 실패하면(ADR-0034) IRIS `/reply_text`로 **일반 텍스트**를 발신하며,
+> 이 경우 카카오톡 UI에서 “답장”으로 렌더링되지 않는다.
+> - 혼란 방지를 위해 폴백 텍스트에는 `[답장 불가: Talk-API]` prefix가 붙는다.
 
 ### 1) 등록(방장/관리자만)
 
@@ -89,5 +92,5 @@ iris 계정 판정(우선순위):
    - `safeMode=false`
    - `talkApi.enabled=true` + `authHeader` 유효
 4) **Reply payload 필수값**
-   - `messageId(src_logId)`/`senderId(src_userId)`/`chat_rooms.link_id(src_linkId)`/`messageType(src_type)`가 누락되면 Reply 발신을 스킵한다(폴백 금지).
-
+   - `messageId(src_logId)`/`senderId(src_userId)`/`chat_rooms.link_id(src_linkId)`/`messageType(src_type)`가 누락되면 Reply 발신을 스킵한다(명시적 스킵/로그 기록).
+   - Talk-API 자체 전송이 실패하면 IRIS `/reply_text`로 “일반 메시지 폴백”이 발생할 수 있다(Reply 아님).

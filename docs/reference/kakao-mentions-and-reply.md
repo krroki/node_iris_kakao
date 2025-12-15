@@ -13,7 +13,9 @@
 
 관련 불변식(중요):
 - SAFE_MODE가 켜져 있으면 멘션/답장 포함 **모든 발신이 차단**되어야 한다.
-- “텍스트 폴백(그냥 @문자 찍기)”은 멘션/답장 기능을 대체하지 못한다. (폴백 금지)
+- Talk-API가 실패하면(예: `talkStatus=-500`) 멘션/답장 기능은 **대체 불가**다.
+  - 운영 연속성을 위해 IRIS `/reply_text` 폴백(ADR-0034)을 허용할 수 있으나, 이 경우 카카오톡 UI에서 “진짜 멘션/답장”으로 렌더링되지 않는다.
+  - 혼란 방지를 위해 폴백 텍스트에서는 `@닉네임`을 `닉네임`으로 치환한다(가짜 멘션 금지).
 
 ---
 
@@ -152,3 +154,23 @@
   - Welcome(기본): `node-iris-app/src/workers/welcome_worker.ts` (core는 `member_joined` 기록만)
   - Reply(기본): `node-iris-app/src/workers/welcome_worker.ts`, `server/app.py`(`_coerce_reply_attachment_types`)
   - Reply(레거시): `node-iris-app/src/services/welcomeFollowUp.ts`, `server/app.py`(`_coerce_reply_attachment_types`)
+
+---
+
+## 5) 트러블슈팅: 멘션이 `@닉네임` 텍스트로만 보일 때
+
+대부분 아래 케이스다:
+
+- **Talk-API 전송 실패 → 텍스트 폴백으로 내려감**
+  - 확인 방법(권장):
+    - 대시보드(3100) `봇/워커 프로세스` 카드의 **Talk-API 태그** 확인
+    - 또는 상태 파일 확인: `node-iris-app/data/talkapi_status.json`
+  - 자주 보이는 상태:
+    - `talkStatus = -500` (Talk-API는 응답했지만 “카카오 내부 발신”이 실패한 상태)
+  - 이 상태에서는:
+    - `attachment.mentions`가 전달되더라도 실제 발신이 실패하므로 **멘션/답장 렌더링을 기대할 수 없다**
+    - 폴백 텍스트는 혼란 방지 목적으로 `@`를 제거한다(“멘션처럼 보이는 텍스트” 금지)
+
+다음 조치(근본 해결):
+- Redroid 카카오톡 **로그인 상태/세션 유지** 확인
+- Talk-API `authHeader(accessToken-deviceUUID)` 재캡처/갱신(관련 ADR 참고: `docs/adr/ADR-0024-talkapi-authheader-capture.md`)

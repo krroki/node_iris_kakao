@@ -38,6 +38,8 @@ param(
   [int]$CommandWorkerRestartCooldownSec = 120,
   [int]$RosterWorkerRestartCooldownSec = 120,
   [int]$OpenchatMembersSheetsWorkerRestartCooldownSec = 120,
+  # Talk-API authHeader 재적용(파일 → /runtime) 주기: 캡처는 수동, 반영은 자동으로 드리프트를 줄인다.
+  [int]$TalkApiAuthSyncIntervalSec = 1800,
   [int]$IrisRepairCooldownSec = 300,
   [int]$IrisFailThreshold = 3
 )
@@ -65,6 +67,7 @@ $startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_opencha
 $smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
 $repairScript = Join-Path $root "windows\repair_redroid_iris.ps1"
 $kbServiceScript = Join-Path $root "windows\kb_service.ps1"
+$ensureTalkApiAuthScript = Join-Path $root "scripts\ensure_talkapi_auth_applied.ps1"
 
 $script:lastBotRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastPipelineRestartAt = Get-Date '2000-01-01T00:00:00Z'
@@ -76,6 +79,7 @@ $script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastCommandWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastOpenchatMembersSheetsWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastTalkApiAuthSyncAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
 $script:webFailCount = 0
 $script:webRestartAttemptsSinceOk = 0
@@ -918,6 +922,22 @@ try
         Restart-KB -Reason ("KB stage not ok. {0}" -f $detail)
       }
     } catch {}
+
+    # Talk-API authHeader sync (best-effort): data/talkapi_auth.txt → /runtime talkApi.authHeader
+    try {
+      if (Test-Path $ensureTalkApiAuthScript) {
+        $now2 = Get-Date
+        $cooldownUntil = $script:lastTalkApiAuthSyncAt.AddSeconds([math]::Max(60, $TalkApiAuthSyncIntervalSec))
+        if ($now2 -ge $cooldownUntil) {
+          $script:lastTalkApiAuthSyncAt = $now2
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ensureTalkApiAuthScript -RealtimeApiBase $ApiBase -MinIntervalSec $TalkApiAuthSyncIntervalSec 2>&1 | ForEach-Object {
+            Write-Log -Level 'INFO' -Message "[talkapi_auth] $_"
+          }
+        }
+      }
+    } catch {
+      Write-Log -Level 'WARN' -Message "Talk-API auth sync 실패: $($_.Exception.Message)"
+    }
     $deviceStage = $stages.device
 
     $summary = "device={0} bot={1} logStore={2} realtime={3}" -f $deviceStage.ok, $botStage.ok, $logStage.ok, $stages.realtime.ok

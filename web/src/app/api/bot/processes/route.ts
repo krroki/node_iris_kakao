@@ -34,6 +34,8 @@ const STATUS_PATH_BY_KIND: Record<ExpectedKind, string> = {
   'command-worker': path.join(ROOT, 'node-iris-app', 'data', 'command_worker_status.json'),
 };
 
+const TALKAPI_STATUS_PATH = path.join(ROOT, 'node-iris-app', 'data', 'talkapi_status.json');
+
 const toRepoRelativePath = (p: string) => {
   try {
     return path.relative(ROOT, p).split(path.sep).join('/');
@@ -93,6 +95,7 @@ export async function GET() {
       EXPECTED_KINDS.map(async (kind) => [kind, await readJsonFile(STATUS_PATH_BY_KIND[kind])] as const)
     );
     const statusFiles = Object.fromEntries(statusFilesEntries) as Record<ExpectedKind, StatusFileResult>;
+    const talkApiStatusFile = await readJsonFile(TALKAPI_STATUS_PATH);
 
     const kinds = EXPECTED_KINDS.map((kind) => {
       const running = [...(byKind[kind] || [])].sort((a, b) => {
@@ -140,6 +143,7 @@ export async function GET() {
       expectedKinds: EXPECTED_KINDS,
       kinds,
       summary,
+      talkApiStatusFile,
     });
   } catch (error: any) {
     return NextResponse.json({

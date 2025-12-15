@@ -47,6 +47,19 @@
   - UI: 방 카드 “명령어(FAQ)” 토글 → `runtime.features[roomId].commands=true`
   - 기능: `!등록/!삭제/!명령어/!전체등록/!키` (덮어쓰기 금지, 삭제 후 재등록)
   - 권한: 등록/삭제는 방장/관리자만, 전체등록은 iris 계정만
-  - 발신: Talk-API Reply(type=26)로만 응답(attachment `src_*` 포함)
+  - 발신: 기본은 Talk-API Reply(type=26)로 응답(attachment `src_*` 포함), Talk-API 실패 시 텍스트는 IRIS `/reply_text`로 명시적 폴백(Reply 아님, prefix 포함)
   - 운영: `windows/start_command_worker.ps1`, `windows/start_all.ps1`, `windows/watchdog.ps1` 연동 + 프로세스 UI(`/api/bot/processes`)에 `command-worker` 추가
   - 문서: `docs/adr/ADR-0035-room-command-triggers-worker.md`, `docs/reference/kakao-room-command-triggers.md`
+
+- 멘션(@)이 “텍스트(@닉네임)”로만 보이는 혼란 대응:
+  - 원인: Talk-API dispatch 실패(`talkStatus=-500`) → (허용된) 텍스트 폴백 경로로 degrade
+  - 조치: `tryServerTalkApiDispatch*`가 최근 전송 상태를 `node-iris-app/data/talkapi_status.json`에 기록하고, UI(3100) `봇/워커 프로세스` 카드에 Talk-API 태그로 노출
+- 폴백 텍스트: “가짜 멘션”을 만들지 않도록 `@닉네임` → `닉네임` 치환(`node-iris-app/src/utils/mentions.ts`)
+- 운영 편의: authHeader 파일(`data/talkapi_auth.txt`)이 갱신되면 스냅샷(`data/talkapi_auth_snapshots/`)을 남기고, watchdog/start_all이 `/runtime`에 자동 반영해 드리프트를 줄임(`scripts/ensure_talkapi_auth_applied.ps1`)
+
+- IRIS(5050)가 “응답 없음/Empty reply”로 죽어 `/query` 기반 기능(command-worker 등)이 멈추는 케이스를 확인.
+  - 원인: Redroid 단말에서 IRIS 프로세스(`party.qwer.iris.Main`, Iris.apk)가 내려간 상태
+  - 조치:
+    - `windows/setup_iris_port.ps1`로 ADB forward(5050→device:3000) 재설정
+    - `windows/repair_redroid_iris.ps1 -Fix`를 **SSH 의존 없이 ADB 기반**으로 개편해, watchdog가 IRIS를 자동 재기동할 수 있도록 수정
+  - 검증: `http://127.0.0.1:5050/config` 200 복구 + Node fetch `/query` 정상화 확인

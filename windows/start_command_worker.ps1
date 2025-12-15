@@ -1,6 +1,7 @@
 param(
   [int]$TimeoutSec = 45,
   [string]$LogDir = '',
+  [string]$IrisUrl = 'http://127.0.0.1:5050',
   [switch]$SkipBuild,
   [int]$BuildTimeoutSec = 120,
   [switch]$Restart
@@ -14,6 +15,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $botDir = Join-Path $root 'node-iris-app'
 Set-Location -LiteralPath $botDir
+
+# Always set IRIS_URL explicitly so `.env`(legacy WSL/remote) 값에 덮이지 않도록 한다.
+if ($IrisUrl) {
+  $env:IRIS_URL = $IrisUrl
+  $env:IRIS_BRIDGE_URL = $IrisUrl
+}
 
 if (-not $LogDir) { $LogDir = Join-Path $root 'windows\logs' }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -173,4 +180,3 @@ if ($ready) {
   Write-Host ("[command-worker] FAILED (process exited). See logs {0} / {1}" -f $outLog, $errLog) -ForegroundColor Red
   exit 1
 }
-

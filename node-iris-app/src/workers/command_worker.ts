@@ -4,6 +4,7 @@ import path from "path";
 
 import DedupCache from "../services/dedupCache";
 import { APP_ROOT } from "../utils/paths";
+import { tryServerIrisReplyText } from "../utils/iris";
 import { tryServerTalkApiDispatchRaw } from "../utils/talkapi";
 
 type StreamEntry = {
@@ -501,7 +502,13 @@ async function sendReplyToMessage(opts: {
   }
 
   const ok = await tryServerTalkApiDispatchRaw(logger, roomId, replyText, 26, replyAttachment, 12000);
-  return ok;
+  if (ok) return true;
+
+  // Talk-API Reply가 실패하면 운영 연속성을 위해 IRIS /reply_text로 "명시적 폴백"한다.
+  // - 카카오톡 UI에서 답장으로 렌더링되지는 않으므로 혼란 방지를 위해 prefix를 붙인다.
+  const fallbackText = `[답장 불가: Talk-API] ${replyText}`;
+  const okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+  return okIris;
 }
 
 function buildListMessage(roomKeys: string[], globalKeys: string[]): string {
@@ -569,6 +576,8 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
     cmd.kind === "register" || cmd.kind === "delete" || cmd.kind === "global_register" || cmd.kind === "list";
   if (!featureOn) {
     if (!isMgmt) return;
+    const dedupKey = safeString(ent.uid) || `${roomId}:${srcLogId}:${normalizeKey(srcMessage)}`;
+    if (EVENT_DEDUP.isDuplicate(dedupKey)) return;
     if (!srcLogId || !senderId) return;
     await sendReplyToMessage({
       runtime,

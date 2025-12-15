@@ -111,6 +111,15 @@ authHeader 반영은 다음 중 한 방식으로 수행한다.
 - Web UI(`/settings`)의 “파일에서 자동 적용” 버튼: `data/talkapi_auth.txt`를 읽어 `/runtime`에 `talkApi.enabled=true` + `talkApi.authHeader`를 반영한다.
 - CLI: `/runtime`에 `talkApi.authHeader`를 POST한다(필요 시 `talkApi.enabled=true`도 함께 설정).
 
+추가(운영 자동화, 캡처는 수동):
+
+- **스냅샷 보관**: authHeader를 저장할 때마다 `data/talkapi_auth_snapshots/`에 타임스탬프 스냅샷을 남긴다(값은 미출력).
+  - PowerShell: `scripts/snapshot_talkapi_auth.ps1`
+  - Frida 캡처/추출 스크립트에서도 best-effort로 스냅샷을 남긴다.
+- **드리프트 자동 복구(파일 → 런타임)**: `data/talkapi_auth.txt`가 갱신되면 운영 중에도 `/runtime`에 자동 반영해 “재기동 때만 반영/잊어버림”을 줄인다.
+  - PowerShell: `scripts/ensure_talkapi_auth_applied.ps1` (상태 파일: `node-iris-app/data/talkapi_auth_apply_status.json`)
+  - `windows/start_all.ps1` 부팅 시 1회 best-effort 실행 + `windows/watchdog.ps1`에서 주기적으로 실행(기본 30분)
+
 ---
 
 ## Invariants (불변식)

@@ -101,6 +101,17 @@ Write-Host '[all] starting API'
 
 Start-Sleep -Seconds 1
 
+# Talk-API authHeader: data/talkapi_auth.txt → /runtime talkApi.authHeader (best-effort)
+try {
+  $ensure = Join-Path $root 'scripts\ensure_talkapi_auth_applied.ps1'
+  if (Test-Path $ensure) {
+    Write-Host '[all] ensuring Talk-API authHeader from file (best-effort)'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ensure -RealtimeApiBase $env:REALTIME_API_BASE -MinIntervalSec 60 | ForEach-Object { Write-Host "[all] $_" }
+  }
+} catch {
+  Write-Host ("[all] Talk-API auth ensure skipped: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+}
+
 # Start KB service (8610) with same ENV (KB_SCHED_*)
 Write-Host '[all] starting KB service'
 & (Join-Path $PSScriptRoot 'kb_service.ps1') -Port 8610 -TimeoutSec 45

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import urllib.request
+import hashlib
 
 
 def _redact(s: str) -> str:
@@ -40,7 +41,50 @@ def _redact(s: str) -> str:
         return ""
     if len(s) <= 8:
         return "***"
-    return s[:4] + "…" + s[-4:]
+    return s[:4] + "..." + s[-4:]
+
+
+def _snapshot_auth_file(out_path: Path, auth_header: str) -> None:
+    """authHeader 스냅샷을 data/ 하위에 저장한다(커밋 금지)."""
+    try:
+        auth_header = str(auth_header or "").strip()
+        if not auth_header:
+            return
+        snap_dir = out_path.parent / "talkapi_auth_snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        latest_path = snap_dir / "latest.json"
+
+        h = hashlib.sha256(auth_header.encode("utf-8")).hexdigest()
+        prev_hash = ""
+        try:
+            if latest_path.exists():
+                prev = json.loads(latest_path.read_text(encoding="utf-8") or "{}")
+                prev_hash = str(prev.get("hash") or "")
+        except Exception:
+            prev_hash = ""
+
+        if prev_hash and prev_hash == h:
+            return
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        snap_file = snap_dir / f"talkapi_auth.{ts}.txt"
+        snap_file.write_text(auth_header + "\n", encoding="utf-8")
+
+        parts = auth_header.split("-", 1)
+        authorization = parts[0] if parts else ""
+        duuid = parts[1] if len(parts) > 1 else ""
+
+        meta = {
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "sourceFile": str(out_path),
+            "snapshot": str(snap_file),
+            "hash": h,
+            "redacted": {"authorization": _redact(authorization), "duuid": _redact(duuid)},
+        }
+        latest_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        # snapshot은 best-effort이며 캡처 플로우를 막지 않는다.
+        return
 
 
 def _require_cmd(name: str) -> None:
@@ -721,6 +765,7 @@ def main(argv: list[str]) -> int:
             out_path = Path(args.out_file)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(auth_header + "\n", encoding="utf-8")
+            _snapshot_auth_file(out_path, auth_header)
 
             print(
                 "[OK] authHeader 캡처 완료: "

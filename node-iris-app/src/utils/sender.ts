@@ -3,6 +3,7 @@ import { downloadUrlAsBase64 } from "./download";
 import { tryServerIrisReplyMedia } from "./iris";
 import { tryServerTalkApiDispatch } from "./talkapi";
 import { isSafeMode } from "./guard";
+import { stripAtMentionsForFallback } from "./mentions";
 
 function roomIdOf(context: ChatContext): string {
   try {
@@ -271,7 +272,8 @@ export async function safeReplyWithMentions(
       roomId: rid,
       count: mlist.length,
     });
-    await safeReply(logger, context, finalText, timeoutMs);
+    const fallbackText = stripAtMentionsForFallback(finalText, mlist);
+    await safeReply(logger, context, fallbackText, timeoutMs);
     return;
   }
 
