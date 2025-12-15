@@ -132,6 +132,86 @@ function Test-Http200 {
   return ($resp.StatusCode -eq 200)
 }
 
+function Test-WebUiOk {
+  param(
+    [int]$Port,
+    [int]$TimeoutSec = 2
+  )
+  # NOTE:
+  # - /api/ping(200)만으로는 UI가 "남색 배경만" 뜨는 상태를 잡아내지 못한다.
+  #   (Next는 살아있지만 /_next/static 자산이 404이면 브라우저에서 JS/CSS가 로드되지 않아 빈 화면이 된다)
+  # - 따라서 "/" HTML에서 참조하는 /_next/static 자산 1개가 실제 200인지까지 확인한다.
+  $base = "http://127.0.0.1:$Port"
+  $out = @{ ok = $false; detail = "" }
+
+  try {
+    $pingOk = $false
+    try { $pingOk = Test-Http200 -Url ("{0}/api/ping" -f $base) -TimeoutSec $TimeoutSec } catch { $pingOk = $false }
+    if (-not $pingOk) {
+      $out.detail = "/api/ping not 200"
+      return $out
+    }
+  } catch {
+    $out.detail = "/api/ping error: $($_.Exception.Message)"
+    return $out
+  }
+
+  $html = ""
+  try {
+    $params = @{
+      Uri         = ("{0}/" -f $base)
+      TimeoutSec  = $TimeoutSec
+      Method      = 'GET'
+      ErrorAction = 'Stop'
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) { $params['UseBasicParsing'] = $true }
+    $resp = Invoke-WebRequest @params
+    if ($resp.StatusCode -ne 200) {
+      $out.detail = "/ not 200 (HTTP $($resp.StatusCode))"
+      return $out
+    }
+    $html = [string]$resp.Content
+  } catch {
+    $out.detail = "/ fetch error: $($_.Exception.Message)"
+    return $out
+  }
+
+  if (-not $html -or $html.Length -lt 2000) {
+    $out.detail = "/ html too small"
+    return $out
+  }
+
+  $assetPath = $null
+  try {
+    # href="/_next/static/css/<hash>.css" or src="/_next/static/chunks/<hash>.js"
+    $m = [regex]::Match($html, '/_next/static/[^\s"<>]+\.(?:css|js)')
+    if ($m.Success) { $assetPath = [string]$m.Value }
+  } catch {
+    $assetPath = $null
+  }
+
+  if (-not $assetPath) {
+    $out.detail = "no /_next/static asset in HTML"
+    return $out
+  }
+
+  try {
+    $assetOk = $false
+    try { $assetOk = Test-Http200 -Url ("{0}{1}" -f $base, $assetPath) -TimeoutSec $TimeoutSec } catch { $assetOk = $false }
+    if (-not $assetOk) {
+      $out.detail = "static asset not 200: $assetPath"
+      return $out
+    }
+  } catch {
+    $out.detail = "static asset check error: $($_.Exception.Message)"
+    return $out
+  }
+
+  $out.ok = $true
+  $out.detail = "ok"
+  return $out
+}
+
 function Get-ApiPort {
   try { return ([uri]$ApiBase).Port } catch { return 8650 }
 }
@@ -782,8 +862,13 @@ try
     }
 
     # Web health check: API가 살아있는데 web만 죽는 케이스(next dev/build 충돌, 산출물 파손 등)를 감지해 web만 우선 복구한다.
+    # - /api/ping(200)만으로는 정적 자산 404로 인한 "빈 화면"을 놓칠 수 있어, /_next/static까지 확인한다.
+    $webCheck = $null
+    try { $webCheck = Test-WebUiOk -Port $WebPort -TimeoutSec 2 } catch { $webCheck = @{ ok = $false; detail = "Test-WebUiOk threw: $($_.Exception.Message)" } }
     $webOk = $false
-    try { $webOk = Test-Http200 -Url ("http://127.0.0.1:{0}/api/ping" -f $WebPort) -TimeoutSec 2 } catch { $webOk = $false }
+    $webDetail = ""
+    try { $webOk = ($webCheck.ok -eq $true) } catch { $webOk = $false }
+    try { $webDetail = [string]$webCheck.detail } catch { $webDetail = "" }
     if ($webOk) {
       if ($script:webFailCount -gt 0 -or $script:webRestartAttemptsSinceOk -gt 0) {
         Write-Log -Level 'INFO' -Message ("WEB 정상 복귀(연속 실패 {0}회, 재시작 시도 {1}회 -> 0)" -f $script:webFailCount, $script:webRestartAttemptsSinceOk)
@@ -792,13 +877,14 @@ try
       $script:webRestartAttemptsSinceOk = 0
     } else {
       $script:webFailCount++
-      Write-Log -Level 'WARN' -Message ("WEB /api/ping 실패(연속 {0}회)" -f $script:webFailCount)
+      $detail2 = if ($webDetail) { " detail=$webDetail" } else { "" }
+      Write-Log -Level 'WARN' -Message ("WEB UI 체크 실패(연속 {0}회).{1}" -f $script:webFailCount, $detail2)
       if ($script:webFailCount -ge $WebFailThreshold) {
         # 첫 재시작은 일반 모드, 반복 실패 시 CleanBuild로 산출물 파손까지 복구 시도
         $useClean = ($script:webRestartAttemptsSinceOk -ge 1)
         $detail = ""
         try { $detail = [string]$apiStatus.detail } catch { $detail = "" }
-        Restart-Web -Reason ("WEB /api/ping 연속 실패($($script:webFailCount)회). $detail") -CleanBuild:$useClean | Out-Null
+        Restart-Web -Reason ("WEB UI 체크 연속 실패($($script:webFailCount)회). $webDetail $detail") -CleanBuild:$useClean | Out-Null
       }
     }
 

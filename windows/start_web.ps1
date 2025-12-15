@@ -70,6 +70,74 @@ function Get-ListeningPids {
   return @($pids | Sort-Object -Unique)
 }
 
+function Test-WebStaticOk {
+  param(
+    [int]$Port,
+    [int]$TimeoutSec = 2
+  )
+  $base = "http://127.0.0.1:$Port"
+  $out = @{ ok = $false; detail = "" }
+  $html = ""
+
+  try {
+    $params = @{
+      Uri         = ("{0}/" -f $base)
+      TimeoutSec  = $TimeoutSec
+      Method      = 'GET'
+      ErrorAction = 'Stop'
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) { $params['UseBasicParsing'] = $true }
+    $resp = Invoke-WebRequest @params
+    if ($resp.StatusCode -ne 200) {
+      $out.detail = "/ not 200 (HTTP $($resp.StatusCode))"
+      return $out
+    }
+    $html = [string]$resp.Content
+  } catch {
+    $out.detail = "/ fetch error: $($_.Exception.Message)"
+    return $out
+  }
+
+  if (-not $html -or $html.Length -lt 2000) {
+    $out.detail = "/ html too small"
+    return $out
+  }
+
+  $assetPath = $null
+  try {
+    # href="/_next/static/css/<hash>.css" or src="/_next/static/chunks/<hash>.js"
+    $m = [regex]::Match($html, '/_next/static/[^\s"<>]+\.(?:css|js)')
+    if ($m.Success) { $assetPath = [string]$m.Value }
+  } catch { $assetPath = $null }
+
+  if (-not $assetPath) {
+    $out.detail = "no /_next/static asset in HTML"
+    return $out
+  }
+
+  try {
+    $params2 = @{
+      Uri         = ("{0}{1}" -f $base, $assetPath)
+      TimeoutSec  = $TimeoutSec
+      Method      = 'GET'
+      ErrorAction = 'Stop'
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) { $params2['UseBasicParsing'] = $true }
+    $resp2 = Invoke-WebRequest @params2
+    if ($resp2.StatusCode -ne 200) {
+      $out.detail = "static asset not 200: $assetPath (HTTP $($resp2.StatusCode))"
+      return $out
+    }
+  } catch {
+    $out.detail = "static asset fetch error: $assetPath ($($_.Exception.Message))"
+    return $out
+  }
+
+  $out.ok = $true
+  $out.detail = "ok"
+  return $out
+}
+
 Write-Host ("[web] mode={0} starting on :{1} (timeout {2}s)" -f $Mode, $Port, $TimeoutSec) -ForegroundColor Green
 
 $npmExe = 'npm.cmd'
@@ -130,98 +198,134 @@ if (-not (Test-Path 'node_modules')) {
 }
 
 # Build/Cache policy
-if ($Mode -eq 'dev') {
-  # dev cache는 깨진 상태로 시작하면 overlay/번들 오류가 누적되므로, 삭제 실패 시 즉시 중단한다.
-  $devDir = Join-Path $web '.next'
-  if (Test-Path $devDir) {
-    Write-Host '[web] dev cache(.next) 정리' -ForegroundColor Cyan
-    try { Remove-Item -Recurse -Force $devDir } catch { throw ".next 삭제 실패(잠금/권한): $($_.Exception.Message)" }
-  }
-  # Prefer binding to loopback explicitly to dodge service collisions
-  $proc = Start-LoggedProcess node @('node_modules/next/dist/bin/next','dev','-p',"$Port",'--hostname',"$Hostname") $outLog $errLog
-} else {
-  # prod: .next-prod를 사용한다(next.config.mjs distDir)
-  $env:NODE_ENV = 'production'
-  $prodDir = Join-Path $web '.next-prod'
-  $buildId = Join-Path $prodDir 'BUILD_ID'
-
-  # `.next-prod` 산출물이 부분 삭제/불일치 상태면(next chunk require 실패 등)
-  # BUILD_ID가 있어도 실행 중에 MODULE_NOT_FOUND가 반복될 수 있으므로, 필수 디렉터리 누락을 감지해 강제 재빌드한다.
-  if (-not $CleanBuild -and -not $SkipBuild -and (Test-Path $buildId)) {
-    $required = @(
-      (Join-Path $prodDir 'server\app'),
-      (Join-Path $prodDir 'server\chunks'),
-      (Join-Path $prodDir 'server\pages')
-    )
-    $missing = @($required | Where-Object { -not (Test-Path $_) })
-    if ($missing.Count -gt 0) {
-      $missText = ($missing -join ', ')
-      Write-Host ("[web] .next-prod 산출물 손상 감지(누락: {0}) → .next-prod 삭제 후 재빌드" -f $missText) -ForegroundColor Yellow
-      try { Remove-Item -Recurse -Force $prodDir } catch { throw ".next-prod 삭제 실패(잠금/권한): $($_.Exception.Message)" }
-    }
-  }
-
-  if ($CleanBuild -and (Test-Path $prodDir)) {
-    Write-Host '[web] -CleanBuild 지정됨 → .next-prod 삭제' -ForegroundColor Yellow
-    try { Remove-Item -Recurse -Force $prodDir } catch { throw ".next-prod 삭제 실패(잠금/권한): $($_.Exception.Message)" }
-  }
-
-  if (-not $SkipBuild) {
-    if (-not (Test-Path $buildId)) {
-      Write-Host '[web] .next-prod 빌드 없음 → npm run build 실행' -ForegroundColor Cyan
-      & $npmExe run build *>> $outLog 2>> $errLog
-      if ($LASTEXITCODE -ne 0) { throw "npm run build 실패 (exit=$LASTEXITCODE). 로그: $outLog / $errLog" }
-    }
-  } else {
-    if (-not (Test-Path $buildId)) {
-      throw "SkipBuild 지정됨 but BUILD_ID가 없습니다: $buildId"
-    }
-  }
-
-  # Prefer binding to loopback explicitly to dodge service collisions
-  $proc = Start-LoggedProcess node @('node_modules/next/dist/bin/next','start','-p',"$Port",'--hostname',"$Hostname") $outLog $errLog
+$maxAttempts = 1
+if ($Mode -eq 'prod' -and -not $SkipBuild -and -not $CleanBuild) {
+  # 1차 기동 후 "/ + /_next/static" 체크가 실패하면, 동일 실행 내에서 CleanBuild로 1회 자가복구한다.
+  $maxAttempts = 2
 }
 
-# 최신 로그 파일 경로를 별도 포인터로 남긴다(rotate/rename 잠금(WinError 32)으로 기동이 실패하지 않게 하기 위함).
-try {
-  $latest = @{
-    startedAt = (Get-Date).ToString('o')
-    runId     = $runId
-    mode      = $Mode
-    port      = $Port
-    hostname  = $Hostname
-    pid       = $proc.Id
-    outLog    = $outLog
-    errLog    = $errLog
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+  $attemptClean = ($attempt -ge 2) -or $CleanBuild
+  $suffix = if ($attempt -ge 2) { ".retry$attempt" } else { "" }
+  $outLog2 = $outLog -replace '\.log$', ("{0}.log" -f $suffix)
+  $errLog2 = $errLog -replace '\.log$', ("{0}.log" -f $suffix)
+
+  if ($Mode -eq 'dev') {
+    # dev cache는 깨진 상태로 시작하면 overlay/번들 오류가 누적되므로, 삭제 실패 시 즉시 중단한다.
+    $devDir = Join-Path $web '.next'
+    if (Test-Path $devDir) {
+      Write-Host '[web] dev cache(.next) 정리' -ForegroundColor Cyan
+      try { Remove-Item -Recurse -Force $devDir } catch { throw ".next 삭제 실패(잠금/권한): $($_.Exception.Message)" }
+    }
+    $proc = Start-LoggedProcess node @('node_modules/next/dist/bin/next','dev','-p',"$Port",'--hostname',"$Hostname") $outLog2 $errLog2
+  } else {
+    # prod: .next-prod를 사용한다(next.config.mjs distDir)
+    $env:NODE_ENV = 'production'
+    $prodDir = Join-Path $web '.next-prod'
+    $buildId = Join-Path $prodDir 'BUILD_ID'
+
+    # `.next-prod` 산출물이 부분 삭제/불일치 상태면(next chunk require 실패 등)
+    # BUILD_ID가 있어도 실행 중에 MODULE_NOT_FOUND가 반복될 수 있으므로, 필수 디렉터리 누락을 감지해 강제 재빌드한다.
+    if (-not $attemptClean -and -not $SkipBuild -and (Test-Path $buildId)) {
+      $required = @(
+        (Join-Path $prodDir 'server\app'),
+        (Join-Path $prodDir 'server\chunks'),
+        (Join-Path $prodDir 'server\pages'),
+        (Join-Path $prodDir 'static')
+      )
+      $missing = @($required | Where-Object { -not (Test-Path $_) })
+      if ($missing.Count -gt 0) {
+        $missText = ($missing -join ', ')
+        Write-Host ("[web] .next-prod 산출물 손상 감지(누락: {0}) → .next-prod 삭제 후 재빌드" -f $missText) -ForegroundColor Yellow
+        try { Remove-Item -Recurse -Force $prodDir } catch { throw ".next-prod 삭제 실패(잠금/권한): $($_.Exception.Message)" }
+      }
+    }
+
+    if ($attemptClean -and (Test-Path $prodDir)) {
+      Write-Host '[web] CleanBuild → .next-prod 삭제' -ForegroundColor Yellow
+      try { Remove-Item -Recurse -Force $prodDir } catch { throw ".next-prod 삭제 실패(잠금/권한): $($_.Exception.Message)" }
+    }
+
+    if (-not $SkipBuild) {
+      if (-not (Test-Path $buildId)) {
+        Write-Host '[web] .next-prod 빌드 없음 → npm run build 실행' -ForegroundColor Cyan
+        & $npmExe run build *>> $outLog2 2>> $errLog2
+        if ($LASTEXITCODE -ne 0) { throw "npm run build 실패 (exit=$LASTEXITCODE). 로그: $outLog2 / $errLog2" }
+      }
+    } else {
+      if (-not (Test-Path $buildId)) {
+        throw "SkipBuild 지정됨 but BUILD_ID가 없습니다: $buildId"
+      }
+    }
+
+    $proc = Start-LoggedProcess node @('node_modules/next/dist/bin/next','start','-p',"$Port",'--hostname',"$Hostname") $outLog2 $errLog2
   }
-  $latest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $latestPath -Encoding UTF8
-} catch {}
 
-$deadline = (Get-Date).AddSeconds([math]::Max(5,$TimeoutSec))
-do {
-  Start-Sleep -Seconds 1
+  # 최신 로그 파일 경로를 별도 포인터로 남긴다(rotate/rename 잠금(WinError 32)으로 기동이 실패하지 않게 하기 위함).
   try {
-    if ($proc -and $proc.HasExited) {
-      Write-Host "[web] FAILED: next process exited early (pid=$($proc.Id)). See logs: $outLog / $errLog" -ForegroundColor Yellow
-      break
+    $latest = @{
+      startedAt = (Get-Date).ToString('o')
+      runId     = $runId
+      mode      = $Mode
+      port      = $Port
+      hostname  = $Hostname
+      pid       = $proc.Id
+      outLog    = $outLog2
+      errLog    = $errLog2
     }
-  } catch { }
-  try {
-    $params = @{
-      Uri        = "http://127.0.0.1:$Port/api/ping"
-      TimeoutSec = 2
-      Method     = 'GET'
-      ErrorAction = 'Stop'
-    }
-    if ($PSVersionTable.PSVersion.Major -lt 6) { $params['UseBasicParsing'] = $true }
-    $resp = Invoke-WebRequest @params
-    if ($resp.StatusCode -eq 200) {
-      Write-Host "[web] READY on :$Port" -ForegroundColor Green
-      break
-    }
-  } catch { }
-} while ((Get-Date) -lt $deadline)
+    $latest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $latestPath -Encoding UTF8
+  } catch {}
 
-if ((Get-Date) -ge $deadline) {
-  Write-Host "[web] TIMEOUT waiting for :$Port. See logs at $outLog / $errLog" -ForegroundColor Yellow
+  $deadline = (Get-Date).AddSeconds([math]::Max(5,$TimeoutSec))
+  $ready = $false
+  do {
+    Start-Sleep -Seconds 1
+    try {
+      if ($proc -and $proc.HasExited) {
+        Write-Host "[web] FAILED: next process exited early (pid=$($proc.Id)). See logs: $outLog2 / $errLog2" -ForegroundColor Yellow
+        break
+      }
+    } catch { }
+    try {
+      $params = @{
+        Uri         = "http://127.0.0.1:$Port/api/ping"
+        TimeoutSec  = 2
+        Method      = 'GET'
+        ErrorAction = 'Stop'
+      }
+      if ($PSVersionTable.PSVersion.Major -lt 6) { $params['UseBasicParsing'] = $true }
+      $resp = Invoke-WebRequest @params
+      if ($resp.StatusCode -eq 200) {
+        $ready = $true
+        break
+      }
+    } catch { }
+  } while ((Get-Date) -lt $deadline)
+
+  if (-not $ready) {
+    if ((Get-Date) -ge $deadline) {
+      Write-Host "[web] TIMEOUT waiting for :$Port. See logs at $outLog2 / $errLog2" -ForegroundColor Yellow
+    }
+    if ($proc) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {} }
+    throw "[web] 기동 실패: /api/ping 타임아웃/실패"
+  }
+
+  # "/ + /_next/static"까지 확인해서, 남색 배경만 뜨는(정적 자산 404) 상태를 READY로 간주하지 않는다.
+  $static = Test-WebStaticOk -Port $Port -TimeoutSec 2
+  if ($static.ok -eq $true) {
+    Write-Host "[web] READY on :$Port" -ForegroundColor Green
+    break
+  }
+
+  Write-Host ("[web] WARN: 정적 자산 체크 실패 → UI가 빈 화면일 수 있음. detail={0}" -f $static.detail) -ForegroundColor Yellow
+  if ($proc) {
+    try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+  }
+
+  if ($attempt -lt $maxAttempts) {
+    Write-Host "[web] 재시도: CleanBuild로 재빌드 후 재기동" -ForegroundColor Yellow
+    continue
+  }
+
+  throw "[web] 기동 실패: 정적 자산 체크 실패. detail=$($static.detail)"
 }
