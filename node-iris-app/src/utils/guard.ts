@@ -1,6 +1,7 @@
 import type { ChatContext } from "@tsuki-chat/node-iris";
 import { promises as fs } from "fs";
 import path from "path";
+import { APP_ROOT } from "./paths";
 
 // NOTE: (ADR-0012) "ai" feature 추가 - KB 질의 기능 활성화 플래그
 // chatSummary: 채팅 요약(!채팅요약) 기능 토글
@@ -35,7 +36,7 @@ interface RuntimeConfig {
 }
 
 async function loadRuntimeConfig(): Promise<RuntimeConfig> {
-  const cfgPath = path.join(process.cwd(), "config", "runtime.json");
+  const cfgPath = path.join(APP_ROOT, "config", "runtime.json");
   try {
     const raw = await fs.readFile(cfgPath, "utf8");
     const parsed = JSON.parse(raw) as RuntimeConfig;

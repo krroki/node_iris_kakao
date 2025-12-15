@@ -1,14 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import os from "os";
 import path from "path";
 import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
-
-import {
-  isFeatureEnabledForRoomId,
-  isRoomIdAllowed,
-  isAnnouncementAllowed,
-  isRoomIdAllowedForAnnouncement,
-} from "../src/utils/guard";
 
 const createRuntime = async (cfg: any): Promise<string> => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-guard-"));
@@ -19,11 +12,15 @@ const createRuntime = async (cfg: any): Promise<string> => {
 };
 
 const originalCwd = process.cwd();
+const originalAppBase = process.env.IRIS_APP_BASE;
 let currentTempDir: string | null = null;
 
 afterEach(async () => {
   // cwd를 원래대로 돌려놓고, 임시 디렉터리 정리
   process.chdir(originalCwd);
+  if (typeof originalAppBase === "string") process.env.IRIS_APP_BASE = originalAppBase;
+  else delete process.env.IRIS_APP_BASE;
+  vi.resetModules();
   if (currentTempDir) {
     await rm(currentTempDir, { recursive: true, force: true });
     currentTempDir = null;
@@ -41,6 +38,10 @@ describe("SAFE_MODE / allowedRoomIds / feature 플래그 조합", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { isFeatureEnabledForRoomId } = await import("../src/utils/guard");
 
     const aiOn = await isFeatureEnabledForRoomId("ROOM_AI_ON", "ai");
     const aiOff = await isFeatureEnabledForRoomId("ROOM_AI_OFF", "ai");
@@ -62,6 +63,10 @@ describe("SAFE_MODE / allowedRoomIds / feature 플래그 조합", () => {
     });
     process.chdir(currentTempDir);
 
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { isFeatureEnabledForRoomId } = await import("../src/utils/guard");
+
     const allowed = await isFeatureEnabledForRoomId("ROOM_ALLOWED", "ai");
     const notAllowed = await isFeatureEnabledForRoomId("ROOM_NOT_ALLOWED", "ai");
 
@@ -75,6 +80,10 @@ describe("SAFE_MODE / allowedRoomIds / feature 플래그 조합", () => {
       allowedRoomIds: ["ROOM1"],
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { isRoomIdAllowed } = await import("../src/utils/guard");
 
     expect(await isRoomIdAllowed("ROOM1")).toBe(true);
     expect(await isRoomIdAllowed("ROOM2")).toBe(false);
@@ -91,6 +100,10 @@ describe("SAFE_MODE / allowedRoomIds / feature 플래그 조합", () => {
     });
     process.chdir(currentTempDir);
 
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { isAnnouncementAllowed } = await import("../src/utils/guard");
+
     expect(await isAnnouncementAllowed()).toBe(false);
   });
 
@@ -101,6 +114,10 @@ describe("SAFE_MODE / allowedRoomIds / feature 플래그 조합", () => {
       excludedRoomIds: ["ROOM_EXCLUDED"],
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { isRoomIdAllowedForAnnouncement } = await import("../src/utils/guard");
 
     expect(await isRoomIdAllowedForAnnouncement("ROOM_OK")).toBe(true);
     expect(await isRoomIdAllowedForAnnouncement("ROOM_EXCLUDED")).toBe(false);

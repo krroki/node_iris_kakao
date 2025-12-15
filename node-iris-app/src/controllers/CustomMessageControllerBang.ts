@@ -14,6 +14,7 @@ import {
 import { tryServerTalkApiDispatchRaw } from "../utils/talkapi";
 import { Logger } from "@tsuki-chat/node-iris";
 import { isRoomAllowed, isSafeMode, isFeatureEnabledForContext } from "../utils/guard";
+import { APP_ROOT } from "../utils/paths";
 import { resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
 import path from "path";
 import { promises as fs } from "fs";
@@ -252,7 +253,7 @@ class CustomMessageControllerBang {
 
     const loadTemplate = async (name: string): Promise<{ text: string; images: string[] }> => {
       if (!name) throw new Error("welcome template name is not configured");
-      const p = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
+      const p = path.join(APP_ROOT, "config", "templates", "welcome", `${name}.json`);
       const raw = await fs.readFile(p, "utf8");
       const parsed = JSON.parse(raw);
       const text =

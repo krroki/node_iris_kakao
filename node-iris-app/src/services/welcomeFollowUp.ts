@@ -4,6 +4,7 @@ import { randomInt } from "crypto";
 import { promises as fs } from "fs";
 import path from "path";
 import { isRoomAllowed, isFeatureEnabledForContext } from "../utils/guard";
+import { APP_ROOT } from "../utils/paths";
 import { tryServerTalkApiDispatchRaw } from "../utils/talkapi";
 import DedupCache from "./dedupCache";
 
@@ -443,7 +444,7 @@ export class WelcomeFollowUpService {
   }
 
   private runtimeConfigPath(): string {
-    return path.join(process.cwd(), "config", "runtime.json");
+    return path.join(APP_ROOT, "config", "runtime.json");
   }
 
   private async loadRuntimeConfig(): Promise<any | null> {

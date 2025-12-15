@@ -1879,6 +1879,54 @@ async def talkapi_dispatch_raw(request: Request):
     )
 
 
+@app.post("/send/iris/reply_text")
+async def iris_reply_text(request: Request):
+    """Send text via IRIS /reply if SAFE_MODE is False.
+    Body: { roomId, text }
+    """
+    cfg = load_runtime()
+    if cfg.get("safeMode", True):
+        raise HTTPException(status_code=403, detail="SAFE_MODE")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    rid = str((body or {}).get("roomId") or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="roomId required")
+    text = str((body or {}).get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+
+    payload = {
+        "type": "text",
+        "room": rid,
+        "data": text,
+    }
+    url = _iris_base() + "/reply"
+    status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
+    iris_body = None
+    try:
+        iris_body = json.loads(txt) if txt else None
+    except Exception:
+        iris_body = None
+    ok = status == 200
+    code = 200 if ok else 502
+    return JSONResponse(
+        status_code=code,
+        content={
+            "ok": ok,
+            "iris": {
+                "httpStatus": status,
+                "body": iris_body,
+                "raw": txt,
+            },
+            "sent": {"roomId": rid, "len": len(text), "type": payload["type"]},
+        },
+    )
+
+
 @app.post("/send/iris/reply_media")
 async def iris_reply_media(request: Request):
     """Send image(s) via IRIS /reply if SAFE_MODE is False.

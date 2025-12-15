@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { randomInt } from "crypto";
+import { APP_ROOT } from "./paths";
 
 export type WelcomeNicknameClass = "kakao_default_nickname" | "custom_nickname";
 export type WelcomeTemplatePick = "random" | "hash_sender_id" | "hash_user_name";
@@ -189,7 +190,7 @@ function pickRandom(candidates: string[]): string {
 }
 
 async function loadRuntimeConfig(): Promise<RuntimeWelcomeConfig> {
-  const cfgPath = path.join(process.cwd(), "config", "runtime.json");
+  const cfgPath = path.join(APP_ROOT, "config", "runtime.json");
   let raw: string;
   try {
     raw = await fs.readFile(cfgPath, "utf8");

@@ -1,9 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import os from "os";
 import path from "path";
 import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
-
-import { resolveWelcomeTemplateSelection } from "../src/utils/welcomeTemplatePolicy";
 
 const createRuntime = async (cfg: any): Promise<string> => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-welcome-"));
@@ -14,10 +12,14 @@ const createRuntime = async (cfg: any): Promise<string> => {
 };
 
 const originalCwd = process.cwd();
+const originalAppBase = process.env.IRIS_APP_BASE;
 let currentTempDir: string | null = null;
 
 afterEach(async () => {
   process.chdir(originalCwd);
+  if (typeof originalAppBase === "string") process.env.IRIS_APP_BASE = originalAppBase;
+  else delete process.env.IRIS_APP_BASE;
+  vi.resetModules();
   if (currentTempDir) {
     await rm(currentTempDir, { recursive: true, force: true });
     currentTempDir = null;
@@ -37,6 +39,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
 
     const sel = await resolveWelcomeTemplateSelection({ userName: "인사하는 프로도", senderId: "SENDER1" });
     expect(sel?.source).toBe("template_set");
@@ -62,6 +68,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
 
     const recentDefaults = [
       "웃고있는 니니즈",
@@ -96,6 +106,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
     });
     process.chdir(currentTempDir);
 
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
+
     const sel = await resolveWelcomeTemplateSelection({ userName: "홍길동", senderId: "SENDER1" });
     expect(sel?.source).toBe("template_set");
     expect(sel?.nicknameClass).toBe("custom_nickname");
@@ -116,6 +130,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
     });
     process.chdir(currentTempDir);
 
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
+
     await expect(
       resolveWelcomeTemplateSelection({ userName: "홍길동", senderId: "SENDER1" }),
     ).rejects.toThrow(/customNickname/);
@@ -134,6 +152,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
     });
     process.chdir(currentTempDir);
 
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
+
     await expect(
       resolveWelcomeTemplateSelection({ userName: "홍길동", senderId: "SENDER1" }),
     ).rejects.toThrow(/invalid regex/);
@@ -146,6 +168,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
 
     const sel = await resolveWelcomeTemplateSelection({ userName: "홍길동", senderId: "SENDER1" });
     expect(sel?.source).toBe("single_template");
@@ -164,6 +190,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
     });
     process.chdir(currentTempDir);
 
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
+
     await expect(
       resolveWelcomeTemplateSelection({ userName: "홍길동", senderId: "SENDER1" }),
     ).rejects.toThrow(/templateSetPick is required/i);
@@ -180,6 +210,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
 
     await expect(
       resolveWelcomeTemplateSelection({ userName: "홍길동", senderId: "SENDER1" }),
@@ -198,6 +232,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
 
     const a = await resolveWelcomeTemplateSelection({ userName: "인사하는 프로도", senderId: "SENDER1" });
     expect(a?.templateName).toBe("welcome_custom_1");
@@ -218,6 +256,10 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       },
     });
     process.chdir(currentTempDir);
+
+    process.env.IRIS_APP_BASE = currentTempDir;
+    vi.resetModules();
+    const { resolveWelcomeTemplateSelection } = await import("../src/utils/welcomeTemplatePolicy");
 
     await expect(
       resolveWelcomeTemplateSelection({ userName: "인사하는 프로도", senderId: "SENDER1" }),

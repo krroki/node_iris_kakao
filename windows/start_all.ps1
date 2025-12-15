@@ -67,6 +67,7 @@ Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\status.json') 'bot'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\welcome_worker_status.json') 'welcome-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\ai_worker_status.json') 'ai-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\broadcast_worker_status.json') 'broadcast-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\command_worker_status.json') 'command-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\roster_worker_status.json') 'roster-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\openchat_members_sheets_worker_status.json') 'openchat-members-sheets-worker'
 Stop-ProcsByPredicate { $_.CommandLine -match 'web\\node_modules\\next' -and $_.CommandLine -match $repoPath }
@@ -158,6 +159,14 @@ if ((($env:ANNOUNCEMENT_DISPATCHER -as [string]).Trim().ToLower() -ne 'bot' -or 
   Start-Sleep -Seconds 1
 } else {
   Write-Host ("[all] broadcast-worker skipped (ANNOUNCEMENT_DISPATCHER={0}, BROADCAST_DISPATCHER={1}, BROADCAST_WORKER_DISABLE={2})" -f $env:ANNOUNCEMENT_DISPATCHER, $env:BROADCAST_DISPATCHER, $env:BROADCAST_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
+if ($env:COMMAND_WORKER_DISABLE -ne '1') {
+  Write-Host '[all] starting command-worker'
+  & (Join-Path $PSScriptRoot 'start_command_worker.ps1') -TimeoutSec 40
+  Start-Sleep -Seconds 1
+} else {
+  Write-Host ("[all] command-worker skipped (COMMAND_WORKER_DISABLE={0})" -f $env:COMMAND_WORKER_DISABLE) -ForegroundColor Yellow
 }
 
 if ($env:ROSTER_WORKER_DISABLE -ne '1') {

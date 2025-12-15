@@ -104,3 +104,6 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0030 | Welcome-worker 템플릿 이미지 발신을 IRIS /reply로 복구 (Realtime API 브리지) | Accepted | 템플릿 이미지 발신 복구, SAFE_MODE 최종 차단 유지 |
 | 0031 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | Accepted | 동시성 제한 + EMFILE 백오프 재시도 + 상태 가시화(`/status`) |
 | 0032 | 강의 운영(카페/닉네임 검증) 워커 + 15분/24시간 안내 정책 | Accepted | 오픈채팅 입장자 검증/안내 + Sheets 업서트 |
+| 0033 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 | Accepted | 오픈채팅 멤버 userId/닉네임 upsert + 10분 주기 스케줄 |
+| 0034 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백 | Accepted | `/send/iris/reply_text` + worker/command explicit fallback |
+| 0035 | 오픈채팅 방별 명령어(FAQ) 트리거 워커(command-worker) | Accepted | `!등록/!삭제/!명령어/!키` + Reply(type=26) 기반 응답 |

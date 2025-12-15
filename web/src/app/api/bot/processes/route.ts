@@ -2,11 +2,70 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import path from 'path';
+import fs from 'fs';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(process.cwd(), '..');
+
+type BotProcess = {
+  pid: number;
+  kind?: string;
+  cmd: string;
+  startTime: string;
+};
+
+type StatusFileResult = {
+  exists: boolean;
+  path: string;
+  data?: any;
+  error?: string;
+};
+
+const EXPECTED_KINDS = ['bot', 'welcome-worker', 'ai-worker', 'broadcast-worker', 'command-worker'] as const;
+type ExpectedKind = (typeof EXPECTED_KINDS)[number];
+
+const STATUS_PATH_BY_KIND: Record<ExpectedKind, string> = {
+  bot: path.join(ROOT, 'node-iris-app', 'data', 'status.json'),
+  'welcome-worker': path.join(ROOT, 'node-iris-app', 'data', 'welcome_worker_status.json'),
+  'ai-worker': path.join(ROOT, 'node-iris-app', 'data', 'ai_worker_status.json'),
+  'broadcast-worker': path.join(ROOT, 'node-iris-app', 'data', 'broadcast_worker_status.json'),
+  'command-worker': path.join(ROOT, 'node-iris-app', 'data', 'command_worker_status.json'),
+};
+
+const toRepoRelativePath = (p: string) => {
+  try {
+    return path.relative(ROOT, p).split(path.sep).join('/');
+  } catch {
+    return p;
+  }
+};
+
+async function readJsonFile(p: string): Promise<StatusFileResult> {
+  const rel = toRepoRelativePath(p);
+  try {
+    const raw = await fs.promises.readFile(p, 'utf8');
+    const obj = JSON.parse(raw || '{}');
+    return { exists: true, path: rel, data: obj };
+  } catch (e: any) {
+    if (e && String(e.code || '') === 'ENOENT') return { exists: false, path: rel };
+    return { exists: false, path: rel, error: String(e?.message || e) };
+  }
+}
+
+function parseTsMs(ts: unknown): number | null {
+  if (!ts || typeof ts !== 'string') return null;
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function computeAgeSec(ts: unknown, nowMs: number): number | null {
+  const ms = parseTsMs(ts);
+  if (ms === null) return null;
+  const diff = Math.max(0, nowMs - ms);
+  return Math.floor(diff / 1000);
+}
 
 // GET: List all running bot processes
 export async function GET() {
@@ -20,11 +79,67 @@ export async function GET() {
       script,
     ], { timeout: 10000 });
 
-    const processes = JSON.parse(stdout.trim() || '[]');
+    const processes = JSON.parse(stdout.trim() || '[]') as BotProcess[];
+    const nowMs = Date.now();
+
+    const byKind = (Array.isArray(processes) ? processes : []).reduce<Record<string, BotProcess[]>>((acc, p) => {
+      const kind = String((p as any)?.kind || 'bot').trim() || 'bot';
+      if (!acc[kind]) acc[kind] = [];
+      acc[kind].push(p);
+      return acc;
+    }, {});
+
+    const statusFilesEntries = await Promise.all(
+      EXPECTED_KINDS.map(async (kind) => [kind, await readJsonFile(STATUS_PATH_BY_KIND[kind])] as const)
+    );
+    const statusFiles = Object.fromEntries(statusFilesEntries) as Record<ExpectedKind, StatusFileResult>;
+
+    const kinds = EXPECTED_KINDS.map((kind) => {
+      const running = [...(byKind[kind] || [])].sort((a, b) => {
+        return Date.parse(b.startTime || '') - Date.parse(a.startTime || '');
+      });
+
+      const newest = running[0] || null;
+      const dupPids = running.slice(1).map((p) => p.pid);
+
+      const status = statusFiles[kind];
+      const heartbeatAgeSec = computeAgeSec(status?.data?.heartbeatTs, nowMs);
+      const staleHeartbeat = typeof heartbeatAgeSec === 'number' ? heartbeatAgeSec >= 180 : null;
+
+      const statusPid = typeof status?.data?.pid === 'number' ? status.data.pid : null;
+      const statusPidRunning = statusPid ? running.some((p) => p.pid === statusPid) : null;
+
+      return {
+        kind,
+        expected: true,
+        runningCount: running.length,
+        newestPid: newest?.pid ?? null,
+        newestStartTime: newest?.startTime ?? null,
+        duplicatePids: dupPids,
+        statusFile: status,
+        heartbeatAgeSec,
+        staleHeartbeat,
+        statusPid,
+        statusPidRunning,
+      };
+    });
+
+    const summary = {
+      expectedKinds: EXPECTED_KINDS.length,
+      totalRunning: Array.isArray(processes) ? processes.length : 0,
+      missingKinds: kinds.filter((k) => k.runningCount === 0).map((k) => k.kind),
+      duplicateKinds: kinds.filter((k) => k.runningCount > 1).map((k) => k.kind),
+      staleHeartbeatKinds: kinds.filter((k) => k.staleHeartbeat === true).map((k) => k.kind),
+      generatedAt: new Date(nowMs).toISOString(),
+    };
+
     return NextResponse.json({
       ok: true,
       processes,
-      count: Array.isArray(processes) ? processes.length : 0
+      count: Array.isArray(processes) ? processes.length : 0,
+      expectedKinds: EXPECTED_KINDS,
+      kinds,
+      summary,
     });
   } catch (error: any) {
     return NextResponse.json({

@@ -5,6 +5,9 @@ import path from "path";
 
 import DedupCache from "../services/dedupCache";
 import { broadcastService } from "../services";
+import { downloadUrlAsBase64 } from "../utils/download";
+import { tryServerIrisReplyMedia, tryServerIrisReplyText } from "../utils/iris";
+import { APP_ROOT } from "../utils/paths";
 import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/talkapi";
 
 type StreamEntry = {
@@ -51,10 +54,10 @@ type WorkerState = {
 
 const logger = new Logger("broadcast-worker");
 
-const STATE_PATH = path.join(process.cwd(), "data", "broadcast_worker_state.json");
-const STATUS_PATH = path.join(process.cwd(), "data", "broadcast_worker_status.json");
-const RUNTIME_PATH = path.join(process.cwd(), "config", "runtime.json");
-const LOCK_PATH = path.join(process.cwd(), "data", "locks", "broadcast_worker.lock");
+const STATE_PATH = path.join(APP_ROOT, "data", "broadcast_worker_state.json");
+const STATUS_PATH = path.join(APP_ROOT, "data", "broadcast_worker_status.json");
+const RUNTIME_PATH = path.join(APP_ROOT, "config", "runtime.json");
+const LOCK_PATH = path.join(APP_ROOT, "data", "locks", "broadcast_worker.lock");
 
 // Loop/multi-delivery protection
 const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
@@ -487,7 +490,9 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       if (textToSend) {
         const h = hashTextForDedup(textToSend);
         SENT_TEXT_DEDUP.mark(`sent_txt:${targetId}:${h}`);
-        ok = (await tryServerTalkApiDispatch(logger, targetId, textToSend, [], 12000)) && ok;
+        const okTalk = await tryServerTalkApiDispatch(logger, targetId, textToSend, [], 12000);
+        const okIris = okTalk ? false : await tryServerIrisReplyText(logger, targetId, textToSend, 12000);
+        ok = (okTalk || okIris) && ok;
       }
 
       if (includeImages && images.length > 0) {
@@ -495,7 +500,23 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
         // Record "sent image" so when the mirrored image appears in logs we can ignore it.
         // (No visible marker in the message body)
         SENT_IMAGE_DEDUP.mark(`sent_img:${targetId}:${h}`);
-        ok = (await tryServerTalkApiDispatchRaw(logger, targetId, "", 27, { imageUrls: images }, 15000)) && ok;
+        const okTalk = await tryServerTalkApiDispatchRaw(logger, targetId, "", 27, { imageUrls: images }, 15000);
+        if (okTalk) {
+          ok = ok && true;
+        } else {
+          const limited = images.slice(0, 6);
+          const imagesBase64: string[] = [];
+          for (const url of limited) {
+            try {
+              imagesBase64.push(await downloadUrlAsBase64(url, 15000));
+            } catch (e) {
+              logger.warn("[announce] image download failed", { roomId: targetId, url, err: String(e) });
+            }
+          }
+          const okIris =
+            imagesBase64.length > 0 ? await tryServerIrisReplyMedia(logger, targetId, imagesBase64, 30000) : false;
+          ok = okIris && ok;
+        }
       }
 
       if (ok) {
@@ -550,7 +571,10 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   }
 
   const msg = resultLines.join("\n");
-  await tryServerTalkApiDispatch(logger, roomId, msg, [], 12000);
+  const okTalk = await tryServerTalkApiDispatch(logger, roomId, msg, [], 12000);
+  if (!okTalk) {
+    await tryServerIrisReplyText(logger, roomId, msg, 12000);
+  }
 }
 
 async function dispatchBroadcastQueueTick(): Promise<void> {
@@ -581,7 +605,9 @@ async function dispatchBroadcastQueueTick(): Promise<void> {
           continue;
         }
 
-        const ok = await tryServerTalkApiDispatch(logger, roomId, message, [], 12000);
+        const okTalk = await tryServerTalkApiDispatch(logger, roomId, message, [], 12000);
+        const okIris = okTalk ? false : await tryServerIrisReplyText(logger, roomId, message, 12000);
+        const ok = okTalk || okIris;
         if (!ok) {
           throw new Error("talkapi dispatch failed");
         }

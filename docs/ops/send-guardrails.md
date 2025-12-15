@@ -101,12 +101,19 @@
     - Reply(`type=26`)의 경우, Talk-API가 `attachment.src_userId/src_linkId/src_type`를 **int(number)** 로 요구하는 케이스가 확인되어
       Realtime API에서 숫자형 문자열을 int로 강제 변환(coerce) 후 전달한다. (미변환 시 `INVALID_ARGUMENT(-203)` 가능)
 - IRIS `/reply` 경유 이미지 발신(Welcome 템플릿 이미지)
+  - (ADR-0034) Talk-API 실패 시 **명시적 폴백**으로도 사용된다(서버가 Talk-API 실패를 숨기지 않으며, 호출자가 실패를 확인 후 폴백을 호출).
   - `server/app.py:/send/iris/reply_media`
     - `cfg = load_runtime()` + `safeMode=true`면 **항상 403(SAFE_MODE)** 로 최종 차단한다.
     - Body: `{ roomId, imagesBase64: [base64, ...] }`
       - base64만 허용(서버는 URL fetch를 하지 않음: SSRF 가드)
       - 최대 6장, 1장 8MB 제한(Realtime API에서 413/400으로 차단)
     - 내부적으로 `IRIS_URL(/IRIS_BRIDGE_URL)/reply`에 `type=image|image_multiple`로 전달해 이미지 메시지를 발신한다.
+- IRIS `/reply` 경유 텍스트 발신(Talk-API 폴백)
+  - `server/app.py:/send/iris/reply_text`
+    - `cfg = load_runtime()` + `safeMode=true`면 **항상 403(SAFE_MODE)** 로 최종 차단한다.
+    - Body: `{ roomId, text }`
+    - 내부적으로 `IRIS_URL(/IRIS_BRIDGE_URL)/reply`에 `type=text`로 전달해 일반 텍스트 메시지를 발신한다.
+    - 제한: IRIS `/reply`는 멘션/Reply(답장) 미지원이므로 “일반 메시지”로만 발신된다.
 - 템플릿 관련
   - `/templates/{category}/{name}/prepareSend`
     - payload(텍스트/mentions/images/safeMode) **준비만** 하고 실제 발송은 하지 않는다.
@@ -132,6 +139,9 @@
       - `safeMode=true` → 무조건 403 (`detail='SAFE_MODE'`)
       - `safeMode=false` → Talk-API 설정(talkApi.enabled 등)에 따라 2xx/4xx/5xx 결정 (Talk-API 본문 `status!=0`인 경우 서버는 502로 실패 처리)
    - `server/app.py:/send/iris/reply_media`:
+      - `safeMode=true` → 무조건 403 (`detail='SAFE_MODE'`)
+      - `safeMode=false` → IRIS `/reply` HTTP 200이면 ok 처리, 그 외는 502
+   - `server/app.py:/send/iris/reply_text`:
       - `safeMode=true` → 무조건 403 (`detail='SAFE_MODE'`)
       - `safeMode=false` → IRIS `/reply` HTTP 200이면 ok 처리, 그 외는 502
 

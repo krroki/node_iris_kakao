@@ -5,7 +5,8 @@ import path from "path";
 
 import { resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
 import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/talkapi";
-import { tryServerIrisReplyMedia } from "../utils/iris";
+import { tryServerIrisReplyMedia, tryServerIrisReplyText } from "../utils/iris";
+import { APP_ROOT } from "../utils/paths";
 import { resolveTemplateImageUrls } from "../utils/sender";
 import DedupCache from "../services/dedupCache";
 
@@ -50,10 +51,10 @@ type WorkerState = {
 
 const logger = new Logger("welcome-worker");
 
-const STATE_PATH = path.join(process.cwd(), "data", "welcome_worker_state.json");
-const STATUS_PATH = path.join(process.cwd(), "data", "welcome_worker_status.json");
-const RUNTIME_PATH = path.join(process.cwd(), "config", "runtime.json");
-const LOCK_PATH = path.join(process.cwd(), "data", "locks", "welcome_worker.lock");
+const STATE_PATH = path.join(APP_ROOT, "data", "welcome_worker_state.json");
+const STATUS_PATH = path.join(APP_ROOT, "data", "welcome_worker_status.json");
+const RUNTIME_PATH = path.join(APP_ROOT, "config", "runtime.json");
+const LOCK_PATH = path.join(APP_ROOT, "data", "locks", "welcome_worker.lock");
 
 const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const PHOTO_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
@@ -370,7 +371,7 @@ async function writeJsonAtomic(dst: string, data: unknown): Promise<void> {
 
 async function loadWelcomeTemplate(name: string): Promise<{ text: string; images: string[] }> {
   if (!name) throw new Error("welcome template name is empty");
-  const p = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
+  const p = path.join(APP_ROOT, "config", "templates", "welcome", `${name}.json`);
   const raw = await fs.readFile(p, "utf8");
   const parsed: any = JSON.parse(raw);
 
@@ -752,18 +753,26 @@ async function flushWelcome(roomId: string): Promise<void> {
     });
   }
 
-  let ok = false;
+  let okTalk = false;
+  let okIris = false;
   try {
     if (hasMention && capped.length) {
-      ok = await tryServerTalkApiDispatch(logger, roomId, message, capped, 12000);
+      okTalk = await tryServerTalkApiDispatch(logger, roomId, message, capped, 12000);
     } else {
-      ok = await tryServerTalkApiDispatch(logger, roomId, message, [], 12000);
+      okTalk = await tryServerTalkApiDispatch(logger, roomId, message, [], 12000);
     }
   } catch (e) {
-    ok = false;
+    okTalk = false;
     logger.warn("[welcome] dispatch threw", { roomId, err: String(e) });
   }
 
+  if (!okTalk) {
+    // Talk-API가 불안정할 때 운영 연속성을 위해 IRIS /reply(text)로 대체 발신한다.
+    // (멘션/Reply는 불가, 단순 텍스트만)
+    okIris = await tryServerIrisReplyText(logger, roomId, message, 12000);
+  }
+
+  const ok = okTalk || okIris;
   await updateStatus({
     lastWelcomeAttemptTs: new Date().toISOString(),
     lastWelcomeRoomId: roomId,

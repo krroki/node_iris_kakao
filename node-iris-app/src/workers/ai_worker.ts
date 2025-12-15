@@ -3,6 +3,8 @@ import { promises as fs } from "fs";
 import path from "path";
 
 import DedupCache from "../services/dedupCache";
+import { tryServerIrisReplyText } from "../utils/iris";
+import { APP_ROOT } from "../utils/paths";
 import { tryServerTalkApiDispatch } from "../utils/talkapi";
 
 type StreamEntry = {
@@ -31,10 +33,10 @@ type WorkerState = {
 
 const logger = new Logger("ai-worker");
 
-const STATE_PATH = path.join(process.cwd(), "data", "ai_worker_state.json");
-const STATUS_PATH = path.join(process.cwd(), "data", "ai_worker_status.json");
-const RUNTIME_PATH = path.join(process.cwd(), "config", "runtime.json");
-const LOCK_PATH = path.join(process.cwd(), "data", "locks", "ai_worker.lock");
+const STATE_PATH = path.join(APP_ROOT, "data", "ai_worker_state.json");
+const STATUS_PATH = path.join(APP_ROOT, "data", "ai_worker_status.json");
+const RUNTIME_PATH = path.join(APP_ROOT, "config", "runtime.json");
+const LOCK_PATH = path.join(APP_ROOT, "data", "locks", "ai_worker.lock");
 
 const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const QUERY_DEDUP = new DedupCache(15 * 1000, 15 * 1000); // 15초
@@ -435,12 +437,18 @@ async function handleAiQuery(entry: StreamEntry, lastSeenMsRef: { v: number }): 
           "KB 서버 설정(OPENAI_API_KEY)이 누락되어 응답을 생성할 수 없습니다.\n" +
           "`.env.kb`의 OPENAI_API_KEY 설정을 확인한 뒤 KB 서비스를 재시작해 주세요.";
       }
-      await tryServerTalkApiDispatch(logger as any, rid, userHint, [], 12000);
+      const okTalk = await tryServerTalkApiDispatch(logger as any, rid, userHint, [], 12000);
+      if (!okTalk) {
+        await tryServerIrisReplyText(logger as any, rid, userHint, 12000);
+      }
       return;
     }
 
-    const ok = await tryServerTalkApiDispatch(logger as any, rid, kb.text, [], 12000);
-    logger.info("[ai] answered", { roomId: rid, ok, model: kb.model });
+    const okTalk = await tryServerTalkApiDispatch(logger as any, rid, kb.text, [], 12000);
+    const okIris = okTalk ? false : await tryServerIrisReplyText(logger as any, rid, kb.text, 12000);
+    const ok = okTalk || okIris;
+    const via = okTalk ? "talkapi" : okIris ? "iris" : "failed";
+    logger.info("[ai] answered", { roomId: rid, ok, via, model: kb.model });
   } finally {
     clearInflight(rid);
     // status: 마지막 처리 시각/상태 반영 (best-effort)

@@ -61,6 +61,7 @@ export default function RoomCard({
         features.schedules ||
         features.ai ||
         features.chatSummary ||
+        features.commands ||
         features.courseRoster
     );
     const [avatarError, setAvatarError] = useState(false);
@@ -355,6 +356,14 @@ export default function RoomCard({
                                 onChange={e => onToggleFeature(room.roomId, 'chatSummary', e.target.checked)}
                             />
                             채팅 요약(!채팅요약)
+                        </label>
+                        <label className="control-label" title="방별 FAQ/안내 문구를 !키 형태로 등록/응답합니다. (예: !등록 구글 2차인증)">
+                            <input
+                                type="checkbox"
+                                checked={!!features.commands}
+                                onChange={e => onToggleFeature(room.roomId, 'commands', e.target.checked)}
+                            />
+                            명령어(FAQ)
                         </label>
                     </div>
                 </div>

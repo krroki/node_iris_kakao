@@ -12,6 +12,7 @@
 - `docs/reference/project-structure.md` – 저장소 구조 및 책임 구분
 - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
 - `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
+- `docs/reference/kakao-room-command-triggers.md` – 방별 명령어(FAQ) `!등록/!삭제/!명령어/!키` 기능/권한/Reply payload 레퍼런스
 - `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 
@@ -40,9 +41,22 @@
   - welcome-worker: `windows/start_welcome_worker.ps1 -Restart`
   - ai-worker: `windows/start_ai_worker.ps1 -Restart`
   - broadcast-worker: `windows/start_broadcast_worker.ps1 -Restart`
+  - command-worker: `windows/start_command_worker.ps1 -Restart`
   - roster-worker(선택 기능): `windows/start_roster_worker.ps1 -Restart`
   - openchat-members-sheets-worker(선택 기능): `windows/start_openchat_members_sheets_worker.ps1 -Restart`
   - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
+
+- **UI(3100) 남색 배경만 뜨는 증상(중요)**:
+  - 증상: `http://localhost:3100` 접속 시 **배경만 보이고 UI가 비어있음**
+  - 근본 원인(대부분): Next.js 정적 자산(`/_next/static/*`)이 404로 깨진 상태
+    - 흔한 트리거: **실행 중인 web에 대해 `next build`/산출물 삭제가 겹치거나**, dev/prod 산출물이 충돌해 `.next(.next-prod)`가 부분 손상
+  - 1차 조치(권장): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild`
+    - `-CleanBuild`는 `.next-prod`를 지우고 재빌드 후 기동한다(산출물 파손 복구)
+  - 예방:
+    - 운영 중에는 `cd web && npm run build`를 **UI 실행과 동시에** 돌리지 않는다(필요 시 `start_web.ps1`로 “정지→빌드→기동” 절차로 수행)
+    - `web`의 `npm run build`는 이제 **운영 UI(next start) 실행 중이면 사전 차단**된다(`web/scripts/prebuild_guard.ps1`). (정말 필요할 때만 `npm run build:unsafe`)
+    - watchdog는 이제 `/api/ping`뿐 아니라 **`/` + `/_next/static`**까지 체크해 빈 화면 상태를 자동 감지/복구한다.
+    - `start_web.ps1`도 READY 전에 **정적 자산 1개를 추가로 검증**해(실패 시 CleanBuild로 1회 자가복구) 빈 화면 재발을 줄인다.
 
 - **오픈채팅 멤버 Sheets 자동 동기화(새 기능)**:
   - UI(3100) 상단 “오픈채팅 멤버(전체) Sheets 동기화”에서 `worker.enabled=true`로 켜고,
@@ -133,16 +147,20 @@
 - 기능 워커 분리(ADR-0027/0028/0029):
   - Welcome(ADR-0027): 코어(bot)는 신규 입장 이벤트를 `member_joined`로 로그에 기록하고, welcome/후속답장은 `welcome-worker`가 담당한다.
   - Welcome 이미지(ADR-0030): welcome 템플릿의 `images`는 welcome-worker가 `/templates/assets/...`에서 다운로드→base64 변환 후 Realtime API `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달해 발신한다(SAFE_MODE 최종 차단 유지).
+  - Talk-API 장애 폴백(ADR-0034): Talk-API 발신이 502로 실패할 때(`talkStatus != 0`) welcome-worker는 텍스트를 Realtime API `/send/iris/reply_text`로 **대체 발신**한다(멘션/Reply는 불가, 일반 텍스트만).
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
+    - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 AI 응답 텍스트는 `/send/iris/reply_text`로 대체 발신한다.
   - 기본값: `AI_DISPATCHER=worker` (레거시 롤백: `AI_DISPATCHER=bot`)
   - 공지/브로드캐스트(ADR-0029): 공지 복제/브로드캐스트 큐 발신은 `broadcast-worker`가 담당한다.
     - 공지(미러링)는 `runtime.json.announcement.routes`로 source/targets를 관리하며, UI는 `http://127.0.0.1:3100/announcement`를 사용한다.
     - 공지 전파가 끝나면 소스 방에 **1회** `[공지 전파 결과]` 요약 메시지를 남긴다(이 결과 메시지는 타겟으로 재전파되지 않도록 prefix 기반으로 스킵).
     - 동일 공지를 여러 방에 한 번에 뿌릴 때는 route 옵션 `appendTargetIndex=true`(+ `targetIndexStart`)로 끝 번호를 붙여 중복/스팸 판정 리스크를 낮춘다.
     - 공지가 안 나가면 `windows/logs/broadcast_worker.out.log`에서 `[announce] completed`/`[talkapi] dispatch*`를 확인하고, 실패한 `roomId`/`talkStatus`를 근거로 타겟/allowlist 설정을 점검한다.
+    - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 공지/브로드캐스트 텍스트는 `/send/iris/reply_text`, 이미지 발신은(가능하면) URL→base64 후 `/send/iris/reply_media`로 대체 발신한다.
     - **중복 실행 방지(중요)**: `broadcast-worker`는 `node-iris-app/data/locks/broadcast_worker.lock` 싱글톤 락으로 1개만 동작한다. watchdog도 중복 실행 감지 시 자동 재기동으로 정리한다.
   - 기본값: `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker` (레거시 롤백: 각각 `...=bot`)
+  - **중복 실행 방지(코어/bot)**: bot은 `node-iris-app/data/bot.lock` 싱글톤 락으로 1개만 동작한다(잘못된 cwd로 `node dist/index.js`를 실행해도 즉시 종료).
   - **재기동 원칙(필독)**: *부분 재기동 우선*. “항상 start_all”은 모듈화(코어/워커 분리) 취지에 반한다.
     - `windows/start_all.cmd`는 **콜드 부팅/전체 복구**(PC 재부팅 직후, 포트/프로세스 꼬임, web 404/산출물 파손, env 드리프트 등) 때만 사용한다.
     - 평소 배포/수정은 **변경한 컴포넌트만** 재기동한다(코어는 유지).
@@ -153,6 +171,7 @@
     | Welcome/후속 Reply(welcome-worker)만 반영 | `windows/start_welcome_worker.ps1 -Restart` |
     | AI 응답(`?디하클`, ai-worker)만 반영 | `windows/start_ai_worker.ps1 -Restart` |
     | 공지/브로드캐스트(broadcast-worker)만 반영 | `windows/start_broadcast_worker.ps1 -Restart` |
+    | 방별 명령어(FAQ, command-worker)만 반영 | `windows/start_command_worker.ps1 -Restart` |
     | 코어(bot: 수신/로그)만 반영 | `windows/start_bot.ps1 -Restart` |
     | Realtime API(server)만 반영 | `windows/start_api.ps1 -Port 8650` |
     | Web(UI)만 반영 | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` |

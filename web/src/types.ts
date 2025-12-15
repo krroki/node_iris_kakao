@@ -62,7 +62,9 @@ export type RoomFeatures = {
   broadcast?: boolean;
   schedules?: boolean;
   ai?: boolean;
-   chatSummary?: boolean;
+  chatSummary?: boolean;
+  // 방별 명령어(FAQ) 기능
+  commands?: boolean;
   // 강의 운영(카페/닉네임 검증) 기능
   courseRoom?: boolean;
   courseRoster?: boolean;

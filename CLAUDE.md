@@ -420,6 +420,17 @@ docs/adr/ADR-<4자리 번호>-<주제-kebab>.md
     | Realtime API(server)만 반영 | `windows/start_api.ps1 -Port 8650` |
     | Web(UI)만 반영 | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` |
     | 전체 부팅/대규모 복구 | `windows/start_all.cmd` |
+
+  - **UI(3100) 남색 배경만 뜨는 증상(중요)**:
+    - 증상: `http://localhost:3100` 접속 시 **배경만 보이고 UI가 비어있음**
+    - 근본 원인(대부분): Next.js 정적 자산(`/_next/static/*`)이 404로 깨진 상태
+      - 흔한 트리거: **실행 중인 web에 대해 `next build`/산출물 삭제가 겹치거나**, dev/prod 산출물이 충돌해 `.next(.next-prod)`가 부분 손상
+    - 1차 조치(권장): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild`
+    - 예방:
+      - 운영 중에는 `cd web && npm run build`를 **UI 실행과 동시에** 돌리지 않는다(필요 시 `start_web.ps1`로 “정지→빌드→기동” 절차로 수행)
+      - `web`의 `npm run build`는 이제 **운영 UI(next start) 실행 중이면 사전 차단**된다(`web/scripts/prebuild_guard.ps1`). (정말 필요할 때만 `npm run build:unsafe`)
+      - watchdog는 이제 `/api/ping`뿐 아니라 **`/` + `/_next/static`**까지 체크해 빈 화면 상태를 자동 감지/복구한다.
+      - `start_web.ps1`도 READY 전에 **정적 자산 1개를 추가로 검증**해(실패 시 CleanBuild로 1회 자가복구) 빈 화면 재발을 줄인다.
 - **Talk-API Reply(type=26) payload 타입 주의(중요)**:
   - 오픈채팅 “답장(Reply)”은 텍스트 `@`로 구현되지 않으며, `type=26` + `attachment.src_*` 메타로 구현된다(ADR-0026).
   - Node는 64-bit userId(2^53 초과)가 많아 `src_userId/src_linkId/src_type`를 문자열로 전달한다.

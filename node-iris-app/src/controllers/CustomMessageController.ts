@@ -11,6 +11,7 @@ import { safeReply, safeReplyWithMentions, safeReplyImageUrls, resolveTemplateIm
 import { isRoomAllowed, isSafeMode, isFeatureEnabledForRoomId } from "../utils/guard";
 import { askKb } from "../utils/askKb";
 import { updateStatus } from "../utils/status";
+import { APP_ROOT, REPO_ROOT } from "../utils/paths";
 import { resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
 import path from "path";
 import { promises as fs } from "fs";
@@ -30,7 +31,7 @@ const queryLocks = new Set<string>();
 // 루프 방지 마커 [MF:roomId]가 query에 포함되면 검색 품질이 저하됨
 const MIRROR_MARKER_REGEX = /\u200B\[MF:[^\]]+\]\u200B/g;
 // 접두어 미일치(rawDump) 디버그 파일 경로
-const PREFIX_SKIP_LOG = path.join(process.cwd(), "windows", "logs", "prefix_skip.raw.txt");
+const PREFIX_SKIP_LOG = path.join(REPO_ROOT, "windows", "logs", "prefix_skip.raw.txt");
 
 function decodeRawDump(rawDump: string): { decoded: string; msg?: string } {
   try {
@@ -398,7 +399,7 @@ class CustomMessageController {
 
     const loadTemplate = async (name: string): Promise<{ text: string; images: string[] }> => {
       if (!name) throw new Error("welcome template name is not configured");
-      const p = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
+      const p = path.join(APP_ROOT, "config", "templates", "welcome", `${name}.json`);
       const raw = await fs.readFile(p, "utf8");
       const parsed = JSON.parse(raw);
       const text =

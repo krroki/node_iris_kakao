@@ -8,6 +8,7 @@ import { promises as fs, readFileSync } from "fs";
 import path from "path";
 import { randomInt } from "crypto";
 import { isSafeMode, isRoomAllowed, isFeatureEnabledForContext } from "../utils/guard";
+import { APP_ROOT } from "../utils/paths";
 import {
   resolveTemplateImageUrls,
   safeReply,
@@ -162,7 +163,7 @@ class CustomNewMemberController {
   }
 
   private readRuntimeConfigStrict(): any {
-    const cfgPath = path.join(process.cwd(), "config", "runtime.json");
+    const cfgPath = path.join(APP_ROOT, "config", "runtime.json");
     const raw = readFileSync(cfgPath, "utf8");
     return JSON.parse(raw);
   }
@@ -522,7 +523,7 @@ class CustomNewMemberController {
     }
 
     // Load from file
-    const templatePath = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
+    const templatePath = path.join(APP_ROOT, "config", "templates", "welcome", `${name}.json`);
 
     try {
       const content = await fs.readFile(templatePath, "utf8");

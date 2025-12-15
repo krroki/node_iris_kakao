@@ -17,7 +17,8 @@ $specs = @(
     @{ kind = 'bot';              status = (Join-Path $dataDir 'status.json');                 absScript = (Join-Path $distDir 'index.js') },
     @{ kind = 'welcome-worker';   status = (Join-Path $dataDir 'welcome_worker_status.json');  absScript = (Join-Path $distWorkers 'welcome_worker.js') },
     @{ kind = 'ai-worker';        status = (Join-Path $dataDir 'ai_worker_status.json');      absScript = (Join-Path $distWorkers 'ai_worker.js') },
-    @{ kind = 'broadcast-worker'; status = (Join-Path $dataDir 'broadcast_worker_status.json'); absScript = (Join-Path $distWorkers 'broadcast_worker.js') }
+    @{ kind = 'broadcast-worker'; status = (Join-Path $dataDir 'broadcast_worker_status.json'); absScript = (Join-Path $distWorkers 'broadcast_worker.js') },
+    @{ kind = 'command-worker';   status = (Join-Path $dataDir 'command_worker_status.json');  absScript = (Join-Path $distWorkers 'command_worker.js') }
 )
 
 function Shorten-Cmd {

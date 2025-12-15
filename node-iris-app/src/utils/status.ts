@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { APP_ROOT } from './paths';
 
 type StatusData = {
   pid?: number;
@@ -15,8 +16,8 @@ type StatusData = {
 // - dist/ 아래에서 실행되더라도 항상 repo root(node-iris-app/)의 data/status.json을 쓰기 위해
 //   __dirname이 아닌 process.cwd() 기준으로 잡는다.
 // - windows/start_bot.ps1도 이 경로를 기준으로 readiness를 판단한다.
-const STATUS_PATH = path.join(process.cwd(), 'data', 'status.json');
-const STATUS_BAK_PATH = path.join(process.cwd(), 'data', 'status.json.bak');
+const STATUS_PATH = path.join(APP_ROOT, 'data', 'status.json');
+const STATUS_BAK_PATH = path.join(APP_ROOT, 'data', 'status.json.bak');
 
 let writeChain: Promise<void> = Promise.resolve();
 let lastWriteErrorAt = 0;

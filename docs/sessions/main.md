@@ -27,8 +27,26 @@
     - 즉시 1회 실행은 방 카드의 `지금 업서트`(수동) 버튼으로 수행
 - 완전성 원칙 유지: `loadedMembersCount < activeMembersCount`이면 폴백 없이 스킵/실패(스크롤 로딩 필요)로 기록.
 - 검증: `cd web && npm run build` PASS, Python 스크립트 문법 체크(`py_compile`) PASS.
+- Web(UI, 3100) 안정화:
+  - 원인: Next.js 정적 자산(`/_next/static/*`) 404 상태에서 브라우저가 “남색 배경만” 보이는 케이스가 반복 발생.
+  - 조치:
+    - `windows/start_web.ps1`: READY 체크에 `/` + `/_next/static` 검증을 추가(실패 시 CleanBuild로 1회 자가복구).
+    - `windows/watchdog.ps1`: web 헬스체크를 `/api/ping` 단독에서 `/` + `/_next/static`까지 확장해 빈 화면 상태를 자동 감지/복구.
 - Talk-API 발신 장애(talkStatus=-500)로 welcome/ai/broadcast 워커가 발신을 못하는 문제를 확인하고, 운영 연속성 확보를 위해 IRIS `/reply` 기반 대체 경로를 추가.
   - Realtime API: `POST /send/iris/reply_text` 추가(`server/app.py`)
   - 워커: Talk-API 실패 시 `ai-worker`/`welcome-worker`/`broadcast-worker`가 텍스트는 `/send/iris/reply_text`, 이미지는 `/send/iris/reply_media`(URL→base64)로 대체 발신(멘션/Reply는 불가)
   - bot 컨텍스트: `safeReplyWithMentions`는 멘션 API 부재 시 예외로 종료하지 않고 일반 텍스트로 degrade, `safeReplyImageUrls`는 이미지 API 부재 시 `/send/iris/reply_media`로 대체 발신
-  - 문서/SSOT: `agents.md`, `docs/ops/send-guardrails.md`, `docs/reference/verification-commands.md`, `docs/ssot.md`, `docs/adr/ADR-0034-*.md` 업데이트
+  - 중복 실행 근본 차단: bot/워커의 경로 기준점을 `process.cwd()`가 아닌 node-iris-app 기준(APP_ROOT)으로 고정하고, bot 자체에 `data/bot.lock` 기반 싱글톤을 추가(잘못된 cwd로 실행해도 중복 기동 방지).
+  - 검증: `windows/logs/api.out.log`에서 `Talk-API 502 → /send/iris/reply_text 200 → /send/iris/reply_media 200` 흐름 확인, `windows/list_bots.ps1`에서 bot/welcome/ai/broadcast 각 1개 실행 확인.
+  - 문서/SSOT: `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md`, `docs/adr/README.md`, `docs/ssot.md` 업데이트
+- Web(UI) 무응답/빈 화면 감지 보강:
+  - watchdog가 기존 `/api/ping(200)`만으로는 “정적 자산 404로 인한 빈 화면”을 놓치는 케이스가 있어, `/` HTML에서 참조하는 `/_next/static/*.(css|js)` 1개가 200인지까지 확인 후 비정상 시 web만 재기동하도록 개선(`windows/watchdog.ps1`).
+
+- 방별 명령어(FAQ) 트리거 워커(command-worker) 추가:
+  - 워커: `node-iris-app/src/workers/command_worker.ts` (SSE `/logs/stream` 구독)
+  - UI: 방 카드 “명령어(FAQ)” 토글 → `runtime.features[roomId].commands=true`
+  - 기능: `!등록/!삭제/!명령어/!전체등록/!키` (덮어쓰기 금지, 삭제 후 재등록)
+  - 권한: 등록/삭제는 방장/관리자만, 전체등록은 iris 계정만
+  - 발신: Talk-API Reply(type=26)로만 응답(attachment `src_*` 포함)
+  - 운영: `windows/start_command_worker.ps1`, `windows/start_all.ps1`, `windows/watchdog.ps1` 연동 + 프로세스 UI(`/api/bot/processes`)에 `command-worker` 추가
+  - 문서: `docs/adr/ADR-0035-room-command-triggers-worker.md`, `docs/reference/kakao-room-command-triggers.md`

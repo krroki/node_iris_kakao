@@ -1,4 +1,6 @@
 import type { ChatContext, Logger } from "@tsuki-chat/node-iris";
+import { downloadUrlAsBase64 } from "./download";
+import { tryServerIrisReplyMedia } from "./iris";
 import { tryServerTalkApiDispatch } from "./talkapi";
 import { isSafeMode } from "./guard";
 
@@ -75,7 +77,27 @@ export async function safeReplyImageUrls(logger: Logger, context: ChatContext, u
     return;
   }
 
-  throw new Error("No image-capable send method available (replyImageUrls/replyImage missing)");
+  // Fallback: download -> base64 -> Realtime API (/send/iris/reply_media) -> IRIS /reply
+  // (IRIS는 멘션/Reply 미지원, 이미지는 가능: ADR-0030)
+  if (!rid) throw new Error("No image-capable send method available (roomId missing in context)");
+  logger.warn("[send] replyImageUrls not supported; falling back to iris.reply_media", { roomId: rid, count: u.length });
+  const limited = u.slice(0, 6);
+  const imagesBase64: string[] = [];
+  for (const url of limited) {
+    try {
+      imagesBase64.push(await downloadUrlAsBase64(url, Math.max(5000, timeoutMs)));
+    } catch (e) {
+      logger.warn("[send] image download failed", { roomId: rid, url, err: String(e) });
+    }
+  }
+  if (imagesBase64.length === 0) {
+    throw new Error("No image-capable send method available (download failed)");
+  }
+  const ok = await tryServerIrisReplyMedia(logger as any, rid, imagesBase64, Math.max(15000, timeoutMs));
+  if (!ok) {
+    throw new Error("iris reply_media failed");
+  }
+  logger.info("[send] replyImageUrls ok (iris fallback)", { ms: Date.now() - start, roomId: rid, count: imagesBase64.length });
 }
 
 export function resolveTemplateImageUrls(relOrList: string | string[]): string[] {
@@ -209,15 +231,28 @@ export async function safeReplyWithMentions(
     return;
   }
 
-  const { finalText, mentions } = buildMentionAttachment(message, mlist as Mentionee[]);
+  let finalText = message;
+  let mentions: MentionStruct[] = [];
+  try {
+    const built = buildMentionAttachment(message, mlist as Mentionee[]);
+    finalText = built.finalText;
+    mentions = built.mentions;
+  } catch (e) {
+    logger.warn("[send] buildMentionAttachment failed; sending plain text", { roomId: rid, err: String(e), count: mlist.length });
+    await safeReply(logger, context, message, timeoutMs);
+    return;
+  }
 
   // 1) Prefer server-side Talk-API dispatch when mentionees include userId.
   if (hasIds) {
-    if (!rid) throw new Error("roomId missing in context");
-    const ok = await tryServerTalkApiDispatch(logger, rid, finalText, mlist, timeoutMs);
-    if (ok) {
-      logger.info("[send] talkapi dispatch ok", { ms: Date.now() - start, roomId: rid });
-      return;
+    if (!rid) {
+      logger.warn("[send] roomId missing; skip talkapi dispatch", { count: mlist.length });
+    } else {
+      const ok = await tryServerTalkApiDispatch(logger, rid, finalText, mlist, timeoutMs);
+      if (ok) {
+        logger.info("[send] talkapi dispatch ok", { ms: Date.now() - start, roomId: rid });
+        return;
+      }
     }
   }
 
@@ -232,7 +267,12 @@ export async function safeReplyWithMentions(
   }
 
   if (!op) {
-    throw new Error("No mention-capable send method available (talkapi failed; SDK mention API missing)");
+    logger.warn("[send] mention send unavailable; falling back to plain text", {
+      roomId: rid,
+      count: mlist.length,
+    });
+    await safeReply(logger, context, finalText, timeoutMs);
+    return;
   }
 
   try {

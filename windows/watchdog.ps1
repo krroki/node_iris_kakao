@@ -28,11 +28,14 @@ param(
   [int]$BotRestartCooldownSec = 120,
   [int]$PipelineRestartCooldownSec = 300,
   [int]$WebRestartCooldownSec = 120,
-  [int]$WebFailThreshold = 6,
+  # UI는 사람이 직접 보고 쓰는 경로라 "깨짐" 체감이 크다.
+  # 정적 자산 404(빈 화면) 같은 케이스는 1~2회 체크만 실패해도 실사용에 문제가 되므로 기본 임계치를 낮춘다.
+  [int]$WebFailThreshold = 2,
   [int]$KbRestartCooldownSec = 180,
   [int]$WelcomeWorkerRestartCooldownSec = 120,
   [int]$AiWorkerRestartCooldownSec = 120,
   [int]$BroadcastWorkerRestartCooldownSec = 120,
+  [int]$CommandWorkerRestartCooldownSec = 120,
   [int]$RosterWorkerRestartCooldownSec = 120,
   [int]$OpenchatMembersSheetsWorkerRestartCooldownSec = 120,
   [int]$IrisRepairCooldownSec = 300,
@@ -56,6 +59,7 @@ $startWebScript = Join-Path $root "windows\start_web.ps1"
 $startWelcomeWorkerScript = Join-Path $root "windows\start_welcome_worker.ps1"
 $startAiWorkerScript = Join-Path $root "windows\start_ai_worker.ps1"
 $startBroadcastWorkerScript = Join-Path $root "windows\start_broadcast_worker.ps1"
+$startCommandWorkerScript = Join-Path $root "windows\start_command_worker.ps1"
 $startRosterWorkerScript = Join-Path $root "windows\start_roster_worker.ps1"
 $startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_openchat_members_sheets_worker.ps1"
 $smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
@@ -69,6 +73,7 @@ $script:lastKbRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastWelcomeWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastCommandWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastOpenchatMembersSheetsWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
@@ -602,6 +607,71 @@ function Restart-BroadcastWorker {
   }
 }
 
+function Test-CommandWorkerOk {
+  try {
+    if ($env:COMMAND_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\command_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-CommandWorker {
+  param([string]$Reason)
+
+  if ($env:COMMAND_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startCommandWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_command_worker.ps1 없음: $startCommandWorkerScript (command-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastCommandWorkerRestartAt.AddSeconds($CommandWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "command-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastCommandWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "command-worker 재시작(start_command_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startCommandWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[command_worker] $_" }
+    Write-Log -Level 'INFO' -Message "command-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "command-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
 function Test-RosterWorkerOk {
   try {
     if ($env:ROSTER_WORKER_DISABLE -eq '1') { return $true }
@@ -879,9 +949,18 @@ try
       $script:webFailCount++
       $detail2 = if ($webDetail) { " detail=$webDetail" } else { "" }
       Write-Log -Level 'WARN' -Message ("WEB UI 체크 실패(연속 {0}회).{1}" -f $script:webFailCount, $detail2)
-      if ($script:webFailCount -ge $WebFailThreshold) {
-        # 첫 재시작은 일반 모드, 반복 실패 시 CleanBuild로 산출물 파손까지 복구 시도
-        $useClean = ($script:webRestartAttemptsSinceOk -ge 1)
+
+      $isStaticAssetFail = $false
+      try {
+        $isStaticAssetFail = ($webDetail -match '/_next/static') -or ($webDetail -match 'static asset')
+      } catch { $isStaticAssetFail = $false }
+
+      # 정적 자산 404/누락은 "UI 빈 화면"으로 이어지므로 더 빠르게 복구한다.
+      $threshold = if ($isStaticAssetFail) { 2 } else { $WebFailThreshold }
+
+      if ($script:webFailCount -ge $threshold) {
+        # 반복 실패 또는 정적 자산 실패는 CleanBuild로 산출물 파손까지 복구 시도
+        $useClean = $isStaticAssetFail -or ($script:webRestartAttemptsSinceOk -ge 1)
         $detail = ""
         try { $detail = [string]$apiStatus.detail } catch { $detail = "" }
         Restart-Web -Reason ("WEB UI 체크 연속 실패($($script:webFailCount)회). $webDetail $detail") -CleanBuild:$useClean | Out-Null
@@ -932,6 +1011,14 @@ try
       $ok = Test-BroadcastWorkerOk
       if (-not $ok) {
         Restart-BroadcastWorker -Reason "broadcast-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # command-worker stage (feature worker) - 방별 명령어/FAQ 워커 자동 복구
+    try {
+      $ok = Test-CommandWorkerOk
+      if (-not $ok) {
+        Restart-CommandWorker -Reason "command-worker not running/heartbeat stale"
       }
     } catch {}
 
