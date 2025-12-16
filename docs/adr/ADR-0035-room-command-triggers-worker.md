@@ -53,6 +53,9 @@
   - `!등록/!삭제`: 방장/관리자만 가능
   - `!전체등록`: iris 계정만 가능
   - 비권한자가 호출하면 **안내 메시지**를 답장으로 발신한다.
+- **운영 로그 라우팅**
+  - 진단/운영 로그는 **항상 테스트용 오픈채팅방**으로만 발신한다(운영방 오염 방지).
+  - 단, 비권한자가 `!등록/!삭제`를 시도했을 때의 “권한 없음” 안내는 해당 방에 발신하는 것이 정상이다.
 - **Reply만 사용(폴백 금지)**: Reply에 필요한 메타(`src_logId/src_userId/src_linkId/src_type/src_message`)가 하나라도 없으면
   임의 값/일반 메시지(type=1)로 대체하지 않고 **스킵 + 로그 기록**한다.
 
@@ -60,9 +63,24 @@
 
 ### 방장/관리자 판별
 - IRIS DB `open_chat_member`에서 `link_member_type`으로 판별한다.
-  - `1` 또는 `4` → 방장/관리자로 간주
+  - 관측된 역할 값(보수적):
+    - `8` → 방장(호스트)
+    - `4` → 부방장/운영진
+    - `1` → 일부 방에서 운영진/특수 role로 관측(보수적으로 admin 취급)
 - 멤버 DB가 아직 로딩되지 않은 방은(특히 대형 방) 권한 확인이 실패할 수 있으며,
   이 경우 등록/삭제는 거부하고 안내 메시지를 발신한다(조용한 진행 금지).
+- 멤버 DB가 비어있어 권한 판별이 불가능한 경우에는, 송신 없이(화면 탭/스크롤만) 멤버 DB를 채우는 작업을 자동 트리거한다.
+  - 스크립트: `scripts/openchat_load_members.ps1` (ADB로 오픈채팅 URL 오픈 → 방 정보/멤버 화면 → 스크롤)
+  - 레이트리밋: roomId 기준 15분 쿨다운
+  - ops 로그: 테스트용 오픈채팅방으로만 발신(운영방에 진단 로그 금지)
+  - 방장/부방장(운영진) 스냅샷은 `node-iris-app/data/room_admins.json`로 저장되며,
+    신규 방(allowedRoomIds에 처음 추가된 roomId)은 `command-worker`가 즉시 갱신을 시도한다.
+
+### 운영자 수동 권한 오버라이드
+- 멤버 DB가 불안정한 방에서 운영자가 임시로 등록/삭제 권한을 부여할 수 있다.
+  - (방 단위 권장) `runtime.features[roomId].commandAdminSenderIds`
+  - (글로벌) `runtime.json.commandAdminSenderIds`
+  - senderName 기반도 가능하지만, 닉네임 위장 가능성 때문에 비권장이다.
 
 ### iris 계정 판별
 우선순위(보안 강도 순):
@@ -105,4 +123,3 @@
   - `windows/list_bots.ps1`
   - `web/src/components/RoomCard.tsx`
   - `web/src/app/api/bot/processes/route.ts`
-

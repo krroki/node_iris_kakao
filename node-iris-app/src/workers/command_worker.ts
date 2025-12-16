@@ -1,11 +1,12 @@
 import { Logger } from "@tsuki-chat/node-iris";
+import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import path from "path";
 
 import DedupCache from "../services/dedupCache";
 import { APP_ROOT } from "../utils/paths";
 import { tryServerIrisReplyText } from "../utils/iris";
-import { tryServerTalkApiDispatchRaw } from "../utils/talkapi";
+import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/talkapi";
 
 type StreamEntry = {
   ts?: string;
@@ -29,6 +30,10 @@ type RuntimeConfig = {
   // "iris 계정" 판단 (우선순위: ids > names > senderName=='iris')
   irisAdminSenderIds?: string[] | undefined;
   irisAdminSenderNames?: string[] | undefined;
+  // command 등록/삭제 권한 오버라이드(우선순위: ids > names)
+  // - 멤버 DB(open_chat_member)가 비어있거나 role 확인이 불안정한 방에서 운영자가 수동으로 허용 가능
+  commandAdminSenderIds?: string[] | undefined;
+  commandAdminSenderNames?: string[] | undefined;
 };
 
 type WorkerState = {
@@ -55,6 +60,9 @@ type TriggerRecord = {
 
 const logger = new Logger("command-worker");
 
+// 운영 알림/진단 메시지 중복 방지(운영자 알림 스팸 방지)
+const ALERT_DEDUP = new DedupCache(5 * 60 * 1000); // 5분
+
 const STATE_PATH = path.join(APP_ROOT, "data", "command_worker_state.json");
 const STATUS_PATH = path.join(APP_ROOT, "data", "command_worker_status.json");
 const RUNTIME_PATH = path.join(APP_ROOT, "config", "runtime.json");
@@ -64,6 +72,21 @@ const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 
 const LINK_ID_CACHE_MS = 30 * 60 * 1000; // 30분
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
+
+// 운영 진단/알림 로그는 항상 "테스트용 오픈채팅방"으로만 발신한다(운영방 오염 방지).
+const OPS_LOG_ROOM_ID = String(process.env.OPS_LOG_ROOM_ID || "18462226881291012").trim();
+const MEMBER_LOAD_DEDUP = new DedupCache(15 * 60 * 1000); // 15분 (roomId 기준)
+const ROOM_ADMINS_REFRESH_DEDUP = new DedupCache(10 * 60 * 1000); // 10분 (roomId 기준)
+
+const ROOM_ADMINS_PATH = path.join(APP_ROOT, "data", "room_admins.json");
+
+// Kakao openchat role (observed)
+// - 8: 방장(호스트) (room당 보통 1명)
+// - 4: 부방장/운영진 (여러 명 가능)
+// - 1: 일부 방에서 운영진/특수 role로 관측됨(보수적으로 admin 취급)
+const ROOM_ADMIN_TYPES = new Set<number>([8, 4, 1]);
+const ROOM_OWNER_TYPE = 8;
+const ROOM_SUBHOST_TYPES = new Set<number>([4, 1]);
 
 let runtimeCache: { at: number; data: RuntimeConfig } | null = null;
 const RUNTIME_CACHE_MS = 1500;
@@ -192,6 +215,37 @@ async function writeJsonAtomic(dst: string, data: unknown): Promise<void> {
   }
 }
 
+type RoomAdminInfo = {
+  updatedAt: string;
+  hostUserIds: string[];
+  subHostUserIds: string[];
+  adminUserIds: string[];
+  loadedMembersCount?: number;
+  activeMembersCount?: number;
+  note?: string | null;
+};
+
+type RoomAdminsSnapshot = {
+  updatedAt: string;
+  rooms: Record<string, RoomAdminInfo>;
+};
+
+async function loadRoomAdminsSnapshot(): Promise<RoomAdminsSnapshot> {
+  try {
+    const raw = await fs.readFile(ROOM_ADMINS_PATH, "utf8");
+    const parsed = JSON.parse(raw || "{}") as Partial<RoomAdminsSnapshot>;
+    const rooms = parsed.rooms && typeof parsed.rooms === "object" ? (parsed.rooms as Record<string, RoomAdminInfo>) : {};
+    const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
+    return { updatedAt, rooms };
+  } catch {
+    return { updatedAt: new Date().toISOString(), rooms: {} };
+  }
+}
+
+async function saveRoomAdminsSnapshot(s: RoomAdminsSnapshot): Promise<void> {
+  await writeJsonAtomic(ROOM_ADMINS_PATH, s);
+}
+
 async function loadState(): Promise<WorkerState> {
   try {
     const raw = await fs.readFile(STATE_PATH, "utf8");
@@ -276,6 +330,196 @@ function isIrisAdmin(runtime: RuntimeConfig, senderId: string, senderName: strin
   if (names.length > 0) return names.includes(sn);
 
   return sn === "iris";
+}
+
+function isCommandAdminOverride(runtime: RuntimeConfig, roomId: string, senderId: string, senderName: string): boolean {
+  const sn = safeString(senderName).toLowerCase();
+  const rid = String(roomId);
+  const feats = runtime.features && typeof runtime.features === "object" ? runtime.features : {};
+  const flags = feats[rid];
+
+  const roomIds = Array.isArray((flags as any)?.commandAdminSenderIds)
+    ? (flags as any).commandAdminSenderIds.map((x: unknown) => safeString(x)).filter(Boolean)
+    : [];
+  if (roomIds.length > 0) return roomIds.includes(String(senderId));
+
+  const roomNames = Array.isArray((flags as any)?.commandAdminSenderNames)
+    ? (flags as any).commandAdminSenderNames.map((x: unknown) => safeString(x).toLowerCase()).filter(Boolean)
+    : [];
+  if (roomNames.length > 0) return roomNames.includes(sn);
+
+  const ids = Array.isArray(runtime.commandAdminSenderIds)
+    ? runtime.commandAdminSenderIds.map((x) => safeString(x)).filter(Boolean)
+    : [];
+  if (ids.length > 0) return ids.includes(String(senderId));
+
+  const names = Array.isArray(runtime.commandAdminSenderNames)
+    ? runtime.commandAdminSenderNames.map((x) => safeString(x).toLowerCase()).filter(Boolean)
+    : [];
+  if (names.length > 0) return names.includes(sn);
+
+  return false;
+}
+
+function escapePwshSingleQuotes(v: string): string {
+  return String(v || "").replace(/'/g, "''");
+}
+
+function shouldAutoLoadMembersOnMissing(runtime: RuntimeConfig, roomId: string): boolean {
+  const feats = runtime.features && typeof runtime.features === "object" ? runtime.features : {};
+  const flags = feats[String(roomId)];
+  if (flags && typeof flags === "object" && (flags as any).commandAutoLoadMembersOnMissing === false) return false;
+
+  const global = (runtime as any)?.commandWorker?.autoLoadMembersOnMissing;
+  if (typeof global === "boolean") return global;
+
+  // 운영 기본: 켜둔다(멤버 DB가 비면 즉시 갱신 트리거)
+  return true;
+}
+
+async function sendOpsLog(runtime: RuntimeConfig, msg: string): Promise<void> {
+  const text = String(msg || "").trim();
+  if (!text) return;
+  if (isSafeModeOn(runtime)) return;
+  if (!OPS_LOG_ROOM_ID) return;
+  // ops 로그는 테스트방 고정(allowlist/excluded 설정과 무관)이며, 운영방에는 발신하지 않는다.
+
+  try {
+    const okTalk = isTalkApiEnabled(runtime) ? await tryServerTalkApiDispatch(logger, OPS_LOG_ROOM_ID, text, [], 12000) : false;
+    if (!okTalk) {
+      await tryServerIrisReplyText(logger, OPS_LOG_ROOM_ID, text, 12000);
+    }
+  } catch (e) {
+    logger.warn("[ops] sendOpsLog failed", { err: String(e) });
+  }
+}
+
+async function triggerMemberLoad(roomId: string, roomName: string, reason: string): Promise<void> {
+  const runtime = await loadRuntime();
+  if (isSafeModeOn(runtime)) return;
+  if (!shouldAutoLoadMembersOnMissing(runtime, roomId)) return;
+  if (MEMBER_LOAD_DEDUP.isDuplicate(roomId)) return;
+  if (!isRoomAllowed(runtime, roomId)) return;
+
+  const repoRoot = path.resolve(APP_ROOT, "..");
+  const scriptPath = path.join(repoRoot, "scripts", "openchat_load_members.ps1");
+  const logsDir = path.join(repoRoot, "windows", "logs");
+  const ts = new Date().toISOString().replace(/[:.]/g, "").replace("Z", "Z");
+  const outLog = path.join(logsDir, `openchat_load_members.${roomId}.${ts}.out.log`);
+  const errLog = path.join(logsDir, `openchat_load_members.${roomId}.${ts}.err.log`);
+
+  const ps = [
+    "$ErrorActionPreference='SilentlyContinue';",
+    `$out='${escapePwshSingleQuotes(outLog)}';`,
+    `$err='${escapePwshSingleQuotes(errLog)}';`,
+    `$script='${escapePwshSingleQuotes(scriptPath)}';`,
+    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $out) | Out-Null;",
+    "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $err) | Out-Null;",
+    "Start-Process -WindowStyle Hidden -FilePath 'powershell' -ArgumentList @(",
+    "  '-NoProfile','-ExecutionPolicy','Bypass','-File',$script,'-RoomId','" + escapePwshSingleQuotes(roomId) + "','-Scrolls','120'",
+    ") -RedirectStandardOutput $out -RedirectStandardError $err | Out-Null;",
+  ].join(" ");
+
+  try {
+    const p = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      cwd: repoRoot,
+    });
+    p.unref();
+    await sendOpsLog(
+      runtime,
+      `[OPS][command-worker] 멤버 DB 미로딩 감지 → openchat_load_members 트리거 (${reason})\n- room: ${roomName} (${roomId})\n- logs: ${outLog}\n- err: ${errLog}`,
+    );
+  } catch (e) {
+    await sendOpsLog(
+      runtime,
+      `[OPS][command-worker] openchat_load_members 트리거 실패 (${reason})\n- room: ${roomName} (${roomId})\n- err: ${String(e)}`,
+    );
+  }
+}
+
+async function refreshRoomAdminsForRoom(roomId: string, roomName: string, reason: string): Promise<void> {
+  const rid = safeString(roomId);
+  if (!rid) return;
+
+  const runtime = await loadRuntime();
+  if (isSafeModeOn(runtime)) return;
+  if (!isRoomAllowed(runtime, rid)) return;
+  const bypassDedup = String(reason || "").toLowerCase().includes("new_room");
+  if (!bypassDedup && ROOM_ADMINS_REFRESH_DEDUP.isDuplicate(`room:${rid}`)) return;
+
+  const nowIso = new Date().toISOString();
+
+  // active members count (from chat_rooms)
+  let activeCnt: number | undefined = undefined;
+  try {
+    const ar = await irisQuery("select active_members_count as cnt from chat_rooms where id=?", [rid], 8000);
+    const v = Number(ar.rows?.[0]?.cnt ?? ar.rows?.[0]?.active_members_count);
+    if (Number.isFinite(v) && v >= 0) activeCnt = v;
+  } catch {
+    // ignore
+  }
+
+  // loaded members count (from open_chat_member)
+  let loadedCnt = 0;
+  const cntRes = await irisQuery("select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?", [rid], 8000);
+  if (cntRes.ok) {
+    const v = Number(cntRes.rows?.[0]?.cnt);
+    if (Number.isFinite(v) && v >= 0) loadedCnt = v;
+  }
+
+  if (loadedCnt <= 0) {
+    // 멤버 DB가 비어있으면 우선 스크롤 로딩을 트리거하고, 다음 주기에서 다시 갱신한다.
+    void triggerMemberLoad(rid, roomName || rid, `ADMIN_REFRESH_${reason}_EMPTY_DB`).catch(() => {});
+  }
+
+  const rolesRes = await irisQuery(
+    "select user_id, max(link_member_type) as t from db2.open_chat_member where involved_chat_id=? group by user_id",
+    [rid],
+    8000,
+  );
+
+  const hostUserIds: string[] = [];
+  const subHostUserIds: string[] = [];
+  const adminUserIds: string[] = [];
+
+  if (rolesRes.ok) {
+    for (const row of rolesRes.rows || []) {
+      const uid = safeString((row as any)?.user_id);
+      const t = Number((row as any)?.t ?? (row as any)?.link_member_type);
+      if (!uid || !Number.isFinite(t)) continue;
+      if (!ROOM_ADMIN_TYPES.has(t)) continue;
+      adminUserIds.push(uid);
+      if (t === ROOM_OWNER_TYPE) hostUserIds.push(uid);
+      if (ROOM_SUBHOST_TYPES.has(t)) subHostUserIds.push(uid);
+    }
+  }
+
+  const snapshot = await loadRoomAdminsSnapshot();
+  snapshot.rooms[rid] = {
+    updatedAt: nowIso,
+    hostUserIds: Array.from(new Set(hostUserIds)),
+    subHostUserIds: Array.from(new Set(subHostUserIds)),
+    adminUserIds: Array.from(new Set(adminUserIds)),
+    loadedMembersCount: loadedCnt,
+    activeMembersCount: activeCnt,
+    note:
+      loadedCnt <= 0
+        ? "open_chat_member empty (member list not loaded yet)"
+        : hostUserIds.length === 0 && subHostUserIds.length === 0
+          ? "no admin roles found in open_chat_member"
+          : null,
+  };
+  snapshot.updatedAt = nowIso;
+  await saveRoomAdminsSnapshot(snapshot);
+
+  if (ALERT_DEDUP.isDuplicate(`admins:${rid}`)) return;
+  await sendOpsLog(
+    runtime,
+    `[OPS][room-admins] 갱신(${reason})\n- room: ${roomName || rid} (${rid})\n- activeMembersCount: ${activeCnt ?? "?"}\n- loadedMembersCount: ${loadedCnt}\n- host: ${hostUserIds.length}\n- subHost: ${subHostUserIds.length}`,
+  );
 }
 
 function parseCommand(textRaw: string): ParsedCommand | null {
@@ -372,15 +616,21 @@ async function resolveOpenLinkIdForRoom(roomId: string): Promise<string | null> 
   return linkId;
 }
 
-async function isRoomAdmin(roomId: string, senderId: string): Promise<{ ok: true; isAdmin: boolean } | { ok: false; err: string }> {
+async function isRoomAdmin(
+  roomId: string,
+  senderId: string,
+): Promise<{ ok: true; isAdmin: boolean; reason?: "NO_MEMBER_ROW" | "NO_ROLE" } | { ok: false; err: string }> {
   const r = await irisQuery(
-    "select link_member_type from open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
+    "select link_member_type from db2.open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
     [roomId, senderId],
     8000,
   );
   if (!r.ok) return { ok: false, err: r.err || "query_failed" };
-  const t = Number(r.rows?.[0]?.link_member_type);
-  const isAdmin = Number.isFinite(t) && (t === 1 || t === 4);
+  const row = r.rows?.[0];
+  if (!row) return { ok: true, isAdmin: false, reason: "NO_MEMBER_ROW" };
+  const t = Number((row as any)?.link_member_type);
+  if (!Number.isFinite(t)) return { ok: true, isAdmin: false, reason: "NO_ROLE" };
+  const isAdmin = ROOM_ADMIN_TYPES.has(t);
   return { ok: true, isAdmin };
 }
 
@@ -504,10 +754,17 @@ async function sendReplyToMessage(opts: {
   const ok = await tryServerTalkApiDispatchRaw(logger, roomId, replyText, 26, replyAttachment, 12000);
   if (ok) return true;
 
-  // Talk-API Reply가 실패하면 운영 연속성을 위해 IRIS /reply_text로 "명시적 폴백"한다.
-  // - 카카오톡 UI에서 답장으로 렌더링되지는 않으므로 혼란 방지를 위해 prefix를 붙인다.
-  const fallbackText = `[답장 불가: Talk-API] ${replyText}`;
-  const okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+  // Talk-API Reply가 실패하면 운영 연속성을 위해 IRIS /reply_text로 폴백한다(Reply UI 렌더링은 불가).
+  // - 운영 방에는 "답장 불가" 같은 기술 문구를 발송하지 않는다.
+  // - 대신 테스트방에만 알림을 남겨 운영자가 장애를 인지할 수 있게 한다.
+  const alertKey = `talkapi_reply_failed:${roomId}`;
+  if (!ALERT_DEDUP.isDuplicate(alertKey)) {
+    void sendOpsLog(
+      runtime,
+      `[ALERT][command-worker] Reply(type=26) 실패 → 일반 메시지로 대체 발신. roomId=${roomId} srcLogId=${replyAttachment.src_logId} srcUserId=${replyAttachment.src_userId}`,
+    );
+  }
+  const okIris = await tryServerIrisReplyText(logger, roomId, replyText, 12000);
   return okIris;
 }
 
@@ -608,31 +865,57 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
   }
 
   if (cmd.kind === "register" || cmd.kind === "delete") {
-    const perm = await isRoomAdmin(roomId, senderId);
-    if (!perm.ok) {
-      await sendReplyToMessage({
-        runtime,
-        roomId,
-        replyText: "권한 확인에 실패했습니다. 잠시 후 다시 시도해주세요.",
-        srcLogId,
-        srcUserId: senderId,
-        srcType,
-        srcMessage,
-      });
-      logger.warn("[perm] room admin check failed", { roomId, senderId, err: perm.err });
-      return;
-    }
-    if (!perm.isAdmin) {
-      await sendReplyToMessage({
-        runtime,
-        roomId,
-        replyText: "방장/관리자만 사용할 수 있는 명령입니다. (`!등록`, `!삭제`)",
-        srcLogId,
-        srcUserId: senderId,
-        srcType,
-        srcMessage,
-      });
-      return;
+    if (!isCommandAdminOverride(runtime, roomId, senderId, senderName)) {
+      const perm = await isRoomAdmin(roomId, senderId);
+      if (!perm.ok) {
+        await sendReplyToMessage({
+          runtime,
+          roomId,
+          replyText:
+            "권한 확인이 어려워 현재 등록/삭제를 처리할 수 없습니다. 잠시 후 다시 시도해주세요.",
+          srcLogId,
+          srcUserId: senderId,
+          srcType,
+          srcMessage,
+        });
+        logger.warn("[perm] room admin check failed", { roomId, senderId, err: perm.err });
+        await sendOpsLog(
+          runtime,
+          `[OPS][command-worker] 권한 확인 실패(query_failed)\n- room: ${safeString(ent.roomName) || roomId} (${roomId})\n- sender: ${senderName} (${senderId})\n- err: ${perm.err}`,
+        );
+        return;
+      }
+      if (!perm.isAdmin) {
+        if (perm.reason === "NO_MEMBER_ROW" || perm.reason === "NO_ROLE") {
+          await sendReplyToMessage({
+            runtime,
+            roomId,
+            replyText: "방장/관리자 권한을 확인 중입니다. 1~2분 후 다시 시도해주세요.",
+            srcLogId,
+            srcUserId: senderId,
+            srcType,
+            srcMessage,
+          });
+          await sendOpsLog(
+            runtime,
+            `[OPS][command-worker] 멤버 DB 미로딩으로 권한 판별 불가\n- room: ${safeString(ent.roomName) || roomId} (${roomId})\n- sender: ${senderName} (${senderId})\n- reason: ${perm.reason}\n- action: openchat_load_members 트리거 시도`,
+          );
+          void triggerMemberLoad(roomId, safeString(ent.roomName) || roomId, perm.reason).catch(() => {});
+          return;
+        }
+
+        // 진짜 비권한자(방장/관리자 아님)
+        await sendReplyToMessage({
+          runtime,
+          roomId,
+          replyText: "방장/관리자만 사용할 수 있는 명령입니다. (`!등록`, `!삭제`)",
+          srcLogId,
+          srcUserId: senderId,
+          srcType,
+          srcMessage,
+        });
+        return;
+      }
     }
   }
 
@@ -836,6 +1119,14 @@ async function connectAndRun(): Promise<void> {
       logger.warn("[stream] allowedRoomIds empty; sleeping");
       await new Promise((r) => setTimeout(r, 5000));
       continue;
+    }
+
+    // 방장/부방장(운영진) 스냅샷을 주기적으로 갱신한다.
+    // - 신규 방이 allowedRoomIds에 추가되면 여기서 즉시 갱신/부트스트랩(멤버 스크롤 로딩)을 트리거한다.
+    const adminsSnap = await loadRoomAdminsSnapshot();
+    for (const rid of rooms) {
+      const exists = !!adminsSnap.rooms?.[rid];
+      void refreshRoomAdminsForRoom(rid, rid, exists ? "periodic" : "new_room").catch(() => {});
     }
 
     const base = safeString(process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/+$/, "");

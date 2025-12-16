@@ -64,14 +64,23 @@ Write-Log "RoomId=$RoomId, Serial=$Serial, IrisQueryBase=$IrisQueryBase"
 
 # 1) link_id 및 open_link URL 조회
 try {
-    $q1 = "select distinct link_id from db2.open_chat_member where involved_chat_id=?"
-    $r1 = Invoke-IrisQuery -query $q1 -bind @($RoomId)
-    if (-not $r1.data -or $r1.data.Count -eq 0) {
-        Write-Log "open_chat_member 에 RoomId=$RoomId 가 없습니다. DB가 아직 동기화되지 않았습니다." "ERROR"
-        exit 1
+    # 우선 chat_rooms에서 link_id를 조회한다(멤버 DB가 0건이어도 가능).
+    $q0 = "select link_id from chat_rooms where id=?"
+    $r0 = Invoke-IrisQuery -query $q0 -bind @($RoomId)
+    if ($r0.data -and $r0.data.Count -gt 0 -and $r0.data[0].link_id) {
+        $linkId = $r0.data[0].link_id
+        Write-Log "resolved link_id from chat_rooms: $linkId"
+    } else {
+        # fallback: open_chat_member에서 추론(이미 일부 로딩된 방)
+        $q1 = "select distinct link_id from db2.open_chat_member where involved_chat_id=?"
+        $r1 = Invoke-IrisQuery -query $q1 -bind @($RoomId)
+        if (-not $r1.data -or $r1.data.Count -eq 0) {
+            Write-Log "RoomId=$RoomId 의 link_id를 찾지 못했습니다. (chat_rooms / open_chat_member 모두 비어있음)" "ERROR"
+            exit 1
+        }
+        $linkId = $r1.data[0].link_id
+        Write-Log "resolved link_id from open_chat_member: $linkId"
     }
-    $linkId = $r1.data[0].link_id
-    Write-Log "resolved link_id=$linkId"
 
     $q2 = "select url,name from db2.open_link where id=?"
     $r2 = Invoke-IrisQuery -query $q2 -bind @($linkId)

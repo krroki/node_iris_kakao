@@ -61,6 +61,7 @@
 ### Invariants (불변식)
 - SAFE_MODE=true면 서버가 최종적으로 403으로 차단한다(모든 발신 경로 공통).
 - Talk-API 엔드포인트는 실패를 숨기지 않는다(`talkStatus != 0`이면 502).
+- 운영방(실제 톡방)에는 “Reply 불가/장애” 같은 진단 문구를 발신하지 않는다. 운영자 알림은 **테스트용 오픈채팅방(`18462226881291012`)으로만** 남긴다.
 - IRIS 폴백은 “텍스트/이미지”만 다룬다(멘션/Reply 없음).
 
 ## Consequences (결과)
@@ -90,4 +91,3 @@
   - `node-iris-app/src/workers/ai_worker.ts`
   - `node-iris-app/src/workers/broadcast_worker.ts`
   - `node-iris-app/src/utils/sender.ts`
-
