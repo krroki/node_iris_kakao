@@ -74,7 +74,7 @@ const LINK_ID_CACHE_MS = 30 * 60 * 1000; // 30분
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
 
 // 운영 진단/알림 로그는 항상 "테스트용 오픈채팅방"으로만 발신한다(운영방 오염 방지).
-const OPS_LOG_ROOM_ID = String(process.env.OPS_LOG_ROOM_ID || "18462226881291012").trim();
+const OPS_LOG_ROOM_ID = "18462226881291012";
 const MEMBER_LOAD_DEDUP = new DedupCache(15 * 60 * 1000); // 15분 (roomId 기준)
 const ROOM_ADMINS_REFRESH_DEDUP = new DedupCache(10 * 60 * 1000); // 10분 (roomId 기준)
 
@@ -243,7 +243,36 @@ async function loadRoomAdminsSnapshot(): Promise<RoomAdminsSnapshot> {
 }
 
 async function saveRoomAdminsSnapshot(s: RoomAdminsSnapshot): Promise<void> {
-  await writeJsonAtomic(ROOM_ADMINS_PATH, s);
+  // room_admins.json은 운영상 관측/가이드 목적의 스냅샷 파일이며,
+  // Windows 환경에서 rename 기반 atomic write가 드물게 꼬여 tail이 남는 케이스가 있어(파일이 깨짐),
+  // 여기서는 "truncate 보장"을 우선한다.
+  const dir = path.dirname(ROOM_ADMINS_PATH);
+  await fs.mkdir(dir, { recursive: true });
+  const payload = JSON.stringify(s, null, 2);
+  const tmp = `${ROOM_ADMINS_PATH}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmp, payload, "utf8");
+  try {
+    // best-effort backup
+    const bak = `${ROOM_ADMINS_PATH}.bak`;
+    try {
+      await fs.unlink(bak);
+    } catch (e: any) {
+      if (e && String(e.code || "") !== "ENOENT") throw e;
+    }
+    try {
+      await fs.rename(ROOM_ADMINS_PATH, bak);
+    } catch (e: any) {
+      if (e && String(e.code || "") !== "ENOENT") throw e;
+    }
+    // copyFile은 dst를 "덮어쓰기+truncate" 하므로 tail 잔존을 방지한다.
+    await fs.copyFile(tmp, ROOM_ADMINS_PATH);
+  } finally {
+    try {
+      await fs.unlink(tmp);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function loadState(): Promise<WorkerState> {
