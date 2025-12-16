@@ -182,6 +182,8 @@
         watchdog 자기 자신을 종료시키지 않도록 고정했다.
       - **watchdog 자동 기동(중요)**: watchdog가 꺼져 있으면 자동 복구는 절대 동작하지 않는다.
         - Task Scheduler 등록(권장): `windows/register_watchdog_task.ps1` (기본 1분 주기, watchdog 미실행 시 자동 기동)
+          - 주기적으로 파란 PowerShell 창이 뜨면 스케줄러 작업이 콘솔로 실행 중인 것이므로,
+            `windows/register_watchdog_task.ps1`로 다시 등록해 `wscript.exe` 래퍼(`windows/run_ensure_watchdog.vbs`)를 사용한다(창 플래시 방지).
         - 부팅/로그온 자동 기동(선택): `windows/register_start_all_task.ps1` (콜드 부팅 시 파이프라인 전체 기동)
       - **IRIS(:5050) 복구가 안 될 때(중요)**: PortProxy가 `0.0.0.0:5050 -> 127.0.0.1:5050` 루프백으로 잡혀 있으면(iphlpsvc가 포트 점유)
         ADB forward가 `access denied(10013)`로 실패하며 IRIS가 장시간 다운될 수 있다.
@@ -244,7 +246,15 @@
   - `scripts/openchat_load_members.ps1`를 **자동 트리거**해(송신 없이) 단말에서 멤버 목록을 스크롤 로딩하여 DB를 채운다.
   - 레이트리밋: roomId 기준 15분 쿨다운
   - 상세 로그는 테스트용 오픈채팅방으로만 발신한다(운영방 오염 금지).
- - 방장/부방장 스냅샷은 `node-iris-app/data/room_admins.json`에 저장되며, 신규 방이 allowlist에 추가되면 자동 갱신된다.
+- 방장(Host)은 멤버 DB가 비어 있어도 `chat_rooms ↔ db2.open_link` 조인으로 owner user_id를 판별해 **즉시 권한을 허용**한다(멤버 로딩 실패/드리프트 대비).
+- 방장/부방장 스냅샷은 `node-iris-app/data/room_admins.json`에 저장된다.
+  - 신규 방은 Realtime `/rooms` 기반으로 자동 발견되며, `command-worker`가 `/runtime`의 `allowedRoomIds`에 자동 병합한다(수동 편집 불필요).
+  - 제외가 필요하면 `excludedRoomIds`를 사용한다(자동 병합에서도 제외됨).
+  - 스냅샷 갱신은 `command-worker`가 주기적으로 시도하며, 멤버 DB가 비어 있으면 아래 조건에서만 멤버 로딩(ADB 스크롤)을 트리거한다(과도 실행 방지).
+    - (권한 필요 시점) `!등록/!삭제` 등 관리 명령 수행에 권한 판별이 필요하지만 멤버 DB가 비어있는 경우
+    - (최근 활동 방) 최근 메시지 기록이 있는 방에서 `open_chat_member`가 비어있는 경우(기본 72시간, 환경변수 `AUTO_MEMBER_LOAD_RECENT_HOURS`)
+  - 최근 활동 방은 `commands=true`를 기본으로 자동 부여한다(운영자가 명시적으로 off한 방은 존중).
+  - 주기 갱신은 기본적으로 조용히 수행하며(스팸 방지), 변화가 있을 때만 테스트용 ops 방에 로그를 남긴다.
 - **Windows 기동 엔트리포인트(중요)**:
   - **사용자 실행 권장**: `windows/start_all.cmd` (더블클릭/`cmd.exe` 편의용).
   - **로직 SSOT(수정 기준)**: `windows/start_all.ps1` (실제 기동 로직은 여기만 유지).

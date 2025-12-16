@@ -44,8 +44,13 @@ if (-not (Test-Path $entry)) {
   throw "ensure_watchdog.ps1 not found: $entry"
 }
 
+$vbs = Join-Path $RepoPath 'windows\run_ensure_watchdog.vbs'
+if (-not (Test-Path $vbs)) {
+  throw "run_ensure_watchdog.vbs not found: $vbs"
+}
+
 $mins = [math]::Max(1, [int]$EveryMinutes)
-$action = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$entry`""
+$action = "wscript.exe `"$vbs`""
 $cmd = "schtasks /Create /TN `"$Name`" /TR `"$action`" /SC MINUTE /MO $mins /F /RL HIGHEST /RU `"$User`""
 Invoke-Schtasks -Cmd $cmd
 Write-Host ("Created task: {0} (every {1} minute(s), RU={2})" -f $Name, $mins, $User) -ForegroundColor Green

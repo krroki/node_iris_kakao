@@ -80,6 +80,6 @@
 - 조치:
   - watchdog 보장: `windows/ensure_watchdog.ps1` + `windows/register_watchdog_task.ps1` 추가(1분 주기)
     - UX: 스케줄러 작업이 1분마다 파란 PowerShell 창을 띄우는 현상을 방지하기 위해,
-      Task Action에 `-WindowStyle Hidden`을 추가해 백그라운드로만 실행되도록 수정.
+      Task Action을 `wscript.exe` 래퍼(`windows/run_ensure_watchdog.vbs`)로 변경해 콘솔 창 플래시 없이 실행되도록 수정.
   - IRIS 복구 신뢰성: `windows/repair_redroid_iris.ps1`에서 루프백 PortProxy 자동 정리 + 디바이스 캐시(`data/redroid_device.json`) 도입
   - watchdog 로그 품질: IRIS 복구 스크립트의 `exitCode`와 실제 `IRIS /config`(200) 여부를 함께 기록하도록 보강
