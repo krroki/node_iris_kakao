@@ -37,7 +37,11 @@
 - 워커: `node-iris-app/src/workers/command_worker.ts`
 - 저장소(영속): IRIS DB 테이블 `command_triggers`
 - UI 설정: `runtime.features[roomId].commands=true`인 방에서만 활성
-- 발신 형식: **Talk-API Reply** (`type=26 + attachment.src_*`)만 사용(폴백 금지)
+- 발신 형식:
+  - 기본: **Talk-API Reply** (`type=26 + attachment.src_*`)
+  - 예외: Talk-API가 실패하면 운영 연속성을 위해 IRIS `/reply_text`로 **일반 텍스트**를 발신할 수 있다(Reply 렌더링 불가).
+    - 운영 방에는 “답장 불가” 같은 기술 문구를 발신하지 않는다.
+    - 실패 알림은 테스트용 오픈채팅방으로만 남긴다.
 - 기동/복구:
   - `windows/start_command_worker.ps1`
   - `windows/start_all.ps1`에서 기본 기동
@@ -48,16 +52,18 @@
 - **코어 흔들림 금지**: 코어(bot)는 `!등록/!키`를 직접 처리하지 않고 “로그 기록”에 집중한다.
 - **기본 OFF**: roomId별로 `commands=true`를 명시적으로 켠 방만 동작한다.
   - `commands=false`인 방에서 `!등록/!명령어` 등 관리 커맨드가 들어오면 “꺼져있음” 안내를 답장으로 발신한다.
-- **덮어쓰기 금지**: `!등록`은 기존 키가 있으면 거부한다. 수정은 `!삭제` 후 재등록한다.
+- **덮어쓰기 금지**: `!등록`은 기존 키가 있으면 거부한다. 기존 키의 본문 수정은 `!수정`을 사용한다.
 - **권한 강제**
   - `!등록/!삭제`: 방장/관리자만 가능
   - `!전체등록`: iris 계정만 가능
   - 비권한자가 호출하면 **안내 메시지**를 답장으로 발신한다.
 - **운영 로그 라우팅**
   - 진단/운영 로그는 **항상 테스트용 오픈채팅방**으로만 발신한다(운영방 오염 방지).
+  - 알림이 연속으로 발생하면 **여러 건을 1채팅으로 묶어서** 보낸다(스팸 방지).
   - 단, 비권한자가 `!등록/!삭제`를 시도했을 때의 “권한 없음” 안내는 해당 방에 발신하는 것이 정상이다.
-- **Reply만 사용(폴백 금지)**: Reply에 필요한 메타(`src_logId/src_userId/src_linkId/src_type/src_message`)가 하나라도 없으면
-  임의 값/일반 메시지(type=1)로 대체하지 않고 **스킵 + 로그 기록**한다.
+- **Reply 메타 누락 시 스킵(중요)**: Reply에 필요한 메타(`src_logId/src_userId/src_linkId/src_type/src_message`)가 하나라도 없으면
+  임의 값으로 채우거나 일반 메시지(type=1)로 대체하지 않고 **스킵 + 로그 기록**한다.
+  - 단, Reply 메타가 정상이어도 Talk-API 자체가 실패하는 경우에는 IRIS `/reply_text` 폴백이 발생할 수 있다(운영 연속성 목적).
 
 ## Permission Model (권한 모델)
 
@@ -71,10 +77,12 @@
   이 경우 등록/삭제는 거부하고 안내 메시지를 발신한다(조용한 진행 금지).
 - 멤버 DB가 비어있어 권한 판별이 불가능한 경우에는, 송신 없이(화면 탭/스크롤만) 멤버 DB를 채우는 작업을 자동 트리거한다.
   - 스크립트: `scripts/openchat_load_members.ps1` (ADB로 오픈채팅 URL 오픈 → 방 정보/멤버 화면 → 스크롤)
-  - 레이트리밋: roomId 기준 15분 쿨다운
+  - 레이트리밋:
+    - roomId 기준 15분 쿨다운
+    - 전역 2분 쿨다운(동시 실행/ADB 충돌 방지)
   - ops 로그: 테스트용 오픈채팅방으로만 발신(운영방에 진단 로그 금지)
-  - 방장/부방장(운영진) 스냅샷은 `node-iris-app/data/room_admins.json`로 저장되며,
-    신규 방(allowedRoomIds에 처음 추가된 roomId)은 `command-worker`가 즉시 갱신을 시도한다.
+  - 방장/부방장(운영진) 스냅샷은 `node-iris-app/data/room_admins.json`로 저장된다.
+    - 주기 갱신에서는 `openchat_load_members`를 연쇄 실행하지 않는다(운영 알림 폭주/ADB 충돌 방지).
 
 ### 운영자 수동 권한 오버라이드
 - 멤버 DB가 불안정한 방에서 운영자가 임시로 등록/삭제 권한을 부여할 수 있다.

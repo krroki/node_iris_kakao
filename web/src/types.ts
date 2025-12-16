@@ -56,6 +56,24 @@ export type RoomMembersResponse = {
   detail?: string;
 };
 
+export type RoomAdminUser = {
+  userId: string;
+  nickname?: string | null;
+};
+
+export type RoomAdminsResponse = {
+  ok: boolean;
+  roomId: string;
+  activeMembersCount?: number | null;
+  loadedMembersCount?: number | null;
+  host?: RoomAdminUser[];
+  subhosts?: RoomAdminUser[];
+  admins?: RoomAdminUser[];
+  hint?: string | null;
+  error?: string;
+  detail?: string;
+};
+
 export type RoomFeatures = {
   welcome?: boolean;
   welcomeFollowUp?: boolean;

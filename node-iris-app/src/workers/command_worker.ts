@@ -30,7 +30,7 @@ type RuntimeConfig = {
   // "iris 계정" 판단 (우선순위: ids > names > senderName=='iris')
   irisAdminSenderIds?: string[] | undefined;
   irisAdminSenderNames?: string[] | undefined;
-  // command 등록/삭제 권한 오버라이드(우선순위: ids > names)
+  // command 등록/수정/삭제 권한 오버라이드(우선순위: ids > names)
   // - 멤버 DB(open_chat_member)가 비어있거나 role 확인이 불안정한 방에서 운영자가 수동으로 허용 가능
   commandAdminSenderIds?: string[] | undefined;
   commandAdminSenderNames?: string[] | undefined;
@@ -43,6 +43,7 @@ type WorkerState = {
 
 type ParsedCommand =
   | { kind: "register"; key: string; body: string }
+  | { kind: "update"; key: string; body: string }
   | { kind: "delete"; key: string }
   | { kind: "list" }
   | { kind: "global_register"; key: string; body: string }
@@ -828,12 +829,8 @@ async function refreshRoomAdminsForRoom(
     if (Number.isFinite(v) && v >= 0) loadedCnt = v;
   }
 
-  // 멤버 DB 스크롤 로딩(ADB)은 비용/부작용이 커서,
-  // “최근 메시지 기록이 있는 방”(active)에서만 자동 트리거한다.
-  // (inactive 방 전체 로딩 금지)
-  if (loadedCnt <= 0 && !!opts?.isActive) {
-    void triggerMemberLoad(rid, roomName || rid, `ADMIN_REFRESH_${reason}_ACTIVE_EMPTY_DB`).catch(() => {});
-  }
+  // NOTE: 주기 갱신에서 멤버 DB 스크롤 로딩(ADB)을 연쇄 실행하면 운영 알림이 폭주할 수 있으므로,
+  // 자동 로딩은 실제 권한 판별이 필요한 시점(관리자 명령 처리)에서만 트리거한다.
 
   const rolesRes = await irisQuery(
     "select user_id, max(link_member_type) as t from db2.open_chat_member where involved_chat_id=? group by user_id",
@@ -880,32 +877,7 @@ async function refreshRoomAdminsForRoom(
           : null,
   };
   await updateRoomAdmins(rid, info);
-
-  const isNew = !prev;
-  const changedRoles =
-    !prev ||
-    prev.hostUserIds?.join(",") !== info.hostUserIds.join(",") ||
-    prev.subHostUserIds?.join(",") !== info.subHostUserIds.join(",");
-  const loadedBecameAvailable = !!prev && Number(prev.loadedMembersCount || 0) <= 0 && loadedCnt > 0;
-
-  const wantLog =
-    isNew ||
-    String(reason || "").toLowerCase().includes("new_room") ||
-    loadedBecameAvailable ||
-    changedRoles;
-
-  if (!wantLog) return;
-  if (ALERT_DEDUP.isDuplicate(`admins:${rid}`)) return;
-  await sendOpsLog(
-    runtime,
-    formatOps("방 관리자/권한 정보 갱신", [
-      `방: ${roomName || rid} (${rid})`,
-      `인원: ${activeCnt ?? "?"}명 (chat_rooms)`,
-      `멤버 DB 로딩: ${loadedCnt}명 (open_chat_member)`,
-      `방장: ${hostUserIds.length}명, 관리자: ${subHostUserIds.length}명`,
-      loadedCnt <= 0 ? "참고: 멤버 목록 스크롤 로딩이 아직 안 됨(권한 판별이 부정확할 수 있음)" : null,
-    ]),
-  );
+  // NOTE: 방별 주기 갱신 로그는 테스트방 알림 스팸이 되기 쉬워 발신하지 않는다.
 }
 
 function parseCommand(textRaw: string): ParsedCommand | null {
@@ -925,6 +897,9 @@ function parseCommand(textRaw: string): ParsedCommand | null {
 
   const mReg = /^등록(?:\s+(.+))?$/.exec(rest);
   if (mReg) return { kind: "register", key: safeString(mReg[1] || ""), body: lines.slice(1).join("\n") };
+
+  const mUpd = /^수정(?:\s+(.+))?$/.exec(rest);
+  if (mUpd) return { kind: "update", key: safeString(mUpd[1] || ""), body: lines.slice(1).join("\n") };
 
   const mDel = /^삭제(?:\s+(.+))?$/.exec(rest);
   if (mDel) return { kind: "delete", key: safeString(mDel[1] || "") };
@@ -1108,6 +1083,28 @@ async function insertTrigger(rec: TriggerRecord, actorId: string): Promise<{ ok:
   return { ok: true };
 }
 
+async function updateTrigger(
+  rec: TriggerRecord,
+  actorId: string,
+): Promise<{ ok: true; updated: boolean } | { ok: false; reason: "NOT_FOUND" | "ERROR"; err?: string }> {
+  const sid = rec.scope === "global" ? "__global__" : rec.roomId;
+  const existing = await readTrigger(rec.scope, sid, rec.keyNorm);
+  if (!existing) return { ok: false, reason: "NOT_FOUND" };
+
+  const nowIso = new Date().toISOString();
+  const r = await irisQuery(
+    "update command_triggers set key_display=?, body=?, updated_by=?, updated_at=? where scope=? and room_id=? and key_norm=?",
+    [rec.keyDisplay, rec.body, actorId, nowIso, rec.scope, sid, rec.keyNorm],
+    8000,
+  );
+  if (!r.ok) return { ok: false, reason: "ERROR", err: r.err };
+
+  // sqlite(/query) rowcount 미반환: 변경 반영 여부는 재조회로 확인한다.
+  const check = await readTrigger(rec.scope, sid, rec.keyNorm);
+  const updated = !!check && String(check.body) === String(rec.body);
+  return { ok: true, updated };
+}
+
 async function deleteTrigger(scope: TriggerScope, roomId: string, keyNorm: string): Promise<{ ok: true; deleted: boolean } | { ok: false; err: string }> {
   const sid = scope === "global" ? "__global__" : roomId;
   const r = await irisQuery("delete from command_triggers where scope=? and room_id=? and key_norm=?", [scope, sid, keyNorm], 8000);
@@ -1270,7 +1267,11 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
 
   // feature toggle: 트리거는 무시, 관리 커맨드는 안내
   const isMgmt =
-    cmd.kind === "register" || cmd.kind === "delete" || cmd.kind === "global_register" || cmd.kind === "list";
+    cmd.kind === "register" ||
+    cmd.kind === "update" ||
+    cmd.kind === "delete" ||
+    cmd.kind === "global_register" ||
+    cmd.kind === "list";
   if (!featureOn) {
     if (!isMgmt) return;
     const dedupKey = safeString(ent.uid) || `${roomId}:${srcLogId}:${normalizeKey(srcMessage)}`;
@@ -1304,7 +1305,7 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
     return;
   }
 
-  if (cmd.kind === "register" || cmd.kind === "delete") {
+  if (cmd.kind === "register" || cmd.kind === "update" || cmd.kind === "delete") {
     if (!isCommandAdminOverride(runtime, roomId, senderId, senderName)) {
       const perm = await isRoomAdmin(roomId, senderId);
       if (!perm.ok) {
@@ -1312,7 +1313,7 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
           runtime,
           roomId,
           replyText:
-            "권한 확인이 어려워 현재 등록/삭제를 처리할 수 없습니다. 잠시 후 다시 시도해주세요.",
+            "권한 확인이 어려워 현재 등록/수정/삭제를 처리할 수 없습니다. 잠시 후 다시 시도해주세요.",
           srcLogId,
           srcUserId: senderId,
           srcType,
@@ -1321,7 +1322,7 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
         logger.warn("[perm] room admin check failed", { roomId, senderId, err: perm.err });
         await sendOpsLog(
           runtime,
-          formatOps("명령어 등록/삭제 권한 확인 실패", [
+          formatOps("명령어 등록/수정/삭제 권한 확인 실패", [
             `방: ${safeString(ent.roomName) || roomId} (${roomId})`,
             `요청자: ${senderName} (${senderId})`,
             `원인: IRIS 조회 실패 (${perm.err})`,
@@ -1349,7 +1350,7 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
           void triggerMemberLoad(roomId, safeString(ent.roomName) || roomId, perm.reason, {
             actorName: senderName,
             actorId: senderId,
-            action: "명령어 등록/삭제 권한 확인",
+            action: "명령어 등록/수정/삭제 권한 확인",
           }).catch(() => {});
           return;
           }
@@ -1359,7 +1360,7 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
         await sendReplyToMessage({
           runtime,
           roomId,
-          replyText: "방장/관리자만 사용할 수 있는 명령입니다. (`!등록`, `!삭제`)",
+          replyText: "방장/관리자만 사용할 수 있는 명령입니다. (`!등록`, `!수정`, `!삭제`)",
           srcLogId,
           srcUserId: senderId,
           srcType,
@@ -1419,10 +1420,14 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
 
     const exists = await readTrigger(scope, sid, keyNorm);
     if (exists) {
+      const hint =
+        scope === "room"
+          ? `본문 수정은 \`!수정 ${exists.keyDisplay}\`를 사용하세요.`
+          : "전체 공통 키는 덮어쓰지 않습니다. (필요 시 운영자에게 문의)";
       await sendReplyToMessage({
         runtime,
         roomId,
-        replyText: `이미 등록된 키입니다: '${exists.keyDisplay}'. 수정하려면 \`!삭제 ${exists.keyDisplay}\` 후 다시 등록해주세요.`,
+        replyText: `이미 등록된 키입니다: '${exists.keyDisplay}'. ${hint}`,
         srcLogId,
         srcUserId: senderId,
         srcType,
@@ -1450,6 +1455,79 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
       runtime,
       roomId,
       replyText: `${label} 등록 완료: !${key}`,
+      srcLogId,
+      srcUserId: senderId,
+      srcType,
+      srcMessage,
+    });
+    return;
+  }
+
+  if (cmd.kind === "update") {
+    const key = safeString(cmd.key);
+    const keyNorm = normalizeKey(key);
+    const body = String(cmd.body || "");
+    if (!keyNorm) {
+      await sendReplyToMessage({
+        runtime,
+        roomId,
+        replyText: "사용법: 첫 줄 `!수정 <키>` + 다음 줄부터 본문(멀티라인)",
+        srcLogId,
+        srcUserId: senderId,
+        srcType,
+        srcMessage,
+      });
+      return;
+    }
+    if (!body.trim()) {
+      await sendReplyToMessage({
+        runtime,
+        roomId,
+        replyText: "수정할 본문이 비어 있습니다. (2번째 줄부터 내용을 적어주세요)",
+        srcLogId,
+        srcUserId: senderId,
+        srcType,
+        srcMessage,
+      });
+      return;
+    }
+
+    const existsRoom = await readTrigger("room", roomId, keyNorm);
+    if (!existsRoom) {
+      const existsGlobal = await readTrigger("global", "__global__", keyNorm);
+      const hint = existsGlobal
+        ? `참고: 전체 공통 키로 '${existsGlobal.keyDisplay}'가 있습니다. 방 전용으로 새로 만들려면 \`!등록 ${key}\`를 사용하세요.`
+        : "먼저 `!등록`으로 등록해주세요.";
+      await sendReplyToMessage({
+        runtime,
+        roomId,
+        replyText: `수정할 키가 없습니다: !${key}\n${hint}`,
+        srcLogId,
+        srcUserId: senderId,
+        srcType,
+        srcMessage,
+      });
+      return;
+    }
+
+    const rec: TriggerRecord = {
+      scope: "room",
+      roomId,
+      keyNorm,
+      keyDisplay: key,
+      body: body.trimEnd(),
+    };
+    const upd = await updateTrigger(rec, senderId);
+    if (!upd.ok) {
+      const msg = upd.reason === "NOT_FOUND" ? `수정할 키가 없습니다: !${key}` : "수정에 실패했습니다.";
+      await sendReplyToMessage({ runtime, roomId, replyText: msg, srcLogId, srcUserId: senderId, srcType, srcMessage });
+      return;
+    }
+
+    await sendReplyToMessage({
+      runtime,
+      roomId,
+      replyText: `수정 완료: !${key}`,
       srcLogId,
       srcUserId: senderId,
       srcType,

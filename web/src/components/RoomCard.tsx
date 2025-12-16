@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useState } from 'react';
-import { CourseRosterRoomConfig, LogEntry, OpenchatMembersSheetsRoomConfig, RoomInfo, RoomFeatures, RoomMember, RoomMembersResponse } from '../types';
+import { CourseRosterRoomConfig, LogEntry, OpenchatMembersSheetsRoomConfig, RoomInfo, RoomFeatures, RoomMember, RoomMembersResponse, RoomAdminsResponse } from '../types';
 import LogViewer from './LogViewer';
 
 interface RoomCardProps {
@@ -87,6 +87,13 @@ export default function RoomCard({
     const [membersSheetsSyncErr, setMembersSheetsSyncErr] = useState<string | null>(null);
     const [membersSheetsHintCmd, setMembersSheetsHintCmd] = useState<string | null>(null);
 
+    const [admins, setAdmins] = useState<RoomAdminsResponse | null>(null);
+    const [adminsLoading, setAdminsLoading] = useState(false);
+    const [adminsError, setAdminsError] = useState<string | null>(null);
+    const [adminsRefreshing, setAdminsRefreshing] = useState(false);
+    const [adminsRefreshMsg, setAdminsRefreshMsg] = useState<string | null>(null);
+    const [adminsRefreshErr, setAdminsRefreshErr] = useState<string | null>(null);
+
     const rosterCfg: any = (courseRosterConfig && typeof courseRosterConfig === "object") ? courseRosterConfig : {};
     const rosterSpreadsheetId = String(rosterCfg.spreadsheetId || "").trim();
     const rosterSheetName = String(rosterCfg.rosterSheetName || "").trim();
@@ -168,9 +175,77 @@ export default function RoomCard({
         setMembersSheetsSyncMsg(null);
         setMembersSheetsSyncErr(null);
         setMembersSheetsHintCmd(null);
+        setAdmins(null);
+        setAdminsLoading(false);
+        setAdminsError(null);
+        setAdminsRefreshing(false);
+        setAdminsRefreshMsg(null);
+        setAdminsRefreshErr(null);
     }, [room.roomId]);
 
     const avatarUrl = `${realtimeBase}/avatar/${room.roomId}?v=${avatarVersion}&t=${Math.floor(Date.now() / 300000)}`;
+
+    const reloadAdmins = async (): Promise<void> => {
+        setAdminsLoading(true);
+        setAdminsError(null);
+        try {
+            const r = await fetch(`/api/rooms/${encodeURIComponent(room.roomId)}/admins`, { cache: 'no-store' });
+            const j = await r.json().catch(() => null) as any;
+            if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.detail || j?.error || `HTTP ${r.status}`));
+            setAdmins(j as RoomAdminsResponse);
+        } catch (e: any) {
+            setAdmins(null);
+            setAdminsError(String(e?.message || e));
+        } finally {
+            setAdminsLoading(false);
+        }
+    };
+
+    const triggerAdminsRefresh = async (): Promise<void> => {
+        setAdminsRefreshMsg(null);
+        setAdminsRefreshErr(null);
+        setAdminsError(null);
+        setAdminsRefreshing(true);
+        try {
+            const r = await fetch(`/api/rooms/${encodeURIComponent(room.roomId)}/admins/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+                cache: 'no-store',
+            });
+            const j = await r.json().catch(() => null) as any;
+            if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.detail || j?.error || `HTTP ${r.status}`));
+            setAdminsRefreshMsg('Redroid에서 멤버 목록 로딩(스크롤) 시작. 1~2분 후 새로고침하세요.');
+            // best-effort auto-reload
+            setTimeout(() => { void reloadAdmins(); }, 15_000);
+        } catch (e: any) {
+            setAdminsRefreshErr(String(e?.message || e));
+        } finally {
+            setAdminsRefreshing(false);
+        }
+    };
+
+    useEffect(() => {
+        // commands(등록/수정/삭제) 권한 판단에 필요하므로, 해당 기능이 켜진 방은 운영진 정보를 자동 로드한다.
+        if (!(features.commands || membersOpen)) return;
+        if (admins || adminsLoading) return;
+        let cancelled = false;
+        const timer = setTimeout(() => {
+            void (async () => {
+                try {
+                    await reloadAdmins();
+                } finally {
+                    // cancelled flag is handled by state resets on room change
+                    if (cancelled) return;
+                }
+            })();
+        }, 200);
+        return () => {
+            cancelled = true;
+            try { clearTimeout(timer); } catch { }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [room.roomId, features.commands, membersOpen]);
 
     useEffect(() => {
         if (!membersOpen) return;
@@ -246,6 +321,15 @@ export default function RoomCard({
         }
     };
 
+    const hostCount = Array.isArray(admins?.host) ? admins!.host!.length : 0;
+    const subhostCount = Array.isArray(admins?.subhosts) ? admins!.subhosts!.length : 0;
+    const loadedCnt = typeof admins?.loadedMembersCount === 'number' ? admins!.loadedMembersCount! : null;
+    const needAdminsRefresh =
+        !admins ||
+        admins.ok !== true ||
+        (typeof loadedCnt === 'number' && loadedCnt <= 0) ||
+        (hostCount + subhostCount) <= 0;
+
     return (
         <div className="room-card" data-testid={`room-card-${room.roomId}`}>
             <div className="room-header">
@@ -289,6 +373,53 @@ export default function RoomCard({
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-secondary)' }} title="IRIS chat_rooms.active_members_count (실시간에 가까운 값)">
                         인원 {typeof room.activeMembersCount === 'number' ? room.activeMembersCount.toLocaleString() : '—'}
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.35 }}>
+                        <span style={{ color: 'var(--text-muted)' }}>운영진</span>{' '}
+                        {adminsLoading ? (
+                            <span>조회 중…</span>
+                        ) : admins && admins.ok ? (
+                            <span>
+                                방장 {hostCount}명 / 부방장 {subhostCount}명
+                                {Array.isArray(admins.host) && admins.host.length > 0 && (
+                                    <span style={{ color: 'var(--text-muted)' }}>
+                                        {' '}· 방장 {String(admins.host[0]?.nickname || admins.host[0]?.userId || '').trim()}
+                                    </span>
+                                )}
+                            </span>
+                        ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>미확인</span>
+                        )}
+                        <span style={{ marginLeft: 8, display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button
+                                className="btn-outline"
+                                style={{ padding: '2px 8px', fontSize: 11 }}
+                                disabled={adminsLoading || adminsRefreshing}
+                                onClick={() => { void reloadAdmins(); }}
+                                title="운영진(방장/부방장) 정보 새로고침"
+                            >
+                                새로고침
+                            </button>
+                            {needAdminsRefresh && (
+                                <button
+                                    className="btn-outline"
+                                    style={{ padding: '2px 8px', fontSize: 11 }}
+                                    disabled={adminsRefreshing}
+                                    onClick={() => { void triggerAdminsRefresh(); }}
+                                    title="Redroid(단말)에서 방에 들어가 멤버 목록을 스크롤해 IRIS open_chat_member DB를 채웁니다 (발신 없음)"
+                                >
+                                    갱신
+                                </button>
+                            )}
+                        </span>
+                        {(admins?.hint || adminsError || adminsRefreshMsg || adminsRefreshErr) && (
+                            <div style={{ marginTop: 6 }}>
+                                {admins?.hint && <div style={{ color: 'var(--text-muted)' }}>{admins.hint}</div>}
+                                {adminsError && <div style={{ color: 'var(--error)' }}>운영진 조회 실패: <code>{adminsError}</code></div>}
+                                {adminsRefreshMsg && <div style={{ color: 'var(--text-muted)' }}>{adminsRefreshMsg}</div>}
+                                {adminsRefreshErr && <div style={{ color: 'var(--error)' }}>갱신 실패: <code>{adminsRefreshErr}</code></div>}
+                            </div>
+                        )}
                     </div>
                     <div className="room-tags">
                         {isActive ? (

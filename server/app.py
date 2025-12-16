@@ -5,7 +5,10 @@ import base64
 import json
 import logging
 import os
+import subprocess
+import time
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
@@ -33,6 +36,21 @@ from .log_utils import (
     delete_template,
     assets_dir_for,
 )
+
+
+_ROOM_ADMIN_REFRESH_LAST_BY_ROOM: dict[str, float] = {}
+_ROOM_ADMIN_REFRESH_LAST_GLOBAL: float = 0.0
+_ROOM_ADMIN_REFRESH_COOLDOWN_SEC_BY_ROOM = 15 * 60
+_ROOM_ADMIN_REFRESH_COOLDOWN_SEC_GLOBAL = 3 * 60
+
+
+def _repo_root() -> Path:
+    # server/app.py 기준 1단계 상위가 repo root
+    return Path(__file__).resolve().parents[1]
+
+
+def _now_ts() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 def _parse_keywords(s: str | None) -> list[str]:
     if not s:
@@ -624,6 +642,84 @@ def _iris_query_strict(query: str, bind: list, timeout_sec: float = 3.0) -> list
     if not isinstance(data, list):
         raise HTTPException(status_code=503, detail="IRIS /query invalid response: missing data[]")
     return data
+
+
+def _fetch_room_admins_from_iris(room_id: str) -> dict:
+    rid = str(room_id or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="roomId required")
+
+    # open_chat_member가 비어있을 수 있으므로, 호스트는 open_link로도 보강한다.
+    # 1) loadedMembersCount / activeMembersCount
+    cnt_rows = _iris_query_strict(
+        "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
+        [rid],
+        timeout_sec=6.0,
+    )
+    loaded_cnt = 0
+    if cnt_rows and isinstance(cnt_rows[0], dict):
+        loaded_cnt = _safe_int(cnt_rows[0].get("cnt")) or 0
+    active = _fetch_active_member_counts([rid]).get(rid)
+
+    # 2) 운영진 목록(최신 rowid 기준)
+    rows = _iris_query_strict(
+        "select user_id, nickname, link_member_type from db2.open_chat_member "
+        "where involved_chat_id=? and link_member_type in (8,4,1) order by rowid desc limit 3000",
+        [rid],
+        timeout_sec=8.0,
+    )
+
+    seen: set[str] = set()
+    host: list[dict] = []
+    subhosts: list[dict] = []
+    admins: list[dict] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        uid = str(row.get("user_id") or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        nick = str(row.get("nickname") or "").strip() or None
+        t = _safe_int(row.get("link_member_type"))
+        if t == 8:
+            host.append({"userId": uid, "nickname": nick})
+            admins.append({"userId": uid, "nickname": nick})
+        elif t in (4, 1):
+            subhosts.append({"userId": uid, "nickname": nick})
+            admins.append({"userId": uid, "nickname": nick})
+
+    if not host:
+        try:
+            owner_rows = _iris_query_strict(
+                "select ol.user_id as user_id from chat_rooms cr join db2.open_link ol on cr.link_id=ol.id where cr.id=? limit 1",
+                [rid],
+                timeout_sec=6.0,
+            )
+            if owner_rows and isinstance(owner_rows[0], dict):
+                ouid = str(owner_rows[0].get("user_id") or "").strip()
+                if ouid:
+                    host.append({"userId": ouid, "nickname": None})
+                    if ouid not in {a.get("userId") for a in admins}:
+                        admins.append({"userId": ouid, "nickname": None})
+        except Exception as e:
+            logger.warning("[rooms/admins] owner fallback failed: %s", str(e))
+
+    hint = None
+    if loaded_cnt == 0:
+        hint = "IRIS open_chat_member가 비어있습니다. Redroid(단말)에서 멤버 목록을 열어 스크롤해 DB를 채워야 권한 판별이 정확해집니다."
+
+    return {
+        "ok": True,
+        "roomId": rid,
+        "activeMembersCount": active,
+        "loadedMembersCount": loaded_cnt,
+        "host": host,
+        "subhosts": subhosts,
+        "admins": admins,
+        "hint": hint,
+    }
 
 
 @app.get("/rooms/{room_id}/members")
@@ -1924,6 +2020,107 @@ async def iris_reply_text(request: Request):
             },
             "sent": {"roomId": rid, "len": len(text), "type": payload["type"]},
         },
+    )
+
+
+@app.get("/rooms/{room_id}/admins")
+async def room_admins(room_id: str):
+    return JSONResponse(content=_fetch_room_admins_from_iris(room_id))
+
+
+@app.post("/rooms/{room_id}/admins/refresh")
+async def room_admins_refresh(room_id: str, request: Request):
+    global _ROOM_ADMIN_REFRESH_LAST_GLOBAL
+
+    rid = str(room_id or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="roomId required")
+
+    # 레이트리밋(안전): room 15분, 전역 3분
+    now = time.time()
+    last_room = _ROOM_ADMIN_REFRESH_LAST_BY_ROOM.get(rid) or 0.0
+    wait_room = _ROOM_ADMIN_REFRESH_COOLDOWN_SEC_BY_ROOM - (now - last_room)
+    wait_global = _ROOM_ADMIN_REFRESH_COOLDOWN_SEC_GLOBAL - (now - _ROOM_ADMIN_REFRESH_LAST_GLOBAL)
+    wait = max(wait_room, wait_global)
+    if wait > 0:
+        raise HTTPException(status_code=429, detail=f"too_many_requests: retry_after_sec={int(wait)}")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    serial = None
+    scrolls = 200
+    pause_ms = 400
+    if isinstance(body, dict):
+        serial_raw = str(body.get("serial") or "").strip()
+        if serial_raw:
+            serial = serial_raw
+        s = _safe_int(body.get("scrolls"))
+        if s is not None:
+            scrolls = max(50, min(int(s), 2000))
+        p = _safe_int(body.get("pauseMs") or body.get("scrollPauseMs"))
+        if p is not None:
+            pause_ms = max(150, min(int(p), 1500))
+
+    repo = _repo_root()
+    script = repo / "scripts" / "openchat_load_members.ps1"
+    if not script.exists():
+        raise HTTPException(status_code=500, detail=f"script_missing: {script}")
+
+    log_dir = repo / "logs" / "openchat_load_members"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = _now_ts()
+    out_path = log_dir / f"{rid}.{ts}.out.log"
+    err_path = log_dir / f"{rid}.{ts}.err.log"
+
+    args = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-RoomId",
+        rid,
+        "-Scrolls",
+        str(scrolls),
+        "-ScrollPauseMs",
+        str(pause_ms),
+    ]
+    if serial:
+        args += ["-Serial", serial]
+
+    try:
+        # 콘솔 창 없이 백그라운드 실행
+        CREATE_NO_WINDOW = 0x08000000
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
+            p = subprocess.Popen(
+                args,
+                cwd=str(repo),
+                stdout=out_f,
+                stderr=err_f,
+                creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"spawn_failed: {e}")
+
+    _ROOM_ADMIN_REFRESH_LAST_BY_ROOM[rid] = now
+    _ROOM_ADMIN_REFRESH_LAST_GLOBAL = now
+
+    return JSONResponse(
+        content={
+            "ok": True,
+            "roomId": rid,
+            "started": True,
+            "pid": getattr(p, "pid", None),
+            "logOut": str(out_path),
+            "logErr": str(err_path),
+            "note": "Redroid(단말)에서 방 진입/멤버 목록 스크롤을 수행해 open_chat_member DB를 채웁니다. 1~2분 후 다시 조회하세요.",
+        }
     )
 
 
