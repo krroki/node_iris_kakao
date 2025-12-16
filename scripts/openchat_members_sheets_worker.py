@@ -45,6 +45,7 @@ import requests
 DEFAULT_CONFIG_PATH = "data/openchat_members_sheets.json"
 SCHEDULE_INTERVAL_SEC = 10 * 60  # 스케줄링 ON 시 고정: 10분
 TEST_ALERT_ROOM_ID = "18462226881291012"  # 테스트용 오픈채팅방(알림 전용)
+ALERT_MAX_CHARS = 1600  # 카카오톡 메시지 길이 안전 여유
 
 
 def _repo_root() -> Path:
@@ -330,7 +331,25 @@ class OpenchatMembersSheetsWorker:
         except Exception as e:
             return False, str(e)
 
-    def _compose_alert(self, room_id: str, result: str, parsed: dict, err_text: str, next_run_ts: str) -> str:
+    def _result_label(self, result: str) -> str:
+        r = str(result or "").strip().upper()
+        if r == "INCOMPLETE_MEMBER_DB":
+            return "멤버 DB 미로딩(스크롤 로딩 필요)"
+        if r == "TIMEOUT":
+            return "타임아웃"
+        if r == "ERROR":
+            return "실패"
+        if r == "OK":
+            return "성공"
+        return r or "알 수 없음"
+
+    def _short_detail(self, err_text: str) -> str:
+        s = (err_text or "").strip().replace("\r", "")
+        if len(s) > 240:
+            s = s[:240] + "…"
+        return s
+
+    def _compose_room_alert_block(self, room_id: str, result: str, parsed: dict, err_text: str) -> str:
         room_name = ""
         try:
             room_name = str((parsed or {}).get("roomName") or "").strip()
@@ -344,27 +363,33 @@ class OpenchatMembersSheetsWorker:
             active = counts.get("activeMembersCount")
             loaded = counts.get("loadedMembersCount")
             fetched = counts.get("fetched")
-        head = f"[openchat-members-sheets] 업서트 {result}"
-        meta = f"roomId={room_id}" + (f", roomName={room_name}" if room_name else "")
-        cnt = ""
+
+        label = self._result_label(result)
+        title = f"• {room_name or '(이름 미확인)'} ({room_id})"
+        lines = [title, f"  - 상태: {label}"]
         if active is not None or loaded is not None or fetched is not None:
-            cnt = f"count: active={active if active is not None else 'N/A'}, loaded={loaded if loaded is not None else 'N/A'}, fetched={fetched if fetched is not None else 'N/A'}"
-        hint = ""
-        if result == "INCOMPLETE_MEMBER_DB":
-            hint = f"힌트: pwsh scripts/openchat_load_members.ps1 -RoomId {room_id} -Scrolls 600"
-        detail = (err_text or "").strip().replace("\r", "")
-        if len(detail) > 300:
-            detail = detail[:300] + "…"
-        lines = [head, meta]
-        if cnt:
-            lines.append(cnt)
+            lines.append(
+                "  - 인원: active={}/loaded={}/fetched={}".format(
+                    active if active is not None else "N/A",
+                    loaded if loaded is not None else "N/A",
+                    fetched if fetched is not None else "N/A",
+                )
+            )
+        detail = self._short_detail(err_text)
         if detail:
-            lines.append(f"detail: {detail}")
-        if hint:
-            lines.append(hint)
-        if next_run_ts:
-            lines.append(f"다음 시도: {next_run_ts}")
-        return "\n".join(lines)
+            lines.append(f"  - 원인: {detail}")
+        if str(result or "").strip().upper() == "INCOMPLETE_MEMBER_DB":
+            lines.append(f"  - 조치: 멤버 목록 로딩 필요 (pwsh scripts/openchat_load_members.ps1 -RoomId {room_id} -Scrolls 600)")
+        return "\n".join(lines).strip()
+
+    def _compose_batch_alert(self, blocks: list[str]) -> str:
+        head = f"[운영 알림] 오픈채팅 멤버 Sheets 동기화: 문제 {len(blocks)}건"
+        intro = "아래 방에서 동기화가 완료되지 않았습니다. 다음 주기에 자동으로 다시 시도합니다."
+        body = "\n\n".join(blocks).strip()
+        msg = "\n".join([head, intro, "", body]).strip()
+        if len(msg) <= ALERT_MAX_CHARS:
+            return msg
+        return (msg[: ALERT_MAX_CHARS - 20].rstrip() + "\n...(길어서 일부 생략)")
 
     def _run_sync_once(self, room_id: str, allow_incomplete: bool) -> Tuple[int, str, str, float]:
         script = self.root / "scripts" / "sync_openchat_members_to_sheets.py"
@@ -466,6 +491,11 @@ class OpenchatMembersSheetsWorker:
             ok_cnt = 0
             fail_cnt = 0
             skip_cnt = 0
+
+            # 알림은 "주기당 1회"로 배치해 테스트방 스팸을 줄인다.
+            cycle_alert_blocks: list[str] = []
+            cycle_alert_room_ids: list[str] = []
+
             for plan in plans:
                 rs = self._room_state(plan.room_id)
                 # 요구: 자동 동기화는 "다음 주기"에서 실행한다(즉시 실행 금지).
@@ -550,11 +580,8 @@ class OpenchatMembersSheetsWorker:
                 # 실패/스킵(INCOMPLETE 포함)은 테스트 방에 알림(재시도 없이 1회)
                 result = str(rs2.get("lastResult") or "").strip()
                 if result and result != "OK":
-                    msg = self._compose_alert(plan.room_id, result, parsed, err_text, str(rs2.get("nextRunTs") or ""))
-                    ok_alert, err_alert = self._send_alert_to_test_room(msg)
-                    rs2["lastAlertTs"] = _iso_now()
-                    rs2["lastAlertOk"] = bool(ok_alert)
-                    rs2["lastAlertError"] = "" if ok_alert else str(err_alert)[:600]
+                    cycle_alert_blocks.append(self._compose_room_alert_block(plan.room_id, result, parsed, err_text))
+                    cycle_alert_room_ids.append(plan.room_id)
 
                 # 매 룸 처리 후 상태 저장/하트비트 갱신
                 try:
@@ -573,6 +600,20 @@ class OpenchatMembersSheetsWorker:
                     alertRoomId=TEST_ALERT_ROOM_ID,
                 )
                 last_hb_ms = _now_ms()
+
+            if cycle_alert_blocks:
+                msg = self._compose_batch_alert(cycle_alert_blocks)
+                ok_alert, err_alert = self._send_alert_to_test_room(msg)
+                now_alert_ts = _iso_now()
+                for rid in cycle_alert_room_ids:
+                    rs = self._room_state(rid)
+                    rs["lastAlertTs"] = now_alert_ts
+                    rs["lastAlertOk"] = bool(ok_alert)
+                    rs["lastAlertError"] = "" if ok_alert else str(err_alert)[:600]
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
 
             if not ran_any:
                 # due인 방이 없으면 heartbeat만 유지

@@ -51,7 +51,14 @@ if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
 }
 
 if (-not $Serial) {
-    $lines = (& adb devices) -split "`n" | Where-Object { $_ -match "device`$" -and -not ($_ -like "*List of devices*") }
+    # NOTE: PowerShell은 단일 결과를 스칼라(string)로 반환할 수 있어 `$lines[0]`가 "첫 글자"로 해석되는 버그가 날 수 있다.
+    # 반드시 @()로 배열 고정 + Trim()으로 CR 제거 후 파싱한다.
+    $lines = @(
+        (& adb devices) |
+        ForEach-Object { [string]($_) } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -and ($_ -match "\s+device$") -and -not ($_ -like "*List of devices*") }
+    )
     if (-not $lines -or $lines.Count -eq 0) {
         Write-Log "연결된 adb 디바이스가 없습니다." "ERROR"
         exit 1
