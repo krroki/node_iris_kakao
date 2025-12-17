@@ -207,6 +207,16 @@ export class MessageStore {
     }
   }
 
+  private normalizeSenderLabel(senderName: unknown, senderId: unknown): string | undefined {
+    const name = typeof senderName === "string" ? senderName.trim() : "";
+    if (name && !/^\d{6,}$/.test(name)) return name;
+    const id = typeof senderId === "string" ? senderId.trim() : "";
+    // senderId는 대부분 숫자 userId라서 그대로 노출하면 UX/프라이버시가 나쁘다.
+    // 숫자만인 경우는 숨기고(=undefined), 비숫자 식별자만 남긴다.
+    if (id && !/^\d{6,}$/.test(id)) return id;
+    return undefined;
+  }
+
   /**
    * 오늘 날짜 기준(자정~현재)으로 특정 방의 최근 채팅 메시지를 로드한다.
    *
@@ -225,7 +235,7 @@ export class MessageStore {
         const snap = obj?.snapshot || {};
         const payload = obj?.payload || {};
         const t = (obj as any).timestamp || "";
-        const sender = (snap as any).senderName || (snap as any).senderId || "";
+        const sender = this.normalizeSenderLabel((snap as any).senderName, (snap as any).senderId);
         const text = (snap as any).messageText || "";
         if ((payload as any).type !== "message") continue;
         if (!text) continue;
@@ -279,7 +289,7 @@ export class MessageStore {
           if (!Number.isFinite(tsMs) || tsMs < sinceMs) continue;
           const text = String((snap as any).messageText || "");
           if (!text) continue;
-          const sender = (snap as any).senderName || (snap as any).senderId || "";
+          const sender = this.normalizeSenderLabel((snap as any).senderName, (snap as any).senderId);
           all.push({
             ts: t,
             sender: sender ? String(sender) : undefined,

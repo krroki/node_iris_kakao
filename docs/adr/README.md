@@ -107,3 +107,4 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0033 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 | Accepted | 오픈채팅 멤버 userId/닉네임 upsert + 10분 주기 스케줄 |
 | 0034 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백 | Accepted | `/send/iris/reply_text` + worker/command explicit fallback |
 | 0035 | 오픈채팅 방별 명령어(FAQ) 트리거 워커(command-worker) | Accepted | `!등록/!삭제/!명령어/!키` + Reply(type=26) 기반 응답 |
+| 0036 | 발신 메시지 템플릿(튜브렌즈 스타일) 표준화 | Accepted | userId/타임스탬프/보고서형 섹션 금지 + 푸터 링크 |
