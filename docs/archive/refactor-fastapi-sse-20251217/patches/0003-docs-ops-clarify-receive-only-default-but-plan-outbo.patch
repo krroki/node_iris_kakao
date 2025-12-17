@@ -1,0 +1,94 @@
+From f3b572e0436b6e0140040450f82edae4b7088cd0 Mon Sep 17 00:00:00 2001
+From: jeong yeong rok <glemfkcl@gmail.com>
+Date: Tue, 4 Nov 2025 19:06:23 +0900
+Subject: [PATCH 3/9] docs(ops): clarify receive-only default but plan
+ outbound; add send guardrails; update agents/README/roadmap accordingly
+
+---
+ README.md                   |  2 +-
+ agents.md                   |  7 ++++++-
+ docs/ops/send-guardrails.md | 28 ++++++++++++++++++++++++++++
+ docs/roadmap.md             |  1 +
+ 4 files changed, 36 insertions(+), 2 deletions(-)
+ create mode 100644 docs/ops/send-guardrails.md
+
+diff --git a/README.md b/README.md
+index c76da7b7..83a9951a 100644
+--- a/README.md
++++ b/README.md
+@@ -5,7 +5,7 @@ Redroid(Hyper‑V) + IRIS 기반 카카오톡 자동화(수신 전용 안전모
+ - 작업 전 `agents.md`의 지침을 먼저 확인하세요.
+ - 실행/운영 관련 빠른 가이드는 아래 Quick Start를 따르세요.
+ 
+-**중요: 기본은 SAFE_MODE=true로 “메시지 발송 차단” 상태입니다. 수신/로그만 동작합니다.**
++**중요: 현재 기본은 SAFE_MODE=true(발신 차단)입니다. 개발 진행 중에는 수신/로그 중심으로 동작하지만, 향후 발신 기능(방송/명령어 응답/스케줄 발송)을 단계적으로 활성화합니다. 발신 전환 시에는 SAFE_MODE=false + 권한/화이트리스트/감사로그를 함께 적용합니다.**
+ 
+ **Quick Start**
+ - Windows(관리자 PowerShell)
+diff --git a/agents.md b/agents.md
+index fdb338b0..47a29b8f 100644
+--- a/agents.md
++++ b/agents.md
+@@ -72,7 +72,12 @@
+ ---
+ 
+ ## 6. 운영 가드레일
+-- 기본 모드는 `SAFE_MODE=true` (발송 차단). UI/스크립트 모두 이 전제를 깨어서는 안 된다.  
++- 기본 모드는 `SAFE_MODE=true` (발신 차단). 현재는 수신/로그 중심 운용이다.  
++- 로드맵에 따라 발신 기능(방송/명령어 응답/스케줄 발송)을 활성화할 때는 단계적 게이팅을 따른다:
++  - 플래그: `SAFE_MODE=false` + `ALLOW_SEND=true`
++  - 범위: `ALLOWED_ROOM_IDS`/`ALLOWED_COMMANDS` 화이트리스트 우선
++  - 통제: 전건 감사로그(누가/언제/무엇을/어디로), 속도 제한(RPS), 재시도·중복방지
++  - 롤백: 즉시 `SAFE_MODE=true`로 되돌릴 수 있어야 함
+ - 환경 변수/토큰은 Git에 커밋 금지. `.env`는 `config/env.example`를 복제하여 세션 범위에서만 사용한다.  
+ - IRIS 포트프록시는 `windows/setup_iris_port.ps1`(관리자 PowerShell) → `scripts/probe_iris.sh` 순으로 점검한다.  
+ - `setup_iris_port.ps1`는 5050(IRIS)과 8510(Log API) 모두를 포트프록시/방화벽 규칙에 설정한다. 장애 시 먼저 8510 접근(`http://localhost:8510/logs`)을 확인한다.  
+diff --git a/docs/ops/send-guardrails.md b/docs/ops/send-guardrails.md
+new file mode 100644
+index 00000000..19171ce0
+--- /dev/null
++++ b/docs/ops/send-guardrails.md
+@@ -0,0 +1,28 @@
++# 발신(송신) 가드레일
++
++## 목적
++- 수신 전용에서 발신(방송/명령어 응답/스케줄 발송)으로 기능을 확장하되, 안전하게 통제·감사 가능한 절차를 확립한다.
++
++## 게이트 플래그
++- `SAFE_MODE=true` (기본): 발신 차단. 수신/로그만 허용.
++- `SAFE_MODE=false` + `ALLOW_SEND=true`: 발신 허용(아래 통제 필수).
++
++## 통제 항목
++- 허용 범위
++  - 방: `ALLOWED_ROOM_IDS`(집합)
++  - 명령: `ALLOWED_COMMANDS`(집합)
++- 속도 제한
++  - 글로벌/방별 RPS 한도, 버스트/토큰버킷 적용
++- 중복/재시도
++  - 메시지 ID 기반 멱등 처리, 재시도 최대 횟수·백오프
++- 감사로그
++  - `who/when/what/where` 전건 기록, 보존기간 설정
++- 롤백
++  - 이상 감지 시 즉시 `SAFE_MODE=true`로 전환 가능한 운영 플로우
++
++## 운영 체크리스트
++- [ ] 플래그/화이트리스트가 코드/환경에 일치
++- [ ] 감사로그가 디스크/외부 스토리지에 정상 적재
++- [ ] 속도 제한/오류 복구가 통합 테스트로 검증됨
++- [ ] UI 상에 발신 상태 표시 및 강제 차단 토글 제공
++
+diff --git a/docs/roadmap.md b/docs/roadmap.md
+index 99ee5312..4d42b900 100755
+--- a/docs/roadmap.md
++++ b/docs/roadmap.md
+@@ -21,6 +21,7 @@
+ | 우선순위 | 작업 | 산출물 | 선행 조건 | 연관 기능 |
+ | --- | --- | --- | --- | --- |
+ | P0 | 방송 큐/스케줄러 구현 | `src/services/broadcast_scheduler.py`, `data/broadcast_queue.sqlite` | Phase 1 완료 | 방송 메시지 |
++| P0 | 발신 게이팅/감사/제한(SAFE_MODE→OFF 시) | `docs/ops/send-guardrails.md`, 감사로그, 속도 제한, 화이트리스트 | 방송 큐 초안 | 전 기능 |
+ | P0 | 재시도/실패 복구 전략 적용 | `docs/ops/retry-policy.md`, 재시도 로직 | 방송 큐 초안 | 방송 메시지 |
+ | P1 | 운영 스크립트 완성 및 자동 재기동 로직 | `scripts/manage_instances.ps1` 확장 | Phase 1 운영 스크립트 | 전 기능 |
+ | P1 | 테스트 자동화 구축 | `tests/` 통합 테스트, CI 스크립트 | Phase 1 기능 구현 | 전 기능 |
+-- 
+2.52.0.windows.1
+

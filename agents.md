@@ -34,6 +34,16 @@
 - `main`에서 변경 반영 → `git commit` (필요 시 여러 커밋)
 - (외부에서) PR/Epic 워크플로가 필요하면 **별도 clone/worktree**에서 수행
 
+### (중요) 이 워킹트리에서는 `git pull` 금지
+
+이 PC는 “로컬에서 상시 운영되는 실행 환경”이며, `git pull`은 워킹트리를 바꿔 **운영 중인 상태를 흔들 수 있다.**
+
+- **금지**: `git pull`, `git pull --rebase`, `git merge`, `git rebase`
+- **허용(읽기/비교 목적)**: `git fetch` + `git log origin/main..main` 같은 비교만
+- 원격 변경을 반영해야 하는 상황이면:
+  - **반드시 별도 clone/worktree**에서 pull/merge/rebase를 수행하고,
+  - 이 워킹트리에는 “검증된 변경”만 커밋/푸시로 옮긴다.
+
 ### (중요) 기술적 가드(실수 방지)
 
 이 저장소는 main-only 운영을 강제하기 위해 Git 훅을 사용한다.
@@ -42,6 +52,7 @@
 - 적용: `core.hooksPath=.githooks` (이 워킹트리 기준)
 - 효과:
   - `main`이 아닌 브랜치에서는 **커밋/푸시가 차단**된다.
+  - `git pull/merge/rebase`는 **차단**된다(운영 환경 보호).
   - 단, Git 특성상 “체크아웃/브랜치 생성” 자체를 100% 막지는 못하므로, 위의 **절대 금지 규칙을 사람이 지키는 것이 SSOT**다.
 
 ### 실수 복구(즉시)

@@ -1,0 +1,2023 @@
+From 5ca684f03d5ff710bbccc97da6ec6f8746729bc4 Mon Sep 17 00:00:00 2001
+From: jeong yeong rok <glemfkcl@gmail.com>
+Date: Tue, 4 Nov 2025 18:53:27 +0900
+Subject: [PATCH 1/9] =?UTF-8?q?docs(arch,plan):=20add=20ARCHITECTURE.md=20?=
+ =?UTF-8?q?and=20REFAC=5FPLAN.md;=20summarize=20current=E2=86=92target=20a?=
+ =?UTF-8?q?nd=20A-plan=20steps?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ docs/ARCHITECTURE.md                          |  49 ++
+ docs/REFAC_PLAN.md                            |  63 +++
+ docs/cafe_manuals/README.md                   |   6 +
+ docs/cafe_manuals/menu_143.md                 |  19 +
+ docs/cafe_manuals/menu_272.md                 | 125 +++++
+ docs/cafe_manuals/menu_369.md                 | 125 +++++
+ docs/cafe_manuals/menu_383.md                 |  19 +
+ docs/ops/cafe_collection_manual.md            |  61 +++
+ node-iris-app/config/runtime.json             |  16 +
+ node-iris-app/src/app.ts                      |  19 +-
+ .../src/controllers/CustomChatController.ts   |  88 ++++
+ .../src/controllers/CustomFeedController.ts   | 129 ++++-
+ node-iris-app/src/services/messageStore.ts    |  45 +-
+ scripts/cafe_bulk_collector.py                | 468 ++++++++++++++++++
+ scripts/generate_manual_from_cafe.py          | 122 +++++
+ scripts/log_api.py                            |  91 +++-
+ scripts/one_click_diagnose.sh                 |  42 ++
+ scripts/serve_ui.sh                           |  41 +-
+ windows/setup_iris_port.ps1                   | 189 ++++++-
+ 19 files changed, 1668 insertions(+), 49 deletions(-)
+ create mode 100644 docs/ARCHITECTURE.md
+ create mode 100644 docs/REFAC_PLAN.md
+ create mode 100644 docs/cafe_manuals/README.md
+ create mode 100644 docs/cafe_manuals/menu_143.md
+ create mode 100644 docs/cafe_manuals/menu_272.md
+ create mode 100644 docs/cafe_manuals/menu_369.md
+ create mode 100644 docs/cafe_manuals/menu_383.md
+ create mode 100644 docs/ops/cafe_collection_manual.md
+ create mode 100644 node-iris-app/config/runtime.json
+ create mode 100644 scripts/cafe_bulk_collector.py
+ create mode 100644 scripts/generate_manual_from_cafe.py
+ create mode 100755 scripts/one_click_diagnose.sh
+
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+new file mode 100644
+index 00000000..30e9bb87
+--- /dev/null
++++ b/docs/ARCHITECTURE.md
+@@ -0,0 +1,49 @@
++# Architecture Overview (Current → Target)
++
++## Current (as of fix/ui-cleanup-v2, a8867ee)
++
++- Runtime
++  - Redroid (Hyper‑V) runs IRIS service on the guest: `tcp:3000` (ADB forward target)
++  - Windows hosts the ADB forward + portproxy
++    - `127.0.0.1:5050 → (ADB forward) → redroid:3000`
++    - `127.0.0.1:8510 → (portproxy) → <WSL_IP>:8510` (Log API)
++  - WSL hosts:
++    - Node service: `node-iris-app` (data/logs written under repo)
++    - Lightweight Log API: `scripts/log_api.py` on `:8510`
++    - Streamlit UI: `dashboard/ui_node_iris.py` on `:8512`
++
++- UI/Logs Path (before)
++  - Each room box polled `/logs?roomId=...` every second → N requests per tick
++  - Streamlit iframes isolate JS scopes; per-room components injected scripts repeatedly
++
++- Improvements (this branch)
++  - Added `/logs/bulk` API to return many rooms in one response (limit, include/exclude, optional “all” feed)
++  - Injected a single polling script per page that updates many placeholders by ID (1 request per tick)
++  - Time formatting in JS set to `ko-KR` with `Asia/Seoul`
++  - Windows setup script now also portproxies `8510` so the UI can reliably reach Log API via `localhost:8510`
++
++- Known pain points (still)
++  - Pull model (polling) adds latency and load (albeit much reduced with bulk)
++  - Split runtime across Windows + WSL + Hyper‑V still introduces multiple failure points
++
++## Target (A-Plan)
++
++- Web structure retained, real-time delivery upgraded to push (SSE/WS)
++  - Server: FastAPI provides
++    - `/logs/stream` (SSE) for incremental updates (tailer + dedup, since/offset support)
++    - `/logs` (HTTP) for snapshots and troubleshooting
++  - Frontend: Next.js/React subscribes once per page (single EventSource/WebSocket)
++  - Windows/WSL bridge kept minimal; local-only access preferred; avoid cross-subsystem hops when possible
++
++- Benefits
++  - Eliminate per-second polling → lower CPU/network, lower latency
++  - One stable server entrypoint (API + stream) → simpler observability and recovery
++  - UI decoupled from Streamlit limitations; predictable DOM lifecycle
++
++## Migration Notes
++
++- Keep `scripts/log_api.py` as reference for parsing/tailing/filtering semantics
++- New server lives under `server/` (FastAPI) and exposes SSE and HTTP endpoints
++- New UI lives under `web/` (Next.js); Streamlit acts only as fallback until parity
++- Windows `setup_iris_port.ps1` remains for `5050/8510` until ADB/portproxy can be simplified or removed
++
+diff --git a/docs/REFAC_PLAN.md b/docs/REFAC_PLAN.md
+new file mode 100644
+index 00000000..7c53c75f
+--- /dev/null
++++ b/docs/REFAC_PLAN.md
+@@ -0,0 +1,63 @@
++# Refactoring Plan: Streamlit → FastAPI + SSE (+ Next.js)
++
++Branch: `refactor/fastapi-sse` (base: a8867ee)
++
++## Goals
++- Replace per-second polling with server push (SSE first; WS optional later)
++- Consolidate real-time updates into a single connection per client
++- Preserve current filtering/formatting/dedup semantics
++- Keep Windows/WSL/Hyper‑V bridging stable with least moving parts
++
++## Phases
++
++### Phase 0 — Bootstrapping
++- Create branch `refactor/fastapi-sse`
++- Add docs (this file + ARCHITECTURE.md) and update scripts index
++
++### Phase 1 — Server (FastAPI)
++- Directory: `server/`
++- Endpoints:
++  - `GET /health` — for basic checks
++  - `GET /logs` — snapshot (params: rooms, limit, include/exclude, all, allLimit)
++  - `GET /logs/stream` — SSE; sends incremental events with roomId, ts, text, sender, roomName
++- Internals:
++  - Tailer watches `node-iris-app/data/logs/**.log`
++  - Dedup by `messageId` or (sender,text,time-window), reuse logic from `scripts/log_api.py`
++  - Include/Exclude keyword filter applied server-side
++  - Backpressure: bounded queue, client drop on overload; auto-reconnect supported
++
++### Phase 2 — Frontend (Next.js)
++- Directory: `web/`
++- Pages:
++  - Dashboard (Rooms grid, All activity panel)
++  - Logs page (filters, room selection)
++- Data flow:
++  - Initial snapshot via `GET /logs`
++  - Live updates via `EventSource(/logs/stream)`; reconcile into UI state
++  - Time format: `ko-KR`, `Asia/Seoul`
++
++### Phase 3 — Cutover & Cleanup
++- Feature parity checklist (see below)
++- Default launcher points to Next.js client + FastAPI server
++- Keep Streamlit as fallback for one release; then archive
++
++## Validation Checklist
++- End-to-End
++  - Append new lines to a room log → UI reflects within 1s
++  - Network flap → SSE reconnects automatically
++  - Filters (include/exclude) match snapshot semantics
++- Performance
++  - 30+ rooms at 1 msg/sec sustained without UI stutter
++  - CPU/network usage reduced versus polling
++- Ops
++  - Windows `setup_iris_port.ps1` still sets `5050/8510`
++  - Single diagnostic page `/health`, `/metrics` (optional)
++
++## Rollback Plan
++- Keep Streamlit UI runner available behind a separate port for one release
++- Preserve `scripts/log_api.py` as a working snapshot endpoint during migration
++
++## Notes
++- Consider WebSocket as an alternative once SSE parity is stable
++- Tauri/Electron packaging can reuse the same FastAPI server as a local backend later
++
+diff --git a/docs/cafe_manuals/README.md b/docs/cafe_manuals/README.md
+new file mode 100644
+index 00000000..bc253bca
+--- /dev/null
++++ b/docs/cafe_manuals/README.md
+@@ -0,0 +1,6 @@
++# 네이버 카페 메뉴얼(수집본)
++
++- [menu_143](docs/cafe_manuals/menu_143.md)
++- [menu_272](docs/cafe_manuals/menu_272.md)
++- [menu_369](docs/cafe_manuals/menu_369.md)
++- [menu_383](docs/cafe_manuals/menu_383.md)
+diff --git a/docs/cafe_manuals/menu_143.md b/docs/cafe_manuals/menu_143.md
+new file mode 100644
+index 00000000..13953d5c
+--- /dev/null
++++ b/docs/cafe_manuals/menu_143.md
+@@ -0,0 +1,19 @@
++# 메뉴 143 수집 요약
++
++## [접수][ 강의영상 업로드 이벤트 접수 안내 (총 30만 원 + α) ]
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_143/images/52723/52723_full.png)
++
++
++## [공지]카페 후원멤버 우대 정책 안내(+가입 안내)
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_143/images/52693/52693_full.png)
++
+diff --git a/docs/cafe_manuals/menu_272.md b/docs/cafe_manuals/menu_272.md
+new file mode 100644
+index 00000000..f0e7ec8e
+--- /dev/null
++++ b/docs/cafe_manuals/menu_272.md
+@@ -0,0 +1,125 @@
++# 메뉴 272 수집 요약
++
++## [접수][ 강의영상 업로드 이벤트 접수 안내 (총 30만 원 + α) ]
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52723/52723_full.png)
++
++
++## [공지]카페 후원멤버 우대 정책 안내(+가입 안내)
++
++이전글 다음글목록
++🔔 카페 공지 
++필독
++말머리
++[공지]
++카페 후원멤버 우대 정책 안내(+가입 안내)
++인기멤버
++시계톡톡
++부 매니저 
++1:1 채팅
++2025.10.21. 23:45조회 250
++ 댓글 1URL 복사
++
++가입 링크 : pf.kakao.com/_HXhxcn/chat?bot=true
++
++기존 등업제도 병행 중 : https://cafe.naver.com/nameyee/39556 (후원하지 않아도 등업은 여전히 가능합니다.)
++
++​
++
++등업 신청의 경우, 게시글 조건을 만족할 필요 없이
++
++pf.kakao.com/_HXhxcn/chat 에 접속하셔서 상담원 연결 클릭 후, 닉네임과 입금자명을 알려주시면 바로 처리해드립니다.
++
++​
++
++신규 유료 회원 혜택
++
++준회원(입문자 등급)
++
++	
++
++정회원(중수 등급)
++
++
++
++
++1. 카페 모든 이벤트 참가 자격 부여
++
++2. 봇 구매/임대 금액 10% 지원
++
++3. [멤버십 전용 게시판] 소스코드 열람 가능
++
++	
++
++1. 준회원 혜택 유지
++
++2. 봇 구매/임대 금액 20% 지원
++
++3. [소스 공유 | 중급] 추가 열람 가능
++
++4. 회원전용 강의 영상 시청 가능(설치부터 구현까지 A to Z)
++
++정회원(고수 등급)
++
++
++
++
++1. 정회원(중수) 혜택 유지
++
++2. 봇 구매/임대 금액 40% 지원
++
++3. [소스 공유 | 고급] 추가 열람 가능
++
++4. 모든 게시글/강좌 열람 가능 등급
++
++우리 카페는 기존의 등업 제도를 유지합니다.
++
++봇 소개글을 올리고 글/댓글 조건을 달성할 경우에도 등업됩니다.
++
++​
++
++또한, 유료로 가입하셨더라도 
++
++중수 -> 고수 등업 신청 시 : 소스 공유 5개 이상한 경우, 고수 등급 프리패스 + 후원료 전액 환급을 합니다.
++
++(소스 공유글 조건은 하단 참고)
++
++​
++
++*준회원 혜택 중 10% 지원 사용 방법 및 주의사항 : 카카오톡 채널 "카톡봇 스토어"에서 구매/임차하기 원하는 봇을 선택해서 제작자에게 카페 닉네임 인증(카페 > 나의 활동 > 프로필 캡쳐 인증)하시면 결제 시 10% 차감됩니다.
++
++단, 1회성이며 1회 최대 2,000원 구매 한도에서 가능합니다.
++
++​
++
++**정회원(중수) 혜택 중 20% 지원 사용 방법 및 주의사항 : 신청 방법은 준회원과 동일합니다.
++
++준회원에서 정회원으로 승급하신 경우에도 준회원 할인 혜택(쿠폰)은 이전됩니다.(미사용 시)
++
++단, 1회성이며 1회 최대 10,000원 구매 한도에서 가능합니다.
++
++​
++
++***정회원(고수) 혜택 중 40% 지원 사용
++...
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52693/52693_01.png)
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52693/52693_02.png)
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52693/52693_03.png)
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52693/52693_04.png)
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52693/52693_05.png)
++
++![image](../../data/naver_cafe/29537083/menu_272/images/52693/52693_06.png)
++
+diff --git a/docs/cafe_manuals/menu_369.md b/docs/cafe_manuals/menu_369.md
+new file mode 100644
+index 00000000..2d1cbdab
+--- /dev/null
++++ b/docs/cafe_manuals/menu_369.md
+@@ -0,0 +1,125 @@
++# 메뉴 369 수집 요약
++
++## [접수][ 강의영상 업로드 이벤트 접수 안내 (총 30만 원 + α) ]
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52723/52723_full.png)
++
++
++## [공지]카페 후원멤버 우대 정책 안내(+가입 안내)
++
++이전글 다음글목록
++🔔 카페 공지 
++필독
++말머리
++[공지]
++카페 후원멤버 우대 정책 안내(+가입 안내)
++인기멤버
++시계톡톡
++부 매니저 
++1:1 채팅
++2025.10.21. 23:45조회 250
++ 댓글 0URL 복사
++
++가입 링크 : pf.kakao.com/_HXhxcn/chat?bot=true
++
++기존 등업제도 병행 중 : https://cafe.naver.com/nameyee/39556 (후원하지 않아도 등업은 여전히 가능합니다.)
++
++​
++
++등업 신청의 경우, 게시글 조건을 만족할 필요 없이
++
++pf.kakao.com/_HXhxcn/chat 에 접속하셔서 상담원 연결 클릭 후, 닉네임과 입금자명을 알려주시면 바로 처리해드립니다.
++
++​
++
++신규 유료 회원 혜택
++
++준회원(입문자 등급)
++
++	
++
++정회원(중수 등급)
++
++
++
++
++1. 카페 모든 이벤트 참가 자격 부여
++
++2. 봇 구매/임대 금액 10% 지원
++
++3. [멤버십 전용 게시판] 소스코드 열람 가능
++
++	
++
++1. 준회원 혜택 유지
++
++2. 봇 구매/임대 금액 20% 지원
++
++3. [소스 공유 | 중급] 추가 열람 가능
++
++4. 회원전용 강의 영상 시청 가능(설치부터 구현까지 A to Z)
++
++정회원(고수 등급)
++
++
++
++
++1. 정회원(중수) 혜택 유지
++
++2. 봇 구매/임대 금액 40% 지원
++
++3. [소스 공유 | 고급] 추가 열람 가능
++
++4. 모든 게시글/강좌 열람 가능 등급
++
++우리 카페는 기존의 등업 제도를 유지합니다.
++
++봇 소개글을 올리고 글/댓글 조건을 달성할 경우에도 등업됩니다.
++
++​
++
++또한, 유료로 가입하셨더라도 
++
++중수 -> 고수 등업 신청 시 : 소스 공유 5개 이상한 경우, 고수 등급 프리패스 + 후원료 전액 환급을 합니다.
++
++(소스 공유글 조건은 하단 참고)
++
++​
++
++*준회원 혜택 중 10% 지원 사용 방법 및 주의사항 : 카카오톡 채널 "카톡봇 스토어"에서 구매/임차하기 원하는 봇을 선택해서 제작자에게 카페 닉네임 인증(카페 > 나의 활동 > 프로필 캡쳐 인증)하시면 결제 시 10% 차감됩니다.
++
++단, 1회성이며 1회 최대 2,000원 구매 한도에서 가능합니다.
++
++​
++
++**정회원(중수) 혜택 중 20% 지원 사용 방법 및 주의사항 : 신청 방법은 준회원과 동일합니다.
++
++준회원에서 정회원으로 승급하신 경우에도 준회원 할인 혜택(쿠폰)은 이전됩니다.(미사용 시)
++
++단, 1회성이며 1회 최대 10,000원 구매 한도에서 가능합니다.
++
++​
++
++***정회원(고수) 혜택 중 40% 지원 사용
++...
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52693/52693_01.png)
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52693/52693_02.png)
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52693/52693_03.png)
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52693/52693_04.png)
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52693/52693_05.png)
++
++![image](../../data/naver_cafe/29537083/menu_369/images/52693/52693_06.png)
++
+diff --git a/docs/cafe_manuals/menu_383.md b/docs/cafe_manuals/menu_383.md
+new file mode 100644
+index 00000000..fdd53783
+--- /dev/null
++++ b/docs/cafe_manuals/menu_383.md
+@@ -0,0 +1,19 @@
++# 메뉴 383 수집 요약
++
++## [접수][ 강의영상 업로드 이벤트 접수 안내 (총 30만 원 + α) ]
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_383/images/52723/52723_full.png)
++
++
++## [공지]카페 후원멤버 우대 정책 안내(+가입 안내)
++
++
++### 이미지
++
++
++![image](../../data/naver_cafe/29537083/menu_383/images/52693/52693_full.png)
++
+diff --git a/docs/ops/cafe_collection_manual.md b/docs/ops/cafe_collection_manual.md
+new file mode 100644
+index 00000000..eb796b87
+--- /dev/null
++++ b/docs/ops/cafe_collection_manual.md
+@@ -0,0 +1,61 @@
++# 네이버 카페 수집/메뉴얼 생성 매뉴얼
++
++## 준비
++
++1) 환경변수 설정(로그인 정보)
++
++`config/local.env` 또는 셸 환경에 아래 값을 설정합니다.
++
++```
++NAVER_ID=your_id
++NAVER_PW=your_password
++NAVER_CAFE_ID=29537083
++NAVER_MENU_IDS=272,143,369,383
++NAVER_MAX_PAGES=5
++NAVER_DETAIL_LIMIT=100
++```
++
++2) 파이썬/Playwright 설치(필요 시)
++
++```
++python3 -m pip install -r requirements.txt  # playwright 포함 시 직접 설치 필요
++python3 -m pip install python-dotenv playwright
++python3 -m playwright install chromium
++
++선택: 이미지 OCR(코드 이미지 텍스트화)을 사용하려면
++
++Ubuntu/Debian 계열 기준(WSL 포함):
++
++```
++sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-kor
++```
++
++프로젝트 venv에 파이썬 의존성 추가:
++
++```
++python3 -m pip install pillow pytesseract
++```
++```
++
++## 수집 실행
++
++```
++python3 scripts/cafe_bulk_collector.py
++# 또는 개별 파라미터 사용
++python3 scripts/cafe_bulk_collector.py --help
++```
++
++실행이 완료되면 `data/naver_cafe/<cafe_id>/menu_<id>/collected.json` 과 이미지(`images/`)가 생성됩니다.
++
++## 메뉴얼(Markdown) 생성
++
++```
++python3 scripts/generate_manual_from_cafe.py
++```
++
++결과는 `docs/cafe_manuals/` 하위에 `menu_<id>.md` 로 생성되며, `docs/cafe_manuals/README.md`에 인덱스가 갱신됩니다.
++
++## 참고
++
++- 이미지 파일은 접근 권한 문제를 피하기 위해 각 img 요소를 렌더링 기준 스크린샷으로 저장합니다.
++- 코드가 이미지로만 제공되는 경우, 생성된 메뉴얼에서 해당 이미지 바로 아래에 OCR/코드 재작성 섹션을 수동으로 추가해 주세요. (자동 OCR은 기본 포함하지 않았지만, `pytesseract`를 추가해 확장 가능합니다.)
+diff --git a/node-iris-app/config/runtime.json b/node-iris-app/config/runtime.json
+new file mode 100644
+index 00000000..493fa6ea
+--- /dev/null
++++ b/node-iris-app/config/runtime.json
+@@ -0,0 +1,16 @@
++{
++  "safeMode": false,
++  "allowedRoomIds": [
++    "18462226881291012"
++  ],
++  "features": {
++    "18462226881291012": {
++      "welcome": true,
++      "broadcast": false,
++      "schedules": false
++    }
++  },
++  "excludedRoomIds": [
++    "172526254266844"
++  ]
++}
+diff --git a/node-iris-app/src/app.ts b/node-iris-app/src/app.ts
+index e4b3a944..78fd0966 100644
+--- a/node-iris-app/src/app.ts
++++ b/node-iris-app/src/app.ts
+@@ -1,4 +1,6 @@
+ import { Bot, Logger, type LogLevel } from "@tsuki-chat/node-iris";
++import { readFileSync } from "fs";
++import path from "path";
+ import "dotenv/config";
+ 
+ // Import controller classes
+@@ -48,8 +50,21 @@ class App {
+       // webhookPath: "/webhook/message",
+     });
+ 
+-    // Register controllers manually (SAFE_MODE일 때 명령어 컨트롤러 비등록)
+-    const safeMode = (process.env.SAFE_MODE || "").toLowerCase() === "true";
++    // Register controllers manually
++    // SAFE_MODE: 우선순위 (runtime.json.safeMode) > (process.env.SAFE_MODE)
++    let safeMode = false;
++    try {
++      const cfgPath = path.join(process.cwd(), "config", "runtime.json");
++      const raw = readFileSync(cfgPath, "utf8");
++      const parsed = JSON.parse(raw);
++      if (typeof parsed?.safeMode === "boolean") {
++        safeMode = parsed.safeMode;
++      } else if ((process.env.SAFE_MODE || "").toLowerCase() === "true") {
++        safeMode = true;
++      }
++    } catch {
++      safeMode = (process.env.SAFE_MODE || "").toLowerCase() === "true";
++    }
+     const toRegister = safeMode
+       ? controllers.filter(
+           (c) =>
+diff --git a/node-iris-app/src/controllers/CustomChatController.ts b/node-iris-app/src/controllers/CustomChatController.ts
+index 28072f0b..e6963571 100644
+--- a/node-iris-app/src/controllers/CustomChatController.ts
++++ b/node-iris-app/src/controllers/CustomChatController.ts
+@@ -4,11 +4,15 @@ import {
+   Logger,
+   OnMessage,
+ } from "@tsuki-chat/node-iris";
++import { promises as fs } from "fs";
++import path from "path";
++import { isSafeMode, isRoomAllowed, isFeatureEnabledForContext } from "../utils/guard";
+ import { messageStore } from "../services";
+ 
+ @ChatController
+ class CustomChatController {
+   private logger: Logger;
++  private static recentWelcome = new Map<string, number>();
+ 
+   constructor() {
+     this.logger = new Logger(CustomChatController.name);
+@@ -17,14 +21,98 @@ class CustomChatController {
+   @OnMessage
+   async onChat(context: ChatContext) {
+     try {
++      const raw = (context.message as any)?.msg;
++      let text: string | undefined = undefined;
++      if (typeof raw === "string") text = raw;
++      else if (raw != null) {
++        try { text = JSON.stringify(raw); } catch { text = String(raw); }
++      }
++      let rawDump: string | undefined = undefined;
++      try { rawDump = JSON.stringify(context.message); } catch { rawDump = String((context.message as any) ?? ""); }
+       await messageStore.record(context, {
+         type: "message",
++        text,
++        raw: rawDump,
+         attachment: (context.message as any)?.attachment ?? null,
+       });
++
++      // Robust join detection (covers cases where feed comes as message with feedType)
++      const feedType = (context.message as any)?.feedType;
++      const msgStr = typeof raw === "string" ? raw : "";
++      const looksLikeJoin = feedType === 4 || /입장하셨습니다/.test(msgStr);
++      if (looksLikeJoin) {
++        if (await isSafeMode()) return;
++        const allowed = await isRoomAllowed(context);
++        const welcomeEnabled = await isFeatureEnabledForContext(context, "welcome");
++        if (!allowed || !welcomeEnabled) return;
++
++        const roomId = String(context.room.id);
++        const userName = (await context.sender.getName()) || "Guest";
++        const roomName = (await context.room.name) || "this room";
++
++        // Dedup: avoid double welcome within 5s per (room+user)
++        const key = `${roomId}:${userName}`;
++        const now = Date.now();
++        const last = CustomChatController.recentWelcome.get(key) || 0;
++        if (now - last < 5000) return;
++        CustomChatController.recentWelcome.set(key, now);
++
++        const msg = await this.composeWelcomeMessage(userName, roomName);
++        setTimeout(async () => {
++          try {
++            if (await isSafeMode()) return;
++            await context.reply(msg);
++          } catch (e) {
++            this.logger.error("Failed to send welcome from ChatController", e);
++          }
++        }, 800);
++      }
+     } catch (error) {
+       this.logger.error("Failed to record chat message", error);
+     }
+   }
++
++  private async composeWelcomeMessage(userName: string, roomName: string): Promise<string> {
++    const tplName = await this.getActiveTemplateName();
++    const template = await this.loadTemplate(tplName);
++    const vars: Record<string, string> = {
++      userName,
++      roomName,
++      time: new Date().toLocaleTimeString("ko-KR"),
++      date: new Date().toLocaleDateString("ko-KR"),
++    };
++    return this.replaceVariables(template.messages.text, vars);
++  }
++
++  private async getActiveTemplateName(): Promise<string> {
++    try {
++      const p = path.join(process.cwd(), "config", "runtime.json");
++      const raw = await fs.readFile(p, "utf8");
++      const parsed = JSON.parse(raw);
++      if (parsed && typeof parsed.welcomeTemplateName === "string" && parsed.welcomeTemplateName.trim()) {
++        return parsed.welcomeTemplateName.trim();
++      }
++    } catch {}
++    return process.env.WELCOME_TEMPLATE || "default";
++  }
++
++  private async loadTemplate(name: string): Promise<{ messages: { text: string; image: string | null } }> {
++    const p = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
++    try {
++      const raw = await fs.readFile(p, "utf8");
++      const parsed = JSON.parse(raw);
++      if (parsed && parsed.messages && typeof parsed.messages.text === "string") {
++        return parsed;
++      }
++    } catch {}
++    return { messages: { text: "{userName}님, 환영합니다!", image: null } };
++  }
++
++  private replaceVariables(text: string, vars: Record<string, string>): string {
++    let out = text;
++    for (const [k, v] of Object.entries(vars)) out = out.replace(new RegExp(`\\{${k}\\}`, "g"), v);
++    return out;
++  }
+ }
+ 
+ export default CustomChatController;
+diff --git a/node-iris-app/src/controllers/CustomFeedController.ts b/node-iris-app/src/controllers/CustomFeedController.ts
+index ede1db4f..2302f797 100644
+--- a/node-iris-app/src/controllers/CustomFeedController.ts
++++ b/node-iris-app/src/controllers/CustomFeedController.ts
+@@ -4,7 +4,13 @@ import {
+   Logger,
+   OnInviteUserFeed,
+   OnLeaveUserFeed,
++  OnOpenChatJoinUserFeed,
++  OnOpenChatKickedUserFeed,
++  OnFeedMessage,
+ } from "@tsuki-chat/node-iris";
++import { promises as fs } from "fs";
++import path from "path";
++import { isSafeMode, isRoomAllowed, isFeatureEnabledForContext } from "../utils/guard";
+ import { messageStore } from "../services";
+ 
+ @FeedController
+@@ -18,20 +24,139 @@ class CustomFeedController {
+   @OnInviteUserFeed
+   async onInvite(context: ChatContext) {
+     try {
+-      await messageStore.record(context, { type: "join" });
++      // Always record join feed for dashboard stats
++      let rawDump: string | undefined = undefined;
++      try { rawDump = JSON.stringify((context as any).message); } catch { rawDump = String((context as any).message ?? ""); }
++      await messageStore.record(context, { type: "join", raw: rawDump });
++
++      // Also send welcome if enabled for this room (many deployments emit feed instead of NewMemberController)
++      if (await isSafeMode()) return;
++      const allowed = await isRoomAllowed(context);
++      const welcomeEnabled = await isFeatureEnabledForContext(context, "welcome");
++      if (!allowed || !welcomeEnabled) return;
++
++      const userName = await context.sender.getName();
++      const roomName = await context.room.name;
++      const msg = await this.composeWelcomeMessage(userName || "Guest", roomName || "this room");
++      // small delay to avoid racing with join event rendering
++      setTimeout(async () => {
++        if (await isSafeMode()) return;
++        await context.reply(msg);
++      }, 800);
+     } catch (error) {
+       this.logger.error("Failed to record invite feed", error);
+     }
+   }
+ 
++  // OpenChat-specific join feed
++  @OnOpenChatJoinUserFeed
++  async onOpenJoin(context: ChatContext) {
++    try {
++      let rawDump: string | undefined = undefined;
++      try { rawDump = JSON.stringify((context as any).message); } catch { rawDump = String((context as any).message ?? ""); }
++      await messageStore.record(context, { type: "join", raw: rawDump });
++      if (await isSafeMode()) return;
++      const allowed = await isRoomAllowed(context);
++      const welcomeEnabled = await isFeatureEnabledForContext(context, "welcome");
++      if (!allowed || !welcomeEnabled) return;
++      const userName = await context.sender.getName();
++      const roomName = await context.room.name;
++      const msg = await this.composeWelcomeMessage(userName || "Guest", roomName || "this room");
++      setTimeout(async () => {
++        if (await isSafeMode()) return;
++        await context.reply(msg);
++      }, 800);
++    } catch (error) {
++      this.logger.error("Failed to process openchat join feed", error);
++    }
++  }
++
++  // OpenChat-specific kicked/leave feed
++  @OnOpenChatKickedUserFeed
++  async onOpenKicked(context: ChatContext) {
++    try {
++      let rawDump: string | undefined = undefined;
++      try { rawDump = JSON.stringify((context as any).message); } catch { rawDump = String((context as any).message ?? ""); }
++      await messageStore.record(context, { type: "leave", raw: rawDump });
++    } catch (error) {
++      this.logger.error("Failed to record openchat kicked feed", error);
++    }
++  }
++
++  // Catch-all feed logger (for debugging unknown feed types)
++  @OnFeedMessage
++  async onAnyFeed(context: ChatContext) {
++    try {
++      const raw = (context.message as any)?.msg;
++      let text: string | undefined = undefined;
++      if (typeof raw === "string") text = raw;
++      else if (raw != null) {
++        try { text = JSON.stringify(raw); } catch { text = String(raw); }
++      }
++      let rawDump: string | undefined = undefined;
++      try { rawDump = JSON.stringify((context as any).message); } catch { rawDump = String((context as any).message ?? ""); }
++      await messageStore.record(context, { type: "feed", text, raw: rawDump });
++    } catch (error) {
++      this.logger.error("Failed to record generic feed", error);
++    }
++  }
++
+   @OnLeaveUserFeed
+   async onLeave(context: ChatContext) {
+     try {
+-      await messageStore.record(context, { type: "leave" });
++      let rawDump: string | undefined = undefined;
++      try { rawDump = JSON.stringify((context as any).message); } catch { rawDump = String((context as any).message ?? ""); }
++      await messageStore.record(context, { type: "leave", raw: rawDump });
+     } catch (error) {
+       this.logger.error("Failed to record leave feed", error);
+     }
+   }
++
++  private async composeWelcomeMessage(userName: string, roomName: string): Promise<string> {
++    const tplName = await this.getActiveTemplateName();
++    const template = await this.loadTemplate(tplName);
++    const vars: Record<string, string> = {
++      userName,
++      roomName,
++      time: new Date().toLocaleTimeString("ko-KR"),
++      date: new Date().toLocaleDateString("ko-KR"),
++    };
++    return this.replaceVariables(template.messages.text, vars);
++  }
++
++  private async getActiveTemplateName(): Promise<string> {
++    try {
++      const p = path.join(process.cwd(), "config", "runtime.json");
++      const raw = await fs.readFile(p, "utf8");
++      const parsed = JSON.parse(raw);
++      if (parsed && typeof parsed.welcomeTemplateName === "string" && parsed.welcomeTemplateName.trim()) {
++        return parsed.welcomeTemplateName.trim();
++      }
++    } catch {}
++    return process.env.WELCOME_TEMPLATE || "default";
++  }
++
++  private async loadTemplate(name: string): Promise<{
++    messages: { text: string; image: string | null };
++  }> {
++    const p = path.join(process.cwd(), "config", "templates", "welcome", `${name}.json`);
++    try {
++      const raw = await fs.readFile(p, "utf8");
++      const parsed = JSON.parse(raw);
++      if (parsed && parsed.messages && typeof parsed.messages.text === "string") {
++        return parsed;
++      }
++    } catch {}
++    return { messages: { text: "{userName}님, 환영합니다!", image: null } };
++  }
++
++  private replaceVariables(text: string, vars: Record<string, string>): string {
++    let out = text;
++    for (const [k, v] of Object.entries(vars)) {
++      out = out.replace(new RegExp(`\\{${k}\\}`, "g"), v);
++    }
++    return out;
++  }
+ }
+ 
+ export default CustomFeedController;
+diff --git a/node-iris-app/src/services/messageStore.ts b/node-iris-app/src/services/messageStore.ts
+index 7804b445..929d4e82 100644
+--- a/node-iris-app/src/services/messageStore.ts
++++ b/node-iris-app/src/services/messageStore.ts
+@@ -40,6 +40,38 @@ export class MessageStore {
+       snapshot,
+       payload,
+     };
++    // Normalize message text to avoid "[object Object]" and provide meaning for feeds
++    try {
++      const t = record.snapshot.messageText as unknown as any;
++      const str = typeof t === "string" ? t : "";
++      const isBad = !str || str === "[object Object]";
++      const ptype = (payload && typeof payload.type === "string") ? payload.type : "";
++      const ptxt = (payload as any)?.text;
++      const praw = (payload as any)?.raw;
++      if (isBad) {
++        if (ptype === "join" || ptype === "leave") {
++          const who = snapshot.senderName || snapshot.senderId || "";
++          record.snapshot.messageText = `${ptype.toUpperCase()}: ${who}`.trim();
++        } else if (typeof ptxt === "string" && ptxt.trim() && ptxt.trim() !== "[object Object]") {
++          record.snapshot.messageText = ptxt.trim();
++        } else if (typeof praw === "string" && praw.trim()) {
++          // Try to derive meaningful text from raw JSON of the message
++          let derived = "";
++          try {
++            const obj = JSON.parse(praw);
++            const m = (obj && (obj as any).msg) as any;
++            if (typeof m === "string" && m && m !== "[object Object]") derived = m;
++            else if (m != null) derived = JSON.stringify(m);
++            else derived = praw;
++          } catch {
++            derived = praw;
++          }
++          record.snapshot.messageText = derived;
++        } else {
++          record.snapshot.messageText = "";
++        }
++      }
++    } catch {}
+ 
+     await this.persist(snapshot.roomId, record);
+     this.pushToBuffer(snapshot.roomId, record);
+@@ -99,8 +131,17 @@ export class MessageStore {
+     );
+     const messageId =
+       context.message && "id" in context.message ? String((context.message as any).id ?? "") : undefined;
+-    const messageText =
+-      context.message && "msg" in context.message ? String((context.message as any).msg ?? "") : undefined;
++    let messageText: string | undefined = undefined;
++    try {
++      if (context.message && "msg" in (context.message as any)) {
++        const m = (context.message as any).msg;
++        if (typeof m === "string") messageText = m;
++        else if (m != null) {
++          try { messageText = JSON.stringify(m); }
++          catch { messageText = String(m); }
++        }
++      }
++    } catch {}
+ 
+     return {
+       roomId,
+diff --git a/scripts/cafe_bulk_collector.py b/scripts/cafe_bulk_collector.py
+new file mode 100644
+index 00000000..23b9460b
+--- /dev/null
++++ b/scripts/cafe_bulk_collector.py
+@@ -0,0 +1,468 @@
++#!/usr/bin/env python3
++"""
++네이버 카페 다중 게시판 수집기 (Playwright)
++
++기능
++- NAVER_ID / NAVER_PW로 로그인
++- 지정한 메뉴(게시판) 목록을 순회하며 n페이지 수집
++- 글 목록 요약 + 글 상세(본문 텍스트/HTML) + 이미지 캡처(렌더링 기준)
++- 결과를 data/naver_cafe/<cafe_id>/menu_<id>/ 에 JSON/PNG로 저장
++
++사용법(예)
++  NAVER_ID=... NAVER_PW=... python3 scripts/cafe_bulk_collector.py \
++    --cafe 29537083 --menus 272 143 369 383 --pages 5 --detail 100
++
++환경변수
++- NAVER_ID, NAVER_PW (필수)
++- NAVER_MAX_PAGES, NAVER_DETAIL_LIMIT (선택)
++
++참고
++- 이미지 다운로드는 각 img 요소를 element.screenshot()으로 캡처하여 저장(접근권한 문제 방지)
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import os
++from dataclasses import dataclass, asdict
++from datetime import datetime
++from pathlib import Path
++from typing import List, Optional, Sequence
++
++from dotenv import load_dotenv
++from playwright.async_api import Browser, Frame, Page, async_playwright
++
++load_dotenv("config/local.env")
++
++
++@dataclass
++class ArticleSummary:
++    article_id: str
++    title: str
++    link: str
++    author: str
++    date: str
++    views: str
++    comments: Optional[str]
++
++
++@dataclass
++class ArticleDetail:
++    article_id: str
++    title: str
++    author: str
++    date: str
++    views: str
++    content_text: str
++    content_html: str
++    images: List[str]
++
++
++class CafeCollector:
++    def __init__(
++        self,
++        naver_id: str,
++        naver_pw: str,
++        cafe_id: str,
++        menu_ids: Sequence[str],
++        max_pages: int = 2,
++        detail_limit: int = 50,
++        page_timeout_ms: int = 20000,
++        frame_wait_ms: int = 6000,
++        pending_timeout_ms: int = 60000,
++        output_dir: Optional[Path] = None,
++        log_file: Optional[Path] = None,
++        manual_confirm_callback: Optional = None,
++        detail_concurrency: int = 4,
++    ) -> None:
++        self.naver_id = naver_id
++        self.naver_pw = naver_pw
++        self.cafe_id = cafe_id
++        self.menu_ids = [str(m) for m in menu_ids]
++        self.max_pages = max_pages
++        self.detail_limit = detail_limit
++        self.page_timeout_ms = max(2000, page_timeout_ms)
++        self.frame_wait_ms = max(2000, frame_wait_ms)
++        self.pending_timeout_ms = max(5000, pending_timeout_ms)
++        self.output_dir = output_dir or Path("data/naver_cafe")
++        self.detail_concurrency = max(1, detail_concurrency)
++        self.log_fp: Optional[Path] = None
++        if log_file:
++            self.log_fp = log_file
++        else:
++            logs_dir = Path("logs") / "cafe"
++            logs_dir.mkdir(parents=True, exist_ok=True)
++            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
++            self.log_fp = logs_dir / f"bulk_{ts}.log"
++        self.manual_confirm_callback = manual_confirm_callback
++        self._log_handle = self.log_fp.open("a", encoding="utf-8") if self.log_fp else None
++
++    def _log(self, message: str) -> None:
++        ts = datetime.utcnow().isoformat(timespec="seconds")
++        msg = f"[{ts}] {message}"
++        print(msg)
++        if self._log_handle:
++            self._log_handle.write(msg + "\n")
++            self._log_handle.flush()
++
++    async def _wait_manual_confirm(self, page: Page) -> None:
++        start = datetime.utcnow()
++        self._log("기기 인증 대기중(PENDING)")
++        try:
++            btn = await page.query_selector("#new\\.dontsave")
++            if btn:
++                await btn.click()
++                self._log("기기 등록 안함 클릭")
++                try:
++                    await page.wait_for_load_state('networkidle')
++                except Exception:
++                    await page.wait_for_timeout(1000)
++                if "deviceConfirm" not in page.url:
++                    self._log("기기 인증 페이지 종료 감지")
++                    return
++        except Exception as e:
++            self._log(f"기기 등록 안함 클릭 실패: {e}")
++        screenshot_dir = (self.output_dir / "login_screens")
++        screenshot_dir.mkdir(parents=True, exist_ok=True)
++        shot_path = screenshot_dir / f"device_confirm_{start.strftime('%Y%m%dT%H%M%S')}.png"
++        try:
++            await page.screenshot(path=str(shot_path), full_page=True)
++            self._log(f"기기 인증 스크린샷 저장: {shot_path}")
++        except Exception as e:
++            self._log(f"기기 인증 스크린샷 실패: {e}")
++        try:
++            html_path = screenshot_dir / f"device_confirm_{start.strftime('%Y%m%dT%H%M%S')}.html"
++            html_content = await page.content()
++            html_path.write_text(html_content, encoding="utf-8")
++            self._log(f"기기 인증 HTML 저장: {html_path}")
++        except Exception as e:
++            self._log(f"기기 인증 HTML 저장 실패: {e}")
++        if self.manual_confirm_callback:
++            try:
++                await self.manual_confirm_callback()
++            except Exception as e:
++                self._log(f"manual_confirm_callback 오류: {e}")
++        while True:
++            if (datetime.utcnow() - start).total_seconds() > self.pending_timeout_ms / 1000:
++                raise TimeoutError("기기 인증 대기시간 초과")
++            if "deviceConfirm" not in page.url:
++                self._log("기기 인증 완료 감지")
++                return
++            await page.wait_for_timeout(1500)
++
++    async def _login(self, page: Page) -> None:
++        self._log("네이버 로그인 페이지 접속")
++        await page.goto("https://nid.naver.com/nidlogin.login", wait_until="domcontentloaded")
++        await page.fill('input[name="id"]', self.naver_id)
++        await page.fill('input[name="pw"]', self.naver_pw)
++        self._log("로그인 정보 입력 완료, 제출 중...")
++        await page.click('button[type="submit"]')
++        await page.wait_for_load_state('domcontentloaded')
++        # 일부 계정은 신규기기 알림 팝업이 뜸
++        try:
++            if await page.query_selector("#new\\.dontsave"):
++                await page.click("#new\\.dontsave")
++                self._log("'이 기기 저장 안함' 처리")
++        except Exception:
++            pass
++        await page.wait_for_load_state('networkidle')
++        current_url = page.url
++        self._log(f"로그인 이후 URL: {current_url}")
++        if "deviceConfirm" in current_url:
++            await self._wait_manual_confirm(page)
++
++    async def _wait_frame(self, page: Page, name: str = "cafe_main") -> Optional[Frame]:
++        for _ in range(20):
++            fr = page.frame(name=name)
++            if fr:
++                return fr
++            await asyncio.sleep(0.3)
++        return None
++
++    async def _extract_list(self, page: Page) -> List[ArticleSummary]:
++        """(fallback) 메인 페이지에서 직접 목록을 찾는 구버전 로직. 실패 시 빈 리스트 반환."""
++        try:
++            await page.wait_for_selector("a.article", timeout=self.page_timeout_ms)
++        except Exception:
++            return []
++        out: List[ArticleSummary] = []
++        links = await page.query_selector_all("a.article")
++        for link_el in links:
++            try:
++                link = await link_el.get_attribute("href") or ""
++                title = (await link_el.inner_text()).strip()
++                article_id = ""
++                if "/articles/" in link:
++                    article_id = link.split("/articles/")[-1].split("?")[0]
++                else:
++                    digits = "".join([c for c in link if c.isdigit()])
++                    article_id = digits or ""
++                if article_id and title:
++                    out.append(ArticleSummary(article_id=article_id, title=title, link=link, author="", date="", views="", comments=None))
++            except Exception:
++                continue
++        return out
++
++    async def _extract_list_frame(self, fr: Frame) -> List[ArticleSummary]:
++        """cafe_main 프레임 내부에서 목록 추출"""
++        out: List[ArticleSummary] = []
++        try:
++            # 게시글 링크는 /articles/<id> 형태의 href를 가짐
++            await fr.wait_for_selector('a[href*="/articles/"]', timeout=self.frame_wait_ms)
++        except Exception:
++            return out
++        links = await fr.query_selector_all('a[href*="/articles/"]')
++        seen = set()
++        for link_el in links:
++            try:
++                link = await link_el.get_attribute("href") or ""
++                title = (await link_el.inner_text()).strip()
++                article_id = ""
++                if "/articles/" in link:
++                    article_id = link.split("/articles/")[-1].split("?")[0]
++                else:
++                    digits = "".join([c for c in link if c.isdigit()])
++                    article_id = digits or ""
++                if article_id:
++                    if article_id in seen:
++                        continue
++                    seen.add(article_id)
++                if article_id and title:
++                    out.append(ArticleSummary(article_id=article_id, title=title, link=link, author="", date="", views="", comments=None))
++            except Exception:
++                continue
++        return out
++
++    async def _extract_detail(self, browser: Browser, menu_id: str, summary: ArticleSummary, out_dir: Path) -> Optional[ArticleDetail]:
++        url = f"https://cafe.naver.com/f-e/cafes/{self.cafe_id}/articles/{summary.article_id}?menuid={menu_id}"
++        page = await browser.new_page()
++        try:
++            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_timeout_ms)
++            fr = await self._wait_frame(page, "cafe_main")
++            scope = fr if fr is not None else page
++            try:
++                await scope.wait_for_selector("article, .Article, .ArticleContentBox, .cafe_detail_area", timeout=self.frame_wait_ms)
++            except Exception:
++                # fallback 대기
++                await page.wait_for_timeout(1000)
++
++            extract_js = """
++            () => {
++                const selectors = [
++                    'article',
++                    '.cafe_detail_area',
++                    '.ArticleContentBox',
++                    '.se-main-container',
++                    '.content',
++                    '#main-area',
++                    '#app'
++                ];
++                for (const sel of selectors) {
++                    const el = document.querySelector(sel);
++                    if (el && el.innerText && el.innerText.trim().length > 0) {
++                        return { text: el.innerText, html: el.innerHTML };
++                    }
++                }
++                const body = document.body;
++                return { text: body ? body.innerText : '', html: body ? body.innerHTML : '' };
++            }
++            """
++            data = await scope.evaluate(extract_js)
++            content_text = (data.get("text") or "")[:20000]
++            content_html = data.get("html") or ""
++            if fr is not None:
++                img_elements = await fr.query_selector_all("article img, .se-viewer img, img")
++            else:
++                img_elements = await page.query_selector_all("article img, .se-viewer img, img")
++
++            # 이미지 캡처(각 img 요소를 스크린샷)
++            img_dir = out_dir / "images" / summary.article_id
++            img_dir.mkdir(parents=True, exist_ok=True)
++            imgs = img_elements
++            saved: List[str] = []
++            for idx, img in enumerate(imgs):
++                try:
++                    fname = f"{summary.article_id}_{idx+1:02d}.png"
++                    fpath = img_dir / fname
++                    await img.screenshot(path=str(fpath))
++                    saved.append(str(fpath))
++                except Exception:
++                    continue
++            # 이미지가 전혀 없으면 페이지 전체 스크린샷으로 대체
++            if not saved:
++                try:
++                    fpath = img_dir / f"{summary.article_id}_full.png"
++                    await page.screenshot(path=str(fpath), full_page=True)
++                    saved.append(str(fpath))
++                except Exception:
++                    pass
++
++            return ArticleDetail(
++                article_id=summary.article_id,
++                title=summary.title,
++                author=summary.author,
++                date=summary.date,
++                views=summary.views,
++                content_text=content_text or "",
++                content_html=content_html or "",
++                images=saved,
++            )
++        finally:
++            await page.close()
++
++    async def run(self) -> None:
++        base_out = self.output_dir / self.cafe_id
++        base_out.mkdir(parents=True, exist_ok=True)
++        try:
++            async with async_playwright() as p:
++                browser = await p.chromium.launch(headless=True)
++                page = await browser.new_page()
++                await self._login(page)
++                for menu_id in self.menu_ids:
++                    self._log(f"메뉴 {menu_id} 수집 시작")
++                    summaries: List[ArticleSummary] = []
++                    seen_ids: set[str] = set()
++                    page_idx = 1
++                    empty_count = 0
++                    while True:
++                        if self.max_pages > 0 and page_idx > self.max_pages:
++                            break
++                        list_url = f"https://cafe.naver.com/f-e/cafes/{self.cafe_id}/menus/{menu_id}?page={page_idx}"
++                        await page.goto(list_url, wait_until="domcontentloaded", timeout=self.page_timeout_ms)
++                        fr = await self._wait_frame(page, "cafe_main")
++                        if fr is not None:
++                            # 구형 구조: iframe 내부에서 추출
++                            try:
++                                await fr.wait_for_selector("a", timeout=self.frame_wait_ms)
++                            except Exception:
++                                pass
++                            s = await self._extract_list_frame(fr)
++                        else:
++                            # 신형 구조(Next.js): 상위 문서에서 직접 추출
++                            s = await self._extract_list(page)
++
++                        new_items: List[ArticleSummary] = []
++                        for item in s:
++                            if item.article_id and item.article_id not in seen_ids:
++                                seen_ids.add(item.article_id)
++                                new_items.append(item)
++                        if new_items:
++                            self._log(f"메뉴 {menu_id} 페이지 {page_idx}: 신규 {len(new_items)}건 (누적 {len(summaries)})")
++                            summaries.extend(new_items)
++                            empty_count = 0
++                        else:
++                            empty_count += 1
++                            self._log(f"메뉴 {menu_id} 페이지 {page_idx}: 신규 게시글 없음 (연속 {empty_count})")
++
++                        if empty_count >= 2:
++                            self._log(f"메뉴 {menu_id}: 연속 빈 페이지 탐지, 목록 수집 종료")
++                            break
++
++                        page_idx += 1
++
++                    # 상세 수집
++                    menu_dir = base_out / f"menu_{menu_id}"
++                    menu_dir.mkdir(parents=True, exist_ok=True)
++                    detail_dir = menu_dir / "details"
++                    detail_dir.mkdir(parents=True, exist_ok=True)
++                    details = await self._collect_details(browser, menu_id, summaries, menu_dir)
++
++                    # 저장
++                    out = {
++                        "crawl_time": datetime.utcnow().isoformat(),
++                        "cafe_id": self.cafe_id,
++                        "menu_id": menu_id,
++                        "summaries": [asdict(x) for x in summaries],
++                        "details": [asdict(x) for x in details],
++                    }
++                    (menu_dir / "collected.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
++                    self._log(
++                        f"메뉴 {menu_id}: 목록 {len(summaries)}건, 상세 {len(details)}건 저장 -> {menu_dir/'collected.json'}"
++                    )
++                    self._log(f"메뉴 {menu_id} 수집 종료")
++            await browser.close()
++            self._log("브라우저 종료")
++        finally:
++            if self._log_handle:
++                self._log_handle.close()
++                self._log_handle = None
++
++    async def _collect_details(
++        self,
++        browser: Browser,
++        menu_id: str,
++        summaries: List[ArticleSummary],
++        menu_dir: Path,
++    ) -> List[ArticleDetail]:
++        limit_count = self.detail_limit if self.detail_limit > 0 else len(summaries)
++        targets = summaries[:limit_count]
++        details: List[ArticleDetail] = []
++        if not targets:
++            return details
++
++        sem = asyncio.Semaphore(self.detail_concurrency)
++
++        async def worker(index: int, summary: ArticleSummary):
++            async with sem:
++                try:
++                    detail = await self._extract_detail(browser, menu_id, summary, menu_dir)
++                    return index, detail, None
++                except Exception as exc:  # pragma: no cover
++                    return index, None, exc
++
++        tasks = [asyncio.create_task(worker(idx, summary)) for idx, summary in enumerate(targets, 1)]
++        completed = 0
++        saved = 0
++        try:
++            for coro in asyncio.as_completed(tasks):
++                index, detail, error = await coro
++                completed += 1
++                if detail:
++                    details.append(detail)
++                    saved += 1
++                    if saved % 10 == 0:
++                        self._log(f"메뉴 {menu_id}: 상세 {saved}건 수집 (진행 {completed}/{len(targets)})")
++                elif error:
++                    summary = targets[index - 1]
++                    self._log(f"[WARN] 상세 수집 실패 {summary.article_id}: {error}")
++            return details
++        finally:
++            for task in tasks:
++                if not task.done():
++                    task.cancel()
++
++
++
++async def main() -> None:
++    naver_id = os.getenv("NAVER_ID")
++    naver_pw = os.getenv("NAVER_PW")
++    if not naver_id or not naver_pw:
++        raise SystemExit("NAVER_ID / NAVER_PW 환경변수가 필요합니다.")
++    cafe_id = os.getenv("NAVER_CAFE_ID", "29537083")
++    menus_env = os.getenv("NAVER_MENU_IDS", "")
++    menus = [m.strip() for m in menus_env.split(",") if m.strip()] or ["272", "143", "369", "383"]
++    max_pages = int(os.getenv("NAVER_MAX_PAGES", "3"))
++    detail_limit = int(os.getenv("NAVER_DETAIL_LIMIT", "50"))
++    pending_timeout = int(os.getenv("NAVER_PENDING_TIMEOUT_MS", "60000"))
++    detail_concurrency = int(os.getenv("NAVER_DETAIL_CONCURRENCY", "4"))
++    output_dir_env = os.getenv("NAVER_OUTPUT_DIR")
++    output_dir = Path(output_dir_env) if output_dir_env else None
++
++    collector = CafeCollector(
++        naver_id=naver_id,
++        naver_pw=naver_pw,
++        cafe_id=cafe_id,
++        menu_ids=menus,
++        max_pages=max_pages,
++        detail_limit=detail_limit,
++        pending_timeout_ms=pending_timeout,
++        output_dir=output_dir,
++        detail_concurrency=detail_concurrency,
++    )
++    await collector.run()
++    print("[INFO] 수집 완료:", f"data/naver_cafe/{cafe_id}")
++
++
++if __name__ == "__main__":
++    asyncio.run(main())
+diff --git a/scripts/generate_manual_from_cafe.py b/scripts/generate_manual_from_cafe.py
+new file mode 100644
+index 00000000..e29ebc8f
+--- /dev/null
++++ b/scripts/generate_manual_from_cafe.py
+@@ -0,0 +1,122 @@
++#!/usr/bin/env python3
++"""
++수집된 카페 데이터(JSON)로 메뉴얼(Markdown) 생성기
++
++입력: data/naver_cafe/<cafe_id>/menu_*/collected.json
++출력: docs/cafe_manuals/menu_<id>.md, docs/cafe_manuals/README.md
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import List, Optional, Tuple
++
++# Optional OCR support (Tesseract + pytesseract)
++try:
++    import pytesseract  # type: ignore
++    from PIL import Image  # type: ignore
++    _HAS_OCR = True
++except Exception:
++    _HAS_OCR = False
++
++CAFE_DIR = Path("data/naver_cafe")
++OUT_DIR = Path("docs/cafe_manuals")
++
++
++def fence(text: str, lang: str = "") -> str:
++    return f"```{lang}\n{text}\n```\n"
++
++
++def _ocr_image(p: Path, lang: str = "kor+eng") -> Optional[str]:
++    if not _HAS_OCR:
++        return None
++    try:
++        img = Image.open(str(p))
++        txt = pytesseract.image_to_string(img, lang=lang)
++        if isinstance(txt, str):
++            txt = txt.strip()
++        return txt or None
++    except Exception:
++        return None
++
++
++def _looks_like_code(text: str) -> bool:
++    s = text.strip()
++    if not s:
++        return False
++    hits = 0
++    for token in ("def ", "class ", "function ", "=>", "{}", "();", ";", "#include", "import ", "const ", "let ", "var ", "public ", "private ", "if (", "for (", "while (", "try:"):
++        if token in s:
++            hits += 1
++    # 간단 휴리스틱: 토큰 2개 이상 또는 코드블록 풍 문자 빈도
++    if hits >= 2:
++        return True
++    braces = sum(1 for c in s if c in "{}<>()[];:/\\")
++    return braces >= max(8, len(s) // 20)
++
++
++def summarize(detail: dict) -> str:
++    title = detail.get("title", "(무제)")
++    text = (detail.get("content_text") or "").strip()
++    # 간단한 코드 감지: ``` 포함 또는 ';', '{', 'def ' 등의 패턴
++    has_code = "```" in text or any(k in text for k in ["{", "}", ";", "def ", "function ", "class "])
++    lines = [f"## {title}"]
++    if text:
++        # 너무 길면 앞부분만
++        preview = text if len(text) < 1200 else text[:1200] + "\n..."
++        lines.append(preview)
++    if has_code:
++        # 코드 fence로 감싸기(간단 추정)
++        lines.append("\n(코드가 포함된 것으로 감지되었습니다.)\n")
++    imgs: List[str] = detail.get("images") or []
++    if imgs:
++        lines.append("\n### 이미지\n")
++        for p in imgs:
++            rel = Path(p)
++            if not rel.is_absolute():
++                rel = Path("../../") / rel
++            lines.append(f"![image]({rel.as_posix()})")
++            # OCR 텍스트 추출(가능한 경우)
++            ocr_txt = _ocr_image(Path(p))
++            if ocr_txt:
++                if _looks_like_code(ocr_txt):
++                    lines.append("\n#### OCR 코드 추출\n")
++                    lines.append(fence(ocr_txt, ""))
++                else:
++                    lines.append("\n#### OCR 텍스트\n")
++                    lines.append(ocr_txt)
++    return "\n\n".join(lines) + "\n\n"
++
++
++def build_menu_md(cafe_id: str, menu_dir: Path) -> Path:
++    data = json.loads((menu_dir / "collected.json").read_text(encoding="utf-8"))
++    menu_id = data.get("menu_id")
++    details = data.get("details") or []
++    md_lines = [f"# 메뉴 {menu_id} 수집 요약", ""]
++    for d in details:
++        md_lines.append(summarize(d))
++    OUT_DIR.mkdir(parents=True, exist_ok=True)
++    out_path = OUT_DIR / f"menu_{menu_id}.md"
++    out_path.write_text("\n".join(md_lines), encoding="utf-8")
++    return out_path
++
++
++def main() -> None:
++    OUT_DIR.mkdir(parents=True, exist_ok=True)
++    index_lines = ["# 네이버 카페 메뉴얼(수집본)", ""]
++    for cafe_dir in CAFE_DIR.glob("*"):
++        if not cafe_dir.is_dir():
++            continue
++        for menu_dir in sorted(cafe_dir.glob("menu_*")):
++            cj = menu_dir / "collected.json"
++            if not cj.exists():
++                continue
++            md = build_menu_md(cafe_dir.name, menu_dir)
++            index_lines.append(f"- [{menu_dir.name}]({md.as_posix()})")
++    (OUT_DIR / "README.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
++    print("[INFO] 메뉴얼 생성 완료:", OUT_DIR)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/log_api.py b/scripts/log_api.py
+index 9acc648f..a5cfb4e1 100644
+--- a/scripts/log_api.py
++++ b/scripts/log_api.py
+@@ -14,12 +14,29 @@ def parse_line(line: str):
+     try:
+         obj = json.loads(line)
+         snap = obj.get("snapshot", {})
++        payload = obj.get("payload", {}) if isinstance(obj, dict) else {}
++        sender_name = snap.get("senderName") or str(snap.get("senderId"))
++        text = snap.get("messageText")
++        # Normalize [object Object] or empty message for feed events
++        if not isinstance(text, str):
++            text = ""
++        if text in (None, "", "[object Object]"):
++            # Prefer explicit payload text if provided by controllers
++            ptxt = payload.get("text") if isinstance(payload, dict) else None
++            if isinstance(ptxt, str) and ptxt.strip() and ptxt.strip() != "[object Object]":
++                text = ptxt.strip()
++            elif isinstance(payload.get("raw"), str) and payload.get("raw").strip():
++                text = payload.get("raw").strip()
++            # Otherwise derive from known feed types
++            ptype = str(payload.get("type") or "")
++            if ptype in ("join", "leave"):
++                text = f"{ptype.upper()}: {sender_name}".strip()
+         return {
+             "ts": obj.get("timestamp"),
+             "roomId": str(snap.get("roomId")),
+             "roomName": snap.get("roomName") or str(snap.get("roomId")),
+-            "sender": snap.get("senderName") or str(snap.get("senderId")),
+-            "text": snap.get("messageText"),
++            "sender": sender_name,
++            "text": text,
+             "mid": snap.get("messageId"),
+         }
+     except Exception:
+@@ -103,8 +120,35 @@ def tail_all(limit: int):
+         if len(out) >= limit:
+             break
+     return out
++def tail_bulk(room_ids: list[str], limit: int) -> dict[str, list[dict[str, str]]]:
++    result: dict[str, list[dict[str, str]]] = {}
++    for rid in room_ids:
++        rid_str = str(rid).strip()
++        if not rid_str:
++            continue
++        result[rid_str] = tail_room(rid_str, limit)
++    return result
+ 
++def apply_keyword_filter(entries: list[dict], inc: list[str], exc: list[str], limit: int) -> list[dict]:
++    out: list[dict] = []
++    for r in entries:
++        blob = (str(r.get('roomName', '')) + ' ' + str(r.get('sender', '')) + ' ' + str(r.get('text', ''))).lower()
++        if inc and not any(k in blob for k in inc):
++            continue
++        if exc and any(k in blob for k in exc):
++            continue
++        out.append(r)
++        if len(out) >= limit:
++            break
++    return out
+ class Handler(BaseHTTPRequestHandler):
++    # Quiet HTTP access log unless explicitly enabled
++    def log_message(self, format, *args):
++        if os.environ.get('LOG_API_VERBOSE') in ('1','true','TRUE','on','ON'):
++            super().log_message(format, *args)
++        else:
++            # suppress noisy per-request logs
++            return
+     def _set_headers(self, code=200):
+         self.send_response(code)
+         self.send_header('Content-Type', 'application/json; charset=utf-8')
+@@ -114,6 +158,35 @@ class Handler(BaseHTTPRequestHandler):
+     def do_GET(self):
+         parsed = urlparse(self.path)
+         if parsed.path not in ('/logs', '/logs/'): 
++            if parsed.path in ('/logs/bulk', '/logs/bulk/'):
++                qs = parse_qs(parsed.query)
++                try:
++                    limit = int(qs.get('limit', ['80'])[0])
++                except Exception:
++                    limit = 80
++                rooms_param = qs.get('rooms', [''])[0]
++                rooms = [r for r in rooms_param.split(',') if r.strip()] if rooms_param else []
++                include_all = qs.get('all', ['0'])[0].lower() in ('1', 'true', 'yes', 'y')
++                try:
++                    all_limit = int(qs.get('allLimit', [str(limit)])[0])
++                except Exception:
++                    all_limit = limit
++                include_kw = qs.get('include', [''])[0].lower().strip()
++                exclude_kw = qs.get('exclude', [''])[0].lower().strip()
++                inc = [s for s in include_kw.split() if s]
++                exc = [s for s in exclude_kw.split() if s]
++                payload = {"rooms": {}}
++                if rooms:
++                    raw_rooms = tail_bulk(rooms, limit * 2)
++                    filtered_rooms = {}
++                    for rid, entries in raw_rooms.items():
++                        filtered_rooms[rid] = apply_keyword_filter(entries, inc, exc, limit)
++                    payload["rooms"] = filtered_rooms
++                if include_all:
++                    payload["all"] = apply_keyword_filter(tail_all(all_limit * 2), inc, exc, all_limit)
++                self._set_headers(200)
++                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
++                return
+             self._set_headers(404)
+             self.wfile.write(b'{"error":"not_found"}')
+             return
+@@ -126,24 +199,14 @@ class Handler(BaseHTTPRequestHandler):
+             recs = tail_room(room_id, limit*2)
+         else:
+             recs = tail_all(limit*2)
+-        # filter
+         inc = [s for s in include_kw.split() if s]
+         exc = [s for s in exclude_kw.split() if s]
+-        out = []
+-        for r in recs:
+-            blob = (str(r.get('roomName','')) + ' ' + str(r.get('sender','')) + ' ' + str(r.get('text',''))).lower()
+-            if inc and not any(k in blob for k in inc):
+-                continue
+-            if exc and any(k in blob for k in exc):
+-                continue
+-            out.append(r)
+-            if len(out) >= limit:
+-                break
++        out = apply_keyword_filter(recs, inc, exc, limit)
+         self._set_headers(200)
+         self.wfile.write(json.dumps(out, ensure_ascii=False).encode('utf-8'))
+ 
+ def main():
+-    host = '127.0.0.1'
++    host = os.environ.get('LOG_API_HOST', '0.0.0.0')
+     port = int(os.environ.get('LOG_API_PORT', '8510'))
+     httpd = HTTPServer((host, port), Handler)
+     try:
+diff --git a/scripts/one_click_diagnose.sh b/scripts/one_click_diagnose.sh
+new file mode 100755
+index 00000000..5fba77c3
+--- /dev/null
++++ b/scripts/one_click_diagnose.sh
+@@ -0,0 +1,42 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Usage:
++#   bash scripts/one_click_diagnose.sh fg   # build + bot(FG) + restart UI(8512)
++#   bash scripts/one_click_diagnose.sh bg   # build + bot(BG) + restart UI(8512)
++
++MODE="${1:-bg}"
++ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++BOT_DIR="$ROOT_DIR/node-iris-app"
++
++echo "[diag] building bot..." >&2
++cd "$BOT_DIR"
++npm run build --silent
++rg -n "JSON.stringify\\(m\\)" dist/services/messageStore.js || true
++
++echo "[diag] stopping old bot..." >&2
++pkill -f "node dist/index.js" >/dev/null 2>&1 || true
++
++if [[ "$MODE" == "fg" ]]; then
++  echo "[diag] starting bot in FG (CTRL+C to exit)..." >&2
++  LOG_LEVEL=debug node dist/index.js
++  exit 0
++else
++  echo "[diag] starting bot in BG..." >&2
++  nohup npm start >/tmp/iris-bot.log 2>&1 &
++  sleep 1
++  pgrep -af "node dist/index.js" || true
++fi
++
++echo "[diag] restarting UI/Log API on :8512..." >&2
++cd "$ROOT_DIR"
++pkill -f "streamlit .*ui_node_iris.py" >/dev/null 2>&1 || true
++pkill -f "scripts/log_api.py" >/dev/null 2>&1 || true
++if command -v fuser >/dev/null 2>&1; then fuser -k 8512/tcp >/dev/null 2>&1 || true; fi
++PORT=8512 ./scripts/serve_ui.sh
++
++echo "[diag] BOT LOG (last 50)" >&2
++tail -n 50 /tmp/iris-bot.log 2>/dev/null || true
++
++echo "[diag] done." >&2
++
+diff --git a/scripts/serve_ui.sh b/scripts/serve_ui.sh
+index b4c1a295..5909fea4 100755
+--- a/scripts/serve_ui.sh
++++ b/scripts/serve_ui.sh
+@@ -7,13 +7,15 @@ PY="$VENV/bin/python"
+ APP="$ROOT_DIR/dashboard/ui_node_iris.py"
+ LOG_DIR="$ROOT_DIR/logs"
+ LOG_FILE="$LOG_DIR/ui_node_iris.log"
++PORT="${PORT:-8501}"
++BIND="${BIND:-0.0.0.0}"
+ 
+ mkdir -p "$LOG_DIR"
+ 
+-# Start lightweight log API (8510) if not running
+-if ! pgrep -f "scripts/log_api.py" >/dev/null 2>&1; then
+-  nohup python3 "$ROOT_DIR/scripts/log_api.py" >> "$LOG_DIR/ui_node_iris.log" 2>&1 &
+-fi
++# (Re)start lightweight log API (8510) quietly
++pkill -f "scripts/log_api.py" >/dev/null 2>&1 || true
++nohup env LOG_API_VERBOSE=0 LOG_API_HOST=0.0.0.0 LOG_API_PORT=8510 \
++  python3 "$ROOT_DIR/scripts/log_api.py" >> "$LOG_DIR/log_api.log" 2>&1 &
+ 
+ if [[ ! -x "$PY" ]]; then
+   echo "[ui] venv not found; creating..." | tee -a "$LOG_FILE"
+@@ -22,14 +24,39 @@ if [[ ! -x "$PY" ]]; then
+   "$PY" -m pip install streamlit pandas plotly
+ fi
+ 
++# Ensure no stale Streamlit instance on the selected port
++echo "[ui] stopping existing streamlit (if any) on :$PORT" | tee -a "$LOG_FILE"
++pkill -f "streamlit.*run.*ui_node_iris.py.*--server\.port\s*$PORT" >/dev/null 2>&1 || true
++# Try free the selected port if occupied (WSL side)
++if command -v lsof >/dev/null 2>&1; then
++  PIDS=$(lsof -ti :"$PORT" || true)
++  if [[ -n "${PIDS:-}" ]]; then
++    echo "[ui] killing PIDs on :$PORT -> $PIDS" | tee -a "$LOG_FILE"
++    kill -9 $PIDS 2>/dev/null || true
++  fi
++elif command -v fuser >/dev/null 2>&1; then
++  fuser -k "$PORT"/tcp >/dev/null 2>&1 || true
++else
++  # Fallback via ss parsing
++  SS_LINE=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$0 ~ p {print $0}' | head -n1)
++  PID=$(printf "%s" "$SS_LINE" | sed -n 's/.*pid=\([0-9]\+\).*/\1/p')
++  if [[ -n "${PID:-}" ]]; then
++    echo "[ui] killing PID on :$PORT -> $PID" | tee -a "$LOG_FILE"
++    kill -9 "$PID" 2>/dev/null || true
++  fi
++fi
++sleep 0.5
++
+ # Ensure UI reads repo app path (overrides autodetect)
+ export NODE_IRIS_APP_DIR="$ROOT_DIR/node-iris-app"
++export UI_BUILD="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+ 
+-echo "[ui] starting streamlit at 0.0.0.0:8501 (NODE_IRIS_APP_DIR=$NODE_IRIS_APP_DIR)" | tee -a "$LOG_FILE"
++echo "[ui] starting streamlit at $BIND:$PORT (NODE_IRIS_APP_DIR=$NODE_IRIS_APP_DIR, BUILD=$UI_BUILD)" | tee -a "$LOG_FILE"
+ nohup env NODE_IRIS_APP_DIR="$NODE_IRIS_APP_DIR" \
++  UI_BUILD="$UI_BUILD" \
+   "$PY" -m streamlit run "$APP" \
+-  --server.address 0.0.0.0 \
+-  --server.port 8501 \
++  --server.address "$BIND" \
++  --server.port "$PORT" \
+   --server.headless true \
+   --browser.gatherUsageStats false \
+   >> "$LOG_FILE" 2>&1 &
+diff --git a/windows/setup_iris_port.ps1 b/windows/setup_iris_port.ps1
+index 1b4b70e8..d6104064 100644
+--- a/windows/setup_iris_port.ps1
++++ b/windows/setup_iris_port.ps1
+@@ -1,38 +1,183 @@
+-# Requires: Admin PowerShell
++#requires -Version 5.1
++<#
++.SYNOPSIS
++  Configure Windows portproxy and ADB forwarding for the Redroid IRIS VM.
++
++.DESCRIPTION
++  1. Detect the IPv4 address of the Hyper-V VM (default name: redroid).
++  2. Configure netsh portproxy so Windows and WSL forward LocalPort to the VM RemotePort.
++  3. Re-create ADB forward (LocalPort -> RemotePort) unless -SkipADB is supplied.
++  4. Optionally probe http://127.0.0.1:LocalPort/config to verify IRIS is responding.
++
++  Run this script from an elevated PowerShell session. Hyper-V module must be installed
++  when automatic VM discovery is required.
++#>
++
+ param(
+   [int]$LocalPort = 5050,
+   [int]$RemotePort = 3000,
+-  [string]$Device = "192.168.66.34:5555",
+-  [string]$AdbPath = "$env:USERPROFILE\scrcpy\scrcpy-win64-v3.1\adb.exe"
++  [string]$VmName = "redroid",
++  [string]$ConnectAddress,
++  [int]$DevicePort = 5555,
++  [string]$AdbPath = "$env:USERPROFILE\scrcpy\scrcpy-win64-v3.1\adb.exe",
++  [switch]$SkipADB,
++  [switch]$SkipProbe,
++  [switch]$Verbose
+ )
+ 
+-Write-Host "Configure ADB forward: $LocalPort -> device:$RemotePort and PortProxy 0.0.0.0:$LocalPort -> 127.0.0.1:$LocalPort" -ForegroundColor Cyan
++Set-StrictMode -Version Latest
++$ErrorActionPreference = "Stop"
++
++function Assert-Admin {
++  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
++  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
++  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
++    throw "Run this script from an elevated PowerShell session."
++  }
++}
++
++function Select-IPv4 {
++  param([string[]]$Candidates)
++  foreach ($candidate in $Candidates) {
++    if ($candidate -match '^\d+\.\d+\.\d+\.\d+$' -and
++        -not $candidate.StartsWith("169.") -and
++        $candidate -ne "0.0.0.0") {
++      return $candidate
++    }
++  }
++  return $null
++}
+ 
+-if (-not (Test-Path $AdbPath)) { Write-Error "adb.exe not found: $AdbPath"; exit 1 }
++function Format-Mac {
++  param([string]$Raw)
++  if (-not $Raw) { return $null }
++  ($Raw.ToUpper() -replace '(.{2})', '$1-').TrimEnd('-')
++}
++
++Assert-Admin
++
++Write-Host ("=== Configuring IRIS proxy (Local {0} -> Remote {1}) ===" -f $LocalPort, $RemotePort) -ForegroundColor Cyan
++
++if (-not $PSBoundParameters.ContainsKey("ConnectAddress")) {
++  try {
++    Import-Module Hyper-V -ErrorAction Stop | Out-Null
++  } catch {
++    throw "Unable to load Hyper-V module. Specify -ConnectAddress manually. Details: $_"
++  }
++
++  try {
++    $adapter = Get-VMNetworkAdapter -VMName $VmName -ErrorAction Stop
++    $ConnectAddress = Select-IPv4 $adapter.IPAddresses
++    if (-not $ConnectAddress) {
++      $mac = Format-Mac $adapter.MacAddress
++      if ($mac) {
++        Write-Host ("[INFO] No IP reported via Hyper-V. Trying ARP lookup for MAC {0}..." -f $mac) -ForegroundColor Yellow
++        $neighbor = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
++          Where-Object { $_.LinkLayerAddress -and ($_.LinkLayerAddress.ToUpper() -eq $mac) } |
++          Select-Object -First 1
++        if ($neighbor -and $neighbor.IPAddress) {
++          $ConnectAddress = $neighbor.IPAddress
++        }
++      }
++      if (-not $ConnectAddress) {
++        throw "IPv4 address not found for VM '$VmName'."
++      }
++    }
++    Write-Host ("[INFO] Detected {0} IPv4 = {1}" -f $VmName, $ConnectAddress) -ForegroundColor Yellow
++  } catch {
++    throw "Unable to detect VM '$VmName' IPv4 address automatically. Use -ConnectAddress. Details: $_"
++  }
++} else {
++  Write-Host ("[INFO] Using user-supplied VM address: {0}" -f $ConnectAddress) -ForegroundColor Yellow
++}
+ 
+-& $AdbPath connect $Device | Out-Host
+-& $AdbPath -s $Device forward --remove tcp:$LocalPort 2>$null | Out-Null
+-& $AdbPath -s $Device forward tcp:$LocalPort tcp:$RemotePort | Out-Host
++$deviceTarget = "{0}:{1}" -f $ConnectAddress, $DevicePort
++Write-Host ("[INFO] Device endpoint: {0}" -f $deviceTarget) -ForegroundColor Yellow
+ 
+-netsh interface portproxy delete v4tov4 listenport=$LocalPort listenaddress=0.0.0.0 | Out-Null
+-netsh interface portproxy delete v4tov4 listenport=$LocalPort listenaddress=$env:CLIENTNAME 2>$null | Out-Null
+-netsh interface portproxy add v4tov4 listenport=$LocalPort connectaddress=127.0.0.1 connectport=$LocalPort listenaddress=0.0.0.0 protocol=tcp | Out-Null
++$listenAddresses = @("0.0.0.0")
+ try {
+-  $wslIp = (Get-NetIPConfiguration | Where-Object { $_.NetAdapter.InterfaceDescription -like '*WSL*' } | Select-Object -ExpandProperty IPv4Address).IPv4Address
+-  if ($wslIp) {
+-    netsh interface portproxy delete v4tov4 listenport=$LocalPort listenaddress=$wslIp 2>$null | Out-Null
+-    netsh interface portproxy add v4tov4 listenport=$LocalPort connectaddress=127.0.0.1 connectport=$LocalPort listenaddress=$wslIp protocol=tcp | Out-Null
++  $wslGateway = (
++    Get-NetIPConfiguration |
++    Where-Object { $_.NetAdapter.InterfaceDescription -like "*WSL*" } |
++    ForEach-Object {
++      $_.IPv4Address | ForEach-Object { $_.IPAddress }
++    } |
++    Where-Object { $_ } |
++    Select-Object -First 1
++  )
++  if ($wslGateway) {
++    $listenAddresses += $wslGateway
++    if ($Verbose) {
++      Write-Host ("  - WSL gateway detected: {0}" -f $wslGateway) -ForegroundColor DarkGray
++    }
+   }
+-} catch {}
++} catch {
++  if ($Verbose) {
++    Write-Warning ("Unable to detect WSL gateway IP automatically: {0}" -f $_)
++  }
++}
++
++foreach ($listen in $listenAddresses) {
++  netsh interface portproxy delete v4tov4 listenport=$LocalPort listenaddress=$listen 2>$null | Out-Null
++}
++
++if (-not $SkipADB) {
++  if (-not (Test-Path $AdbPath)) {
++    Write-Warning ("adb.exe not found at {0}. Use -AdbPath or -SkipADB." -f $AdbPath)
++  } else {
++    Write-Host ("[1/4] ADB connect {0}" -f $deviceTarget) -ForegroundColor Green
++    & $AdbPath connect $deviceTarget | Out-Host
++
++    Write-Host ("[2/4] Resetting ADB forward tcp:{0} -> tcp:{1}" -f $LocalPort, $RemotePort) -ForegroundColor Green
++    & $AdbPath -s $deviceTarget forward --remove-all 2>$null | Out-Null
++    & $AdbPath -s $deviceTarget forward ("tcp:{0}" -f $LocalPort) ("tcp:{0}" -f $RemotePort) | Out-Host
++  }
++} else {
++  Write-Host "[ADB] Skipped (SkipADB switch set)." -ForegroundColor Yellow
++}
+ 
+-netsh advfirewall firewall delete rule name="IRIS_$LocalPort" | Out-Null
+-netsh advfirewall firewall add rule name="IRIS_$LocalPort" dir=in action=allow protocol=TCP localport=$LocalPort profile=any | Out-Null
++Write-Host ("[3/4] Configuring portproxy to 127.0.0.1:{0}" -f $LocalPort) -ForegroundColor Green
++foreach ($listen in $listenAddresses) {
++  if ($Verbose) {
++    Write-Host ("  - listen {0}:{1} -> 127.0.0.1:{1}" -f $listen, $LocalPort) -ForegroundColor DarkGray
++  }
++  netsh interface portproxy add v4tov4 listenport=$LocalPort listenaddress=$listen connectport=$LocalPort connectaddress=127.0.0.1 protocol=tcp | Out-Null
++}
+ 
++# Also proxy Log API (8510) from Windows to WSL instance so the dashboard JS can hit localhost:8510 reliably
+ try {
+-  $status = (Invoke-WebRequest -Uri "http://127.0.0.1:$LocalPort/config" -TimeoutSec 2).StatusCode
+-  Write-Host "Probe http://127.0.0.1:$LocalPort/config -> HTTP $status" -ForegroundColor Green
++  # Get first WSL IP without using awk '$1' (which confuses PowerShell variable expander)
++  $wslIpOut = & wsl.exe -e bash -lc "hostname -I | sed -e 's/ .*//'" 2>$null
++  $wslIp = ($wslIpOut | Out-String).Trim()
++  if ($wslIp -match '^\d+\.\d+\.\d+\.\d+$') {
++    Write-Host ("[3b/4] Configuring Log API proxy 127.0.0.1:8510 -> {0}:8510" -f $wslIp) -ForegroundColor Green
++    netsh interface portproxy delete v4tov4 listenport=8510 listenaddress=127.0.0.1 2>$null | Out-Null
++    netsh interface portproxy add v4tov4 listenport=8510 listenaddress=127.0.0.1 connectport=8510 connectaddress=$wslIp protocol=tcp | Out-Null
++    netsh advfirewall firewall delete rule name="IRIS_LOG_8510" 2>$null | Out-Null
++    netsh advfirewall firewall add rule name="IRIS_LOG_8510" dir=in action=allow protocol=TCP localport=8510 profile=any | Out-Null
++  } else {
++    Write-Warning "WSL IP detection failed; skipping Log API proxy (8510)."
++  }
+ } catch {
+-  Write-Warning "Probe failed: http://127.0.0.1:$LocalPort/config"
++  Write-Warning ("Failed to configure Log API proxy: {0}" -f $_)
++}
++
++Write-Host "[FIREWALL] Updating Windows Firewall rule." -ForegroundColor Green
++netsh advfirewall firewall delete rule name=("IRIS_{0}" -f $LocalPort) 2>$null | Out-Null
++netsh advfirewall firewall add rule name=("IRIS_{0}" -f $LocalPort) dir=in action=allow protocol=TCP localport=$LocalPort profile=any | Out-Null
++
++if (-not $SkipProbe) {
++  Write-Host ("[4/4] Probing http://127.0.0.1:{0}/config" -f $LocalPort) -ForegroundColor Green
++  try {
++    $response = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/config" -f $LocalPort) -TimeoutSec 4
++    Write-Host ("      HTTP {0}" -f $response.StatusCode) -ForegroundColor Green
++  } catch {
++    Write-Warning ("Probe failed: {0}" -f $_)
++  }
++} else {
++  Write-Host "[Probe] Skipped (SkipProbe switch set)." -ForegroundColor Yellow
+ }
+ 
+-Write-Host "Done. Use IRIS_LOCAL_PORT=$LocalPort in WSL" -ForegroundColor Green
++Write-Host ("=== Done. LocalPort {0}, Remote {1}:{2} ===" -f $LocalPort, $ConnectAddress, $RemotePort) -ForegroundColor Cyan
++Write-Host ("Next in WSL: IRIS_LOCAL_PORT={0} ./scripts/start_bot_wsl.sh" -f $LocalPort) -ForegroundColor Cyan
++Write-Host "Then: PORT=8512 ./scripts/serve_ui.sh" -ForegroundColor Cyan
+-- 
+2.52.0.windows.1
+

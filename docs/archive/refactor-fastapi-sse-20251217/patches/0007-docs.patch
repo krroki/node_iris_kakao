@@ -1,0 +1,553 @@
+From f9ca2f609e56bc19736086e524711665a346fed8 Mon Sep 17 00:00:00 2001
+From: jeong yeong rok <glemfkcl@gmail.com>
+Date: Mon, 24 Nov 2025 22:02:49 +0900
+Subject: [PATCH 7/9] =?UTF-8?q?docs:=20=EA=B8=B0=EB=A1=9D=20=EB=A9=98?=
+ =?UTF-8?q?=EC=85=98=20=ED=86=A0=ED=81=B0=20=EC=BA=A1=EC=B2=98=20=EC=8B=A4?=
+ =?UTF-8?q?=ED=8C=A8=20=EB=B0=8F=20=ED=9B=85=20=EC=8A=A4=ED=81=AC=EB=A6=BD?=
+ =?UTF-8?q?=ED=8A=B8=20=EC=B6=94=EA=B0=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ docs/HANDOVER.md                            |  15 +++
+ scripts/capture_talkapi.ps1                 | 103 ++++++++++++++++
+ scripts/hook_capture_auth_builder.js        |  28 +++++
+ scripts/hook_capture_auth_okhttp3.js        |  34 ++++++
+ scripts/hook_capture_auth_okhttp3_finder.js |  53 +++++++++
+ scripts/hook_capture_auth_simple.js         |  20 ++++
+ scripts/hook_capture_auth_wide.js           |  48 ++++++++
+ scripts/hook_dump_okhttp3_methods.js        |  18 +++
+ scripts/hook_list_okhttp.js                 |  13 ++
+ windows/start_bot.ps1                       | 124 ++++++++++++++++++++
+ 10 files changed, 456 insertions(+)
+ create mode 100644 docs/HANDOVER.md
+ create mode 100644 scripts/capture_talkapi.ps1
+ create mode 100644 scripts/hook_capture_auth_builder.js
+ create mode 100644 scripts/hook_capture_auth_okhttp3.js
+ create mode 100644 scripts/hook_capture_auth_okhttp3_finder.js
+ create mode 100644 scripts/hook_capture_auth_simple.js
+ create mode 100644 scripts/hook_capture_auth_wide.js
+ create mode 100644 scripts/hook_dump_okhttp3_methods.js
+ create mode 100644 scripts/hook_list_okhttp.js
+ create mode 100644 windows/start_bot.ps1
+
+diff --git a/docs/HANDOVER.md b/docs/HANDOVER.md
+new file mode 100644
+index 00000000..d85da562
+--- /dev/null
++++ b/docs/HANDOVER.md
+@@ -0,0 +1,15 @@
++## 멘션 토큰 캡처 실패 기록 (2025-11-24)
++
++- 현상: talk-api `dispatch`가 401(Unauthorized)로 거부되어 멘션이 텍스트로만 전송됨.
++- 환경: IRIS/봇/포트프록시 정상(5050/8510), SAFE_MODE=false, ALLOWED_ROOM_IDS=18462226881291012. talk-api base=https://talk-api.naijun.dev.
++- 시도 내역:
++  - frida-server(root, x86_64) 실행 후 KakaoTalk 프로세스에 여러 훅 적용(`hook_capture_auth_*`, wide/okhttp3 finder 등) → Authorization 로그 미발생.
++  - tcpdump 443 포트 캡처(`talkapi.pcap`) → Authorization 헤더 0건.
++  - okhttp3 클래스 메서드 덤프 시도 → 스크립트 로드시 프로세스 종료/timeout.
++- 추정 원인: 최신 KakaoTalk이 커스텀/난독화된 HTTP 스택을 사용하거나 Authorization을 네이티브 계층에서 세팅, 표준 okhttp/URLConnection 계층에서 헤더가 노출되지 않음. 또한 talk-api 토큰 자체가 만료 상태.
++- 결론: 단기적으로 멘션 포기(text-only fallback). 추후 재시도 시 옵션
++  1) KakaoTalk 구버전(APKMirror 등) 설치 후 표준 okhttp 훅으로 토큰 캡처.
++  2) talk-api 토큰을 별도 경로로 확보해 runtime에 주입.
++  3) 네이티브 계층/커스텀 클라이언트에 대한 심층 후킹(충돌/시간 부담 큼).
++- 참고 파일(커밋 대상): `scripts/hook_capture_auth_wide.js`, `hook_capture_auth_okhttp3_finder.js`, `hook_capture_auth_builder.js`, `hook_capture_auth_simple.js`
++- 커밋 제외: `talkapi.pcap`(민감/분석용)
+diff --git a/scripts/capture_talkapi.ps1 b/scripts/capture_talkapi.ps1
+new file mode 100644
+index 00000000..70a88148
+--- /dev/null
++++ b/scripts/capture_talkapi.ps1
+@@ -0,0 +1,103 @@
++﻿param(
++  [string]$Serial = '172.24.194.82:5555',
++  [int]$AttachRetries = 6,
++  [int]$DriveRetries = 8,
++  [int]$TimeoutSec = 7,
++  [string]$FridaHost = '127.0.0.1:27042',
++  [string]$BaseUrl = 'https://talk-api.naijun.dev'
++)
++$ErrorActionPreference = 'Stop'
++function New-TempOut { [IO.Path]::GetTempFileName() }
++function Exec {
++  param([string]$Exe, [string]$Args = "", [int]$T=$TimeoutSec)
++  $o = New-TempOut; $e = New-TempOut
++  if ([string]::IsNullOrWhiteSpace($Args)) {
++    $p = Start-Process -FilePath $Exe -PassThru -NoNewWindow -RedirectStandardOutput $o -RedirectStandardError $e
++  } else {
++    $p = Start-Process -FilePath $Exe -ArgumentList $Args -PassThru -NoNewWindow -RedirectStandardOutput $o -RedirectStandardError $e
++  }
++  if (-not $p.WaitForExit($T*1000)) { try { $p.Kill() } catch {}; return [pscustomobject]@{ Code=124; Out=(Get-Content $o -Raw -EA SilentlyContinue); Err=(Get-Content $e -Raw -EA SilentlyContinue) } }
++  return [pscustomobject]@{ Code=$p.ExitCode; Out=(Get-Content $o -Raw -EA SilentlyContinue); Err=(Get-Content $e -Raw -EA SilentlyContinue) }
++}
++function Adb { param([string]$A) Exec 'adb' $A }
++function Ensure-Device {
++  $s = Adb "-s $Serial get-state"; if ($s.Code -ne 0 -or -not $s.Out.Trim().Equals('device')) { throw "adb device not ready: $($s.Out) $($s.Err)" }
++}
++function Ensure-FridaServer {
++  $chk = Adb "-s $Serial shell su 0 pidof frida-server"
++  if ($chk.Code -ne 0 -or [string]::IsNullOrWhiteSpace($chk.Out)) {
++    [void](Adb "-s $Serial shell su 0 nohup /data/local/tmp/frida-server -l 0.0.0.0:27042 >/sdcard/frida_usb.log 2>&1 &")
++  }
++}
++function Ensure-Forward {
++  [void](Adb "-s $Serial forward --remove tcp:27042")
++  $f = Adb "-s $Serial forward tcp:27042 tcp:27042"; if ($f.Code -ne 0) { throw "forward failed: $($f.Out) $($f.Err)" }
++}
++function Test-Frida {
++  $ps = Exec "$env:APPDATA\Python\Python313\Scripts\frida-ps.exe" "-H $FridaHost"
++  return ($ps.Code -eq 0 -and $ps.Out)
++}
++function Get-KakaoProcId {
++  $r = Adb "-s $Serial shell pidof com.kakao.talk"; return ($r.Out | Out-String).Trim()
++}
++function Ensure-KakaoRunning {
++  $k = Get-KakaoProcId; if ([string]::IsNullOrWhiteSpace($k)) { [void](Adb "-s $Serial shell am start -n com.kakao.talk/.activity.SplashActivity"); Start-Sleep -Milliseconds 800; $k = Get-KakaoProcId }
++  return $k
++}
++function Attach-FridaByName {
++  param([string]$Name='KakaoTalk')
++  $log = "$env:PUBLIC\frida_auth.log"; $err = "$env:PUBLIC\frida_auth.err"
++  Remove-Item $log,$err -EA SilentlyContinue
++  $p = Start-Process -FilePath "$env:APPDATA\Python\Python313\Scripts\frida.exe" -ArgumentList '-H', $FridaHost, '-n', $Name, '-l', 'scripts/hook_capture_auth.js' -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -NoNewWindow
++  Start-Sleep -Milliseconds 1500
++  return -not $p.HasExited
++}
++function Drive-UI {
++  param([int]$Loops=6)
++  for($i=0;$i -lt $Loops;$i++){
++    [void](Adb "-s $Serial shell input tap 660 1180"); Start-Sleep -Milliseconds 300
++    [void](Adb "-s $Serial shell input tap 660 120");  Start-Sleep -Milliseconds 300
++    [void](Adb "-s $Serial shell input swipe 360 1000 360 200 500"); Start-Sleep -Milliseconds 300
++    [void](Adb "-s $Serial shell input tap 220 850");  Start-Sleep -Milliseconds 300
++    [void](Adb "-s $Serial shell input swipe 360 1000 360 200 600"); Start-Sleep -Milliseconds 300
++    [void](Adb "-s $Serial shell input tap 300 600");  Start-Sleep -Milliseconds 300
++  }
++}
++function Try-ExtractHeader {
++  $t = Adb "-s $Serial shell 'tail -n 1 /sdcard/talkapi_auth.log'"; $line = ($t.Out | Out-String).Trim();
++  if ($line -match 'Authorization: .*') { return ($line -replace '.*Authorization: ','Authorization: ') }
++  return ''
++}
++function Apply-Runtime {
++  param([string]$Header)
++  $body = @{ talkApi = @{ enabled = $true; baseUrl = $BaseUrl; authHeader = $Header } } | ConvertTo-Json -Depth 5
++  try { Invoke-RestMethod -Uri 'http://127.0.0.1:8600/runtime' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 5 | Out-Null } catch {}
++  try { return Invoke-RestMethod -Uri 'http://127.0.0.1:8600/talkapi/health' -TimeoutSec 5 } catch { return $null }
++}
++Write-Host '[1/5] Ensure device'; Ensure-Device
++Write-Host '[2/5] Ensure frida-server'; Ensure-FridaServer
++Write-Host '[3/5] Ensure forward'; Ensure-Forward
++Write-Host '[4/5] Test frida connectivity'; if (-not (Test-Frida)) { throw 'frida connectivity failed' }
++$attached=$false
++for($i=1;$i -le $AttachRetries;$i++){
++  $kp = Ensure-KakaoRunning
++  if ([string]::IsNullOrWhiteSpace($kp)) { Write-Host '[warn] KakaoTalk not running'; continue }
++  Write-Host "[attach] try $i/$AttachRetries (name)"
++  if (Attach-FridaByName) { $attached=$true; break }
++  Start-Sleep -Milliseconds 500
++}
++if (-not $attached) { throw 'frida attach failed' }
++Write-Host '[5/5] Drive UI to trigger traffic'
++Drive-UI -Loops $DriveRetries
++$header=''
++for($j=0;$j -lt 15;$j++){
++  $header = Try-ExtractHeader
++  if (-not [string]::IsNullOrWhiteSpace($header)) { break }
++  Start-Sleep -Milliseconds 500
++}
++if ([string]::IsNullOrWhiteSpace($header)) { Write-Host '[result] No Authorization header captured yet.'; exit 2 }
++Write-Host ("[result] captured: {0}" -f $header)
++Set-Content -Path "$env:TEMP\talkapi_auth_header.txt" -Value $header -Encoding UTF8
++$health = Apply-Runtime -Header $header
++if ($health -ne $null) { Write-Host '[result] /runtime updated and /talkapi/health responded:'; $health | ConvertTo-Json -Depth 5 } else { Write-Host '[result] Applied header, but health check not reachable.' }
++
+diff --git a/scripts/hook_capture_auth_builder.js b/scripts/hook_capture_auth_builder.js
+new file mode 100644
+index 00000000..7bba05fa
+--- /dev/null
++++ b/scripts/hook_capture_auth_builder.js
+@@ -0,0 +1,28 @@
++Java.perform(function () {
++  function log(line) {
++    try { console.log(line); } catch (e) {}
++    try {
++      var FW = Java.use('java.io.FileWriter');
++      var BW = Java.use('java.io.BufferedWriter');
++      var fw = FW.$new('/sdcard/talkapi_auth.log', true);
++      var bw = BW.$new(fw);
++      bw.write(line + '\n'); bw.flush(); bw.close(); fw.close();
++    } catch (e) {}
++  }
++  function hookBuilder(pkg) {
++    try {
++      var Builder = Java.use(pkg + '.Request$Builder');
++      Builder.addHeader.overload('java.lang.String','java.lang.String').implementation = function(n,v){
++        try { if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH][addHeader]['+pkg+'] '+v); } } catch(e){}
++        return this.addHeader(n,v);
++      };
++      Builder.header.overload('java.lang.String','java.lang.String').implementation = function(n,v){
++        try { if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH][header]['+pkg+'] '+v); } } catch(e){}
++        return this.header(n,v);
++      };
++      log('[hook] '+pkg+'.Request$Builder installed');
++    } catch(e) { log('[hook][skip] '+pkg+'.Request$Builder: '+e); }
++  }
++  hookBuilder('okhttp3');
++  hookBuilder('com.squareup.okhttp');
++});
+diff --git a/scripts/hook_capture_auth_okhttp3.js b/scripts/hook_capture_auth_okhttp3.js
+new file mode 100644
+index 00000000..51189d9f
+--- /dev/null
++++ b/scripts/hook_capture_auth_okhttp3.js
+@@ -0,0 +1,34 @@
++Java.perform(function () {
++  function log(line) {
++    try { console.log(line); } catch (e) {}
++    try {
++      var FW = Java.use('java.io.FileWriter');
++      var BW = Java.use('java.io.BufferedWriter');
++      var fw = FW.$new('/sdcard/talkapi_auth.log', true);
++      var bw = BW.$new(fw);
++      bw.write(line + '\n'); bw.flush(); bw.close(); fw.close();
++    } catch (e) {}
++  }
++
++  try {
++    var Builder = Java.use('okhttp3.Request$a'); // Builder class (obfuscated 'a')
++    Builder.header.overload('java.lang.String','java.lang.String').implementation = function(n,v){
++      try { if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH][header] '+v); } } catch(e){}
++      return this.header(n,v);
++    };
++    Builder.addHeader.overload('java.lang.String','java.lang.String').implementation = function(n,v){
++      try { if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH][addHeader] '+v); } } catch(e){}
++      return this.addHeader(n,v);
++    };
++    log('[hook] okhttp3.Request$a installed');
++  } catch(e) { log('[hook][skip] okhttp3.Request$a: '+e); }
++
++  // Also hook okhttp3.OkHttpClient$Builder interceptors to see additions (debug)
++  try {
++    var CBuilder = Java.use('okhttp3.OkHttpClient$Builder');
++    CBuilder.addInterceptor.overload('okhttp3.Interceptor').implementation = function(i){
++      try { log('[hook] addInterceptor '+i); } catch(e){}
++      return this.addInterceptor(i);
++    };
++  } catch(e){}
++});
+diff --git a/scripts/hook_capture_auth_okhttp3_finder.js b/scripts/hook_capture_auth_okhttp3_finder.js
+new file mode 100644
+index 00000000..c5b7095b
+--- /dev/null
++++ b/scripts/hook_capture_auth_okhttp3_finder.js
+@@ -0,0 +1,53 @@
++Java.perform(function () {
++  function log(line) {
++    try { console.log(line); } catch (e) {}
++    try {
++      var FW = Java.use('java.io.FileWriter');
++      var BW = Java.use('java.io.BufferedWriter');
++      var fw = FW.$new('/sdcard/talkapi_auth.log', true);
++      var bw = BW.$new(fw);
++      bw.write(line + '\n'); bw.flush(); bw.close(); fw.close();
++    } catch (e) {}
++  }
++
++  var candidates = [
++    'okhttp3.Request$Builder',
++    'okhttp3.Request$a',
++    'com.android.okhttp.Request$Builder',
++    'com.squareup.okhttp.Request$Builder',
++    'com.android.okhttp.Headers$Builder'
++  ];
++
++  candidates.forEach(function (cls) {
++    try {
++      var B = Java.use(cls);
++      log('[hook] installing on ' + cls);
++      if (B.header) {
++        var o = B.header.overload('java.lang.String','java.lang.String');
++        if (o) {
++          o.implementation = function(n,v){
++            try { if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH]['+cls+'][header] '+v); } } catch(e){}
++            return o.call(this,n,v);
++          };
++        }
++      }
++      if (B.addHeader) {
++        var o2 = B.addHeader.overload('java.lang.String','java.lang.String');
++        if (o2) {
++          o2.implementation = function(n,v){
++            try { if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH]['+cls+'][addHeader] '+v); } } catch(e){}
++            return o2.call(this,n,v);
++          };
++        }
++      }
++    } catch (e) {
++      log('[hook][skip] ' + cls + ': ' + e);
++    }
++  });
++
++  // Log when Request is built (to see headers)
++  try {
++    var Req = Java.use('okhttp3.Request');
++    var orig = Req.build.overload(); // may not exist
++  } catch (e) {}
++});
+diff --git a/scripts/hook_capture_auth_simple.js b/scripts/hook_capture_auth_simple.js
+new file mode 100644
+index 00000000..4afcd115
+--- /dev/null
++++ b/scripts/hook_capture_auth_simple.js
+@@ -0,0 +1,20 @@
++Java.perform(function () {
++  function log(line) {
++    try { console.log(line); } catch (e) {}
++    try {
++      var FW = Java.use('java.io.FileWriter');
++      var BW = Java.use('java.io.BufferedWriter');
++      var fw = FW.$new('/sdcard/talkapi_auth.log', true);
++      var bw = BW.$new(fw);
++      bw.write(line + '\n'); bw.flush(); bw.close(); fw.close();
++    } catch (e) {}
++  }
++  try {
++    var Http = Java.use('java.net.HttpURLConnection');
++    Http.setRequestProperty.overload('java.lang.String','java.lang.String').implementation = function(n,v){
++      try{ if(n && n.toString().toLowerCase()==='authorization' && v){ log('[AUTH][urlconn] '+v); } }catch(e){}
++      return this.setRequestProperty(n,v);
++    };
++    log('[hook] HttpURLConnection only installed');
++  } catch(e) { log('[hook][skip] HttpURLConnection: '+e); }
++});
+diff --git a/scripts/hook_capture_auth_wide.js b/scripts/hook_capture_auth_wide.js
+new file mode 100644
+index 00000000..a16141cf
+--- /dev/null
++++ b/scripts/hook_capture_auth_wide.js
+@@ -0,0 +1,48 @@
++Java.perform(function () {
++  function log(line) {
++    try { console.log(line); } catch (e) {}
++    try {
++      var FW = Java.use('java.io.FileWriter');
++      var BW = Java.use('java.io.BufferedWriter');
++      var fw = FW.$new('/sdcard/talkapi_auth.log', true);
++      var bw = BW.$new(fw);
++      bw.write(line + '\n'); bw.flush(); bw.close(); fw.close();
++    } catch (e) {}
++  }
++  function hookClassMethod(cls, method, sig){
++    try{
++      var C = Java.use(cls);
++      var overload = C[method].overload.apply(C[method], sig);
++      var orig = overload.implementation;
++      overload.implementation = function(){
++        try{
++          var n = arguments[0], v = arguments[1];
++          if(n && v && n.toString().toLowerCase()==='authorization'){
++            log('[AUTH]['+cls+'.'+method+'] '+v);
++          }
++        }catch(e){ log('[err]['+cls+'.'+method+'] '+e); }
++        return orig.apply(this, arguments);
++      };
++      log('[hook] '+cls+'.'+method+' '+sig.join(','));
++    }catch(e){ log('[hook][skip] '+cls+'.'+method+': '+e); }
++  }
++  // URLConnection
++  hookClassMethod('java.net.URLConnection','setRequestProperty',['java.lang.String','java.lang.String']);
++  hookClassMethod('java.net.URLConnection','addRequestProperty',['java.lang.String','java.lang.String']);
++  // HttpsURLConnection impls
++  hookClassMethod('com.android.okhttp.internal.huc.HttpURLConnectionImpl','setRequestProperty',['java.lang.String','java.lang.String']);
++  hookClassMethod('com.android.okhttp.internal.huc.HttpURLConnectionImpl','addRequestProperty',['java.lang.String','java.lang.String']);
++  hookClassMethod('com.android.okhttp.internal.huc.HttpsURLConnectionImpl','setRequestProperty',['java.lang.String','java.lang.String']);
++  hookClassMethod('com.android.okhttp.internal.huc.HttpsURLConnectionImpl','addRequestProperty',['java.lang.String','java.lang.String']);
++  // OkHttp headers builder (android/okhttp3)
++  hookClassMethod('com.android.okhttp.Headers$Builder','add',['java.lang.String','java.lang.String']);
++  hookClassMethod('com.android.okhttp.Headers$Builder','set',['java.lang.String','java.lang.String']);
++  hookClassMethod('okhttp3.Headers$a','add',['java.lang.String','java.lang.String']);
++  hookClassMethod('okhttp3.Headers$a','set',['java.lang.String','java.lang.String']);
++  // okhttp3 Request.Builder obfuscated aliases
++  hookClassMethod('okhttp3.Request$a','addHeader',['java.lang.String','java.lang.String']);
++  hookClassMethod('okhttp3.Request$a','header',['java.lang.String','java.lang.String']);
++  // com.android.okhttp Request.Builder
++  hookClassMethod('com.android.okhttp.Request$Builder','addHeader',['java.lang.String','java.lang.String']);
++  hookClassMethod('com.android.okhttp.Request$Builder','header',['java.lang.String','java.lang.String']);
++});
+diff --git a/scripts/hook_dump_okhttp3_methods.js b/scripts/hook_dump_okhttp3_methods.js
+new file mode 100644
+index 00000000..253e63f8
+--- /dev/null
++++ b/scripts/hook_dump_okhttp3_methods.js
+@@ -0,0 +1,18 @@
++Java.perform(function () {
++  var prefix = 'okhttp3.';
++  console.log('[dump] listing methods under ' + prefix);
++  Java.enumerateLoadedClasses({
++    onMatch: function (c) {
++      try {
++        if (c.indexOf(prefix) === 0) {
++          var Cls = Java.use(c);
++          var methods = Cls.class.getDeclaredMethods();
++          for (var i = 0; i < methods.length; i++) {
++            console.log(c + '::' + methods[i].toString());
++          }
++        }
++      } catch (e) {}
++    },
++    onComplete: function () { console.log('[dump] done'); }
++  });
++});
+diff --git a/scripts/hook_list_okhttp.js b/scripts/hook_list_okhttp.js
+new file mode 100644
+index 00000000..a0e1e1eb
+--- /dev/null
++++ b/scripts/hook_list_okhttp.js
+@@ -0,0 +1,13 @@
++Java.perform(function () {
++  console.log("[list] enumerate classes containing 'okhttp' or 'OkHttp'");
++  Java.enumerateLoadedClasses({
++    onMatch: function (c) {
++      try {
++        if (c.indexOf('okhttp') >= 0 || c.indexOf('OkHttp') >= 0) {
++          console.log(c);
++        }
++      } catch (e) {}
++    },
++    onComplete: function () { console.log("[list] done"); }
++  });
++});
+diff --git a/windows/start_bot.ps1 b/windows/start_bot.ps1
+new file mode 100644
+index 00000000..2a673c26
+--- /dev/null
++++ b/windows/start_bot.ps1
+@@ -0,0 +1,124 @@
++param(
++  # 기본 IRIS URL을 Windows 포트프록시가 아닌 실제 단말 IP로 강제
++  [string]$IrisUrl = 'http://192.168.127.63:3000',
++  [switch]$Prod,
++  [int]$TimeoutSec = 20,
++  [string]$LogDir = '',
++  [switch]$SkipBuild,
++  [int]$BuildTimeoutSec = 120
++)
++
++$ErrorActionPreference = 'Stop'
++$root = Split-Path $PSScriptRoot -Parent
++$botDir = Join-Path $root 'node-iris-app'
++Set-Location $botDir
++
++if (-not $LogDir) { $LogDir = Join-Path $root 'windows\logs' }
++New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
++$outLog = Join-Path $LogDir 'bot.out.log'
++$errLog = Join-Path $LogDir 'bot.err.log'
++
++# Ensure previous bot processes are stopped to release log handles
++try {
++  $botWorkDir = (Get-Item $botDir).FullName
++  Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
++    Where-Object {
++      ($_.CommandLine -match 'dist\\index.js') -and
++      ($_.CommandLine -match 'node-iris-app' -or $_.ExecutablePath -like "$($botWorkDir)*" -or ($_.CommandLine -notmatch 'node_modules\\next'))
++    } |
++    ForEach-Object {
++      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
++    }
++} catch {}
++
++# Clear stale bot.lock (left from crashed or killed process)
++$lockFile = Join-Path $botDir 'data\bot.lock'
++if (Test-Path $lockFile) {
++  $lockPid = $null
++  try { $lockPid = [int](Get-Content -LiteralPath $lockFile -Raw) } catch {}
++  $procAlive = $false
++  if ($lockPid) {
++    try { $procAlive = (Get-Process -Id $lockPid -ErrorAction SilentlyContinue) -ne $null } catch {}
++  }
++  $ageSec = 0
++  try {
++    $stat = Get-Item $lockFile
++    $ageSec = ([DateTime]::UtcNow - $stat.CreationTimeUtc).TotalSeconds
++  } catch {}
++  if (-not $procAlive -or $ageSec -gt 600) {
++    try {
++      Remove-Item -LiteralPath $lockFile -Force -ErrorAction Stop
++      $pidText = if ($lockPid) { $lockPid } else { 'n/a' }
++      Write-Host ("[bot] cleared stale bot.lock (pid={0}, age={1:n0}s)" -f $pidText, [math]::Round($ageSec,0)) -ForegroundColor Yellow
++    } catch { Write-Warning "[bot] failed to remove stale lock: $_" }
++  }
++}
++
++Write-Host '[bot] ensuring deps' -ForegroundColor Cyan
++if (-not (Test-Path 'node_modules')) {
++  $ciLog = Join-Path $LogDir ("bot.npm.ci." + (Get-Date -Format 'yyyyMMddHHmmss') + ".log")
++  & cmd.exe /c "npm ci 1>> `"$ciLog`" 2>>&1"
++}
++
++# 항상 IRIS_URL을 명시적으로 설정해서 5050/WSL 포트프록시로 떨어지지 않게 함
++$env:IRIS_URL = $IrisUrl
++$env:SAFE_MODE = 'false'
++# Allowed room은 테스트 전용 방 하나(18462226881291012)로 고정해 오발송을 차단한다.
++$env:ALLOWED_ROOM_IDS = '18462226881291012'
++# Realtime API 포트(uvicorn): 기본 8650으로 올리므로 노드에서 /send/talkapi/dispatch 호출시 실패하지 않게 설정
++if (-not $env:REALTIME_API_BASE -or [string]::IsNullOrWhiteSpace($env:REALTIME_API_BASE)) {
++  $env:REALTIME_API_BASE = 'http://127.0.0.1:8650'
++}
++
++function Start-BuildIfNeeded {
++  param([switch]$Force)
++  $distIndex = Join-Path (Get-Location) 'dist\index.js'
++  if ($SkipBuild -and -not $Force) {
++    Write-Host '[bot] SkipBuild set; skipping build' -ForegroundColor Yellow
++    if (-not (Test-Path $distIndex)) {
++      Write-Host '[bot] dist/index.js not found; forcing one build' -ForegroundColor Yellow
++    } else { return }
++  }
++  $buildLog = Join-Path $LogDir ("bot.build." + (Get-Date -Format 'yyyyMMddHHmmss') + ".log")
++  try { Remove-Item -Force -ErrorAction SilentlyContinue $buildLog } catch {}
++  Write-Host ("[bot] building (timeout {0}s)" -f $BuildTimeoutSec) -ForegroundColor Cyan
++  $job = Start-Job -ScriptBlock {
++    param($log)
++    & cmd.exe /c "npm run --silent build 1>> `"$log`" 2>>&1"
++    return $LASTEXITCODE
++  } -ArgumentList $buildLog
++  $done = Wait-Job -Job $job -Timeout $BuildTimeoutSec
++  if (-not $done) {
++    Write-Host '[bot] build timeout; stopping build job' -ForegroundColor Yellow
++    try { Stop-Job $job -Force | Out-Null } catch {}
++  }
++  $rc = 0
++  try { $rc = Receive-Job -Job $job -ErrorAction SilentlyContinue } catch { $rc = 1 }
++  try { Remove-Job $job -Force | Out-Null } catch {}
++  if ($rc -ne 0) {
++    Write-Host ("[bot] build returned code {0} (see build log)" -f $rc) -ForegroundColor Yellow
++  }
++}
++
++Start-BuildIfNeeded
++
++Write-Host "[bot] starting (timeout ${TimeoutSec}s)" -ForegroundColor Green
++try { Remove-Item -Force -ErrorAction SilentlyContinue $outLog,$errLog } catch {}
++Start-Process -FilePath node -ArgumentList 'dist\index.js' -WorkingDirectory $botDir -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden | Out-Null
++
++# Readiness: status.json update within timeout
++$status = Join-Path $botDir 'data\status.json'
++$deadline = (Get-Date).AddSeconds([math]::Max(5,$TimeoutSec))
++do {
++  Start-Sleep -Seconds 1
++  try {
++    if (Test-Path $status) {
++      $j = Get-Content -LiteralPath $status -Raw | ConvertFrom-Json
++      if ($j.startedAt) { Write-Host '[bot] READY' -ForegroundColor Green; break }
++    }
++  } catch { }
++} while ((Get-Date) -lt $deadline)
++
++if ((Get-Date) -ge $deadline) {
++  Write-Host "[bot] TIMEOUT waiting for status.json. See logs at $outLog / $errLog" -ForegroundColor Yellow
++}
+-- 
+2.52.0.windows.1
+
