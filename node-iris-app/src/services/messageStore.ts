@@ -208,7 +208,7 @@ export class MessageStore {
   }
 
   /**
-   * 오늘 날짜 기준으로 특정 방의 최근 채팅 메시지를 로드한다.
+   * 오늘 날짜 기준(자정~현재)으로 특정 방의 최근 채팅 메시지를 로드한다.
    *
    * - 디스크 로그(JSONL)를 읽어서 timestamp / senderName / messageText만 추려낸다.
    * - summary 용이므로 type === "message" 이고 text가 있는 레코드만 사용한다.
@@ -217,16 +217,7 @@ export class MessageStore {
     const day = new Date().toISOString().slice(0, 10);
     const roomDir = path.join(this.baseDir, roomId);
     const filePath = path.join(roomDir, `${day}.log`);
-    let raw: string;
-    try {
-      raw = await fs.readFile(filePath, "utf8");
-    } catch (err: any) {
-      if (err && (err as any).code === "ENOENT") {
-        return [];
-      }
-      throw err;
-    }
-    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const lines = await this.readTailLines(filePath, 6000, 6_000_000);
     const parsed: ChatSummaryMessage[] = [];
     for (const line of lines) {
       try {
@@ -252,6 +243,113 @@ export class MessageStore {
       return parsed;
     }
     return parsed.slice(parsed.length - limit);
+  }
+
+  /**
+   * 최근 N시간(롤링) 기준으로 특정 방의 채팅 메시지를 로드한다.
+   *
+   * - 자정 기준이 아닌 "현재 시각 - N시간" 기준이다.
+   * - 로그 파일은 날짜별로 분리되어 있으므로, 필요한 만큼(최대 maxDaysBack) 최근 날짜 파일을 tail로 읽는다.
+   * - 성능/안전 상의 이유로 각 날짜 파일은 tail 일부만 읽고(JSON 파싱 실패 라인은 무시), 최종적으로 최신 limit개만 반환한다.
+   */
+  async loadMessagesForHours(roomId: string, hours: number, limit = 300, maxDaysBack = 7): Promise<ChatSummaryMessage[]> {
+    const h = Number(hours);
+    if (!Number.isFinite(h) || h <= 0) return [];
+    const windowMs = Math.min(1000 * 60 * 60 * 24 * 30, Math.floor(h * 60 * 60 * 1000)); // max 30d
+    const sinceMs = Date.now() - windowMs;
+
+    const daysNeeded = Math.min(maxDaysBack, Math.max(1, Math.ceil(windowMs / (24 * 60 * 60 * 1000)) + 1));
+    const roomDir = path.join(this.baseDir, roomId);
+
+    const all: ChatSummaryMessage[] = [];
+    for (let d = 0; d < daysNeeded; d += 1) {
+      const day = new Date(Date.now() - d * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const filePath = path.join(roomDir, `${day}.log`);
+      const lines = await this.readTailLines(filePath, 10000, 10_000_000);
+      if (!lines.length) continue;
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line) as RecordedEvent;
+          const payload = obj?.payload || {};
+          if ((payload as any).type !== "message") continue;
+          const snap = obj?.snapshot || {};
+          const t = String((obj as any).timestamp || "").trim();
+          if (!t) continue;
+          const tsMs = new Date(t).getTime();
+          if (!Number.isFinite(tsMs) || tsMs < sinceMs) continue;
+          const text = String((snap as any).messageText || "");
+          if (!text) continue;
+          const sender = (snap as any).senderName || (snap as any).senderId || "";
+          all.push({
+            ts: t,
+            sender: sender ? String(sender) : undefined,
+            text,
+          });
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // 최근순 정렬 후 limit개만
+    all.sort((a, b) => {
+      const ta = new Date(String(a.ts || "")).getTime();
+      const tb = new Date(String(b.ts || "")).getTime();
+      if (!Number.isFinite(ta) && !Number.isFinite(tb)) return 0;
+      if (!Number.isFinite(ta)) return -1;
+      if (!Number.isFinite(tb)) return 1;
+      return ta - tb;
+    });
+
+    const filtered = all.filter((m) => {
+      const tsMs = new Date(String(m.ts || "")).getTime();
+      return Number.isFinite(tsMs) && tsMs >= sinceMs;
+    });
+
+    if (filtered.length <= limit) return filtered;
+    return filtered.slice(filtered.length - limit);
+  }
+
+  private async readTailLines(filePath: string, maxLines: number, maxBytes: number): Promise<string[]> {
+    try {
+      const st = await fs.stat(filePath);
+      const size = Number(st.size) || 0;
+      if (size <= 0) return [];
+
+      const bytesLimit = Math.max(1024, Math.min(Number(maxBytes) || 0, size));
+      const lineLimit = Math.max(100, Number(maxLines) || 0);
+
+      const fh = await fs.open(filePath, "r");
+      try {
+        const chunks: Buffer[] = [];
+        let pos = size;
+        let bytesReadTotal = 0;
+        let newlines = 0;
+        const chunkSize = 64 * 1024;
+        while (pos > 0 && bytesReadTotal < bytesLimit && newlines < lineLimit) {
+          const readSize = Math.min(chunkSize, pos);
+          pos -= readSize;
+          const buf = Buffer.alloc(readSize);
+          const r = await fh.read(buf, 0, readSize, pos);
+          if (!r || !r.bytesRead) break;
+          const b = r.bytesRead === buf.length ? buf : buf.subarray(0, r.bytesRead);
+          chunks.unshift(b);
+          bytesReadTotal += b.length;
+          for (let i = 0; i < b.length; i += 1) {
+            if (b[i] === 10) newlines += 1;
+          }
+        }
+        const text = Buffer.concat(chunks).toString("utf8");
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        if (lines.length <= lineLimit) return lines;
+        return lines.slice(lines.length - lineLimit);
+      } finally {
+        await fh.close();
+      }
+    } catch (err: any) {
+      if (err && String(err.code || "") === "ENOENT") return [];
+      return [];
+    }
   }
 
   private async persist(roomId: string, record: RecordedEvent): Promise<void> {

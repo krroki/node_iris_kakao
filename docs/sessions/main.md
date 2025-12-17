@@ -83,3 +83,32 @@
       Task Action을 `wscript.exe` 래퍼(`windows/run_ensure_watchdog.vbs`)로 변경해 콘솔 창 플래시 없이 실행되도록 수정.
   - IRIS 복구 신뢰성: `windows/repair_redroid_iris.ps1`에서 루프백 PortProxy 자동 정리 + 디바이스 캐시(`data/redroid_device.json`) 도입
   - watchdog 로그 품질: IRIS 복구 스크립트의 `exitCode`와 실제 `IRIS /config`(200) 여부를 함께 기록하도록 보강
+
+---
+
+## 2025-12-17
+
+- 온보딩(문서/결정 숙지):
+  - 운영 가드레일: `agents.md`, `docs/ops/send-guardrails.md`
+  - SSOT/요구/로드맵: `docs/ssot.md`, `docs/prd.md`, `docs/roadmap.md`
+  - 구현 계획: `docs/ops/core-feature-split-plan.md`
+  - 워커 분리/발신/Reply 핵심 ADR: ADR-0022/0026/0027/0028/0029/0030/0031/0034/0035
+  - 레퍼런스: `docs/reference/project-structure.md`, `docs/reference/verification-commands.md`, `docs/reference/kakao-mentions-and-reply.md`, `docs/reference/kakao-room-command-triggers.md`, `docs/reference/openchat-members-google-sheets.md`
+- 확인한 불변식(요약):
+  - SAFE_MODE 최종 차단 SSOT는 `node-iris-app/config/runtime.json.safeMode`이며, 발신 경로는 서버(Realtime API)가 최종적으로 403으로 차단해야 한다.
+  - feature-worker는 `/logs/stream`의 `type=snapshot`을 처리하지 않고 `type=append`만 처리한다(과거 이벤트 재실행 방지).
+  - 운영 진단/로그 발신은 테스트방(`18462226881291012`)으로만 라우팅한다(운영방 오염 금지).
+  - Talk-API 실패 시 폴백은 “명시적”으로만 수행하며(IRIS `/reply_text`/`/reply_media`), 폴백 텍스트에서는 `@`를 제거해 가짜 멘션을 만들지 않는다.
+  - 재기동은 “부분 재기동 우선”, `taskkill /im node.exe` 등 node 전체 종료는 금지(PID 기반 재기동만).
+- 주의: 현재 워킹트리 브랜치가 `main`이 아닌 `fix/chat-summary-24h`로 확인되며 로컬 변경 사항이 다수 존재한다. 공유 워킹트리 정책(브랜치 체크아웃/생성 금지)과 충돌 가능성이 있어, 브랜치 워크플로는 별도 clone/worktree에서만 수행한다.
+- 기동/복구:
+  - `windows/start_all.ps1`로 전체 스택(API:8650 / KB:8610 / bot+workers / web:3100 / watchdog) 기동 완료.
+  - 초기 증상: Realtime API는 떠있지만 `/health`/`/status` 및 web의 `/api/status`가 타임아웃(원인: IRIS 경로 드리프트).
+  - 원인: `netsh interface portproxy`에 stale 규칙 `127.0.0.1:5050 -> 172.30.29.157:3000`이 남아 있고, redroid IP가 변경되어 IRIS `/config`가 타임아웃.
+  - 복구:
+    - Hyper-V `redroid` Running 확인 후, VM MAC(`00-15-5D-00-24-01`) 기반 `Get-NetNeighbor`로 신규 IP(`172.20.33.191`) 확인
+    - `adb connect 172.20.33.191:5555` 성공
+    - stale PortProxy 삭제: `netsh interface portproxy delete v4tov4 listenaddress=127.0.0.1 listenport=5050`
+    - ADB forward 설정: `adb forward tcp:5050 tcp:3000` 후 `http://127.0.0.1:5050/config` 200 확인
+    - Realtime API 재기동: `windows/start_api.ps1 -Port 8650` 후 `http://127.0.0.1:8650/health` 200 및 `http://127.0.0.1:3100/api/status` 200 확인
+- 다음: 요청 대기(필요 시 “부분 재기동 우선” 원칙으로 대상 컴포넌트만 점검/재기동).

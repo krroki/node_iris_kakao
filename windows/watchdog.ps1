@@ -32,6 +32,7 @@ param(
   # 정적 자산 404(빈 화면) 같은 케이스는 1~2회 체크만 실패해도 실사용에 문제가 되므로 기본 임계치를 낮춘다.
   [int]$WebFailThreshold = 2,
   [int]$KbRestartCooldownSec = 180,
+  [int]$KbPostgresEnsureCooldownSec = 60,
   [int]$WelcomeWorkerRestartCooldownSec = 120,
   [int]$AiWorkerRestartCooldownSec = 120,
   [int]$BroadcastWorkerRestartCooldownSec = 120,
@@ -67,12 +68,14 @@ $startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_opencha
 $smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
 $repairScript = Join-Path $root "windows\repair_redroid_iris.ps1"
 $kbServiceScript = Join-Path $root "windows\kb_service.ps1"
+$ensurePostgresScript = Join-Path $root "windows\ensure_postgres.ps1"
 $ensureTalkApiAuthScript = Join-Path $root "scripts\ensure_talkapi_auth_applied.ps1"
 
 $script:lastBotRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastPipelineRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastWebRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastKbRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastKbPostgresEnsureAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastWelcomeWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
@@ -310,6 +313,17 @@ function Restart-KB {
   }
   $script:lastKbRestartAt = $now
 
+  # KB는 Postgres(pgvector)에 의존한다. 재시작 전에 DB를 먼저 보장한다.
+  try {
+    if ($env:KB_POSTGRES_ENSURE_DISABLE -ne '1') {
+      Ensure-KbPostgres -Reason ("KB 재시작 전 DB ensure: {0}" -f $Reason) | Out-Null
+    } else {
+      Write-Log -Level 'WARN' -Message "KB postgres ensure skipped (KB_POSTGRES_ENSURE_DISABLE=1)"
+    }
+  } catch {
+    Write-Log -Level 'WARN' -Message "KB 재시작 전 Postgres ensure 실패(계속 진행): $($_.Exception.Message)"
+  }
+
   if (Test-Path $kbServiceScript) {
     Write-Log -Level 'ACTION' -Message "KB 재시작(kb_service.ps1) 실행. 사유: $Reason"
     try {
@@ -325,6 +339,35 @@ function Restart-KB {
   }
 
   Restart-Pipeline -Reason ("KB 재시작 실패/불가 -> 전체 재기동: {0}" -f $Reason)
+}
+
+function Ensure-KbPostgres {
+  param([string]$Reason)
+  $now = Get-Date
+  $cooldownUntil = $script:lastKbPostgresEnsureAt.AddSeconds($KbPostgresEnsureCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "KB Postgres ensure 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return $false
+  }
+  $script:lastKbPostgresEnsureAt = $now
+
+  if (-not (Test-Path $ensurePostgresScript)) {
+    Write-Log -Level 'WARN' -Message "ensure_postgres.ps1 없음: $ensurePostgresScript (Postgres 자동 복구 불가)"
+    return $false
+  }
+
+  Write-Log -Level 'ACTION' -Message "KB Postgres ensure(ensure_postgres.ps1) 실행. 사유: $Reason"
+  try {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ensurePostgresScript -TimeoutSec 180 2>&1 | ForEach-Object {
+      Write-Log -Level 'INFO' -Message "[ensure_postgres] $_"
+    }
+    Write-Log -Level 'INFO' -Message "KB Postgres ensure 완료"
+    return $true
+  } catch {
+    Write-Log -Level 'ERROR' -Message "KB Postgres ensure 실패: $($_.Exception.Message)"
+    return $false
+  }
 }
 
 function Restart-Web {
@@ -939,6 +982,25 @@ try
     $botStage = $stages.bot
     $logStage = $stages.logStore
     $kbStage = $stages.kb
+    $kbPgStage = $stages.kbPostgres
+
+    # KB Postgres(pgvector)가 죽으면 KB가 "겉보기로는 살아있어도" 질의/임베딩이 실패할 수 있다.
+    # /status에 kbPostgres(TCP) stage를 추가해, watchdog가 DB 다운을 먼저 복구한다.
+    try {
+      if ($kbPgStage -and ($kbPgStage.ok -ne $true)) {
+        $detail = ""
+        try { $detail = [string]$kbPgStage.detail } catch { $detail = "" }
+        $ok = $false
+        if ($env:KB_POSTGRES_ENSURE_DISABLE -ne '1') {
+          $ok = Ensure-KbPostgres -Reason ("kbPostgres stage not ok. {0}" -f $detail)
+        } else {
+          Write-Log -Level 'WARN' -Message "KB postgres ensure skipped (KB_POSTGRES_ENSURE_DISABLE=1)"
+        }
+        if ($ok) {
+          Restart-KB -Reason ("Postgres 복구 후 KB 재시작. {0}" -f $detail)
+        }
+      }
+    } catch {}
 
     # KB 서비스가 꺼져 있으면 우선 KB만 재기동 (AI 질의/수집/임베딩 정상화를 위해)
     try {

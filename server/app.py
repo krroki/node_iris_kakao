@@ -447,11 +447,44 @@ async def status():
             stage["extra"] = {"url": url, "error": str(e)}
         return stage
 
+    def _kb_postgres_stage():
+        import socket
+
+        host = os.getenv("KB_PG_HOST") or "127.0.0.1"
+        port_raw = os.getenv("KB_PG_PORT") or "5433"
+        try:
+            port = int(port_raw)
+        except Exception:
+            port = 5433
+
+        stage = {
+            "key": "kbPostgres",
+            "name": "KB Postgres (pgvector)",
+            "ok": False,
+            "detail": "상태 확인 중...",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "extra": {"host": host, "port": port},
+        }
+        try:
+            sock = socket.create_connection((host, port), timeout=0.8)
+            try:
+                sock.close()
+            except Exception:
+                pass
+            stage["ok"] = True
+            stage["detail"] = f"TCP 연결 OK ({host}:{port})"
+        except Exception as e:
+            stage["ok"] = False
+            stage["detail"] = f"연결 실패: {e}"
+            stage["extra"] = {"host": host, "port": port, "error": str(e)}
+        return stage
+
     device_stage = _device_stage()
     bot_stage = _bot_stage()
     log_stage, latest_ts = _log_stage()
     realtime_stage = await _realtime_stage()
     kb_stage = _kb_stage()
+    kb_pg_stage = _kb_postgres_stage()
 
     stages = {
         "device": device_stage,
@@ -459,6 +492,7 @@ async def status():
         "logStore": log_stage,
         "realtime": realtime_stage,
         "kb": kb_stage,
+        "kbPostgres": kb_pg_stage,
         "ui": {
             "key": "ui",
             "name": "Dashboard (Next.js)",

@@ -486,7 +486,7 @@ export default function RoomCard({
                                 checked={!!features.chatSummary}
                                 onChange={e => onToggleFeature(room.roomId, 'chatSummary', e.target.checked)}
                             />
-                            채팅 요약(!채팅요약)
+                            채팅 요약(!채팅요약 / !요약, 예: !요약 24시간)
                         </label>
                         <label className="control-label" title="방별 FAQ/안내 문구를 !키 형태로 등록/응답합니다. (예: !등록 구글 2차인증)">
                             <input

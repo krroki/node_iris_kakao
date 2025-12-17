@@ -119,6 +119,22 @@ try {
 }
 
 # Start KB service (8610) with same ENV (KB_SCHED_*)
+if ($env:KB_POSTGRES_ENSURE_DISABLE -ne '1') {
+  $ensurePg = Join-Path $PSScriptRoot 'ensure_postgres.ps1'
+  if (Test-Path $ensurePg) {
+    Write-Host '[all] ensuring KB postgres (docker compose)'
+    try {
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ensurePg -TimeoutSec 180 2>&1 | ForEach-Object { Write-Host "[all] $_" }
+    } catch {
+      Write-Host ("[all] ensure_postgres 실패(계속 진행): {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host ("[all] ensure_postgres.ps1 없음: {0} (계속 진행)" -f $ensurePg) -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "[all] KB postgres ensure skipped (KB_POSTGRES_ENSURE_DISABLE=1)" -ForegroundColor Yellow
+}
+
 Write-Host '[all] starting KB service'
 & (Join-Path $PSScriptRoot 'kb_service.ps1') -Port 8610 -TimeoutSec 45
 

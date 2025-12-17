@@ -114,6 +114,13 @@ class ChatSummaryRequest(BaseModel):
     messages: List[ChatMessage]
 
 
+class ChatQaRequest(BaseModel):
+    room_id: str
+    room_name: Optional[str] = None
+    question: str
+    messages: List[ChatMessage]
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -444,6 +451,350 @@ def chat_summary(req: ChatSummaryRequest):
     }
 
 
+@app.post("/chat/qa")
+def chat_qa(req: ChatQaRequest):
+    """단일 채팅방의 최근 메시지(로그)를 근거로 질문에 답한다.
+
+    - node-iris가 최근 로그를 읽어 messages 배열 + question을 보내준다.
+    - 여기서는 "대화 로그에 있는 근거만" 사용하도록 규칙을 강하게 고정한다.
+    - 외부 카페 글/매뉴얼(RAG)은 조회하지 않는다.
+    """
+    question = (req.question or "").strip()
+    if not question:
+        return {"ok": False, "code": "no_question", "detail": "질문이 비어 있습니다."}
+
+    if not req.messages:
+        return {"ok": False, "code": "no_messages", "detail": "답변할 대화 로그가 없습니다."}
+
+    model = os.getenv("KB_CHAT_QA_MODEL") or os.getenv("KB_LLM_MODEL") or "gpt-4.1-mini"
+
+    # Node 쪽에서 Q&A 모드는 더 넓은 범위(+더 많은 메시지)를 보낼 수 있으므로,
+    # 여기서는 입력을 넉넉히 받고, LLM 프롬프트는 키워드 기반으로 강하게 축약한다.
+    max_messages = int(os.getenv("KB_CHAT_QA_MAX_MESSAGES", "800"))
+    max_chars_per_msg = int(os.getenv("KB_CHAT_QA_MAX_CHARS", "360"))
+    msgs = req.messages[-max_messages:]
+
+    q = question.strip()
+    wants_link = bool(re.search(r"(링크|url|URL|주소)", q))
+
+    def _dedupe_keep_order(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for it in items:
+            k = it.strip()
+            if not k:
+                continue
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(k)
+        return out
+
+    def _extract_keywords(query: str) -> list[str]:
+        # 너무 흔한 조사/어미/동사 위주의 토큰은 제외하고, 핵심 명사 위주로만 매칭한다.
+        raw = re.findall(r"[0-9A-Za-z가-힣]{2,}", query or "")
+        stop = {
+            "링크",
+            "주소",
+            "알려줘",
+            "알려주세요",
+            "어떻게",
+            "어케",
+            "뭐야",
+            "무엇",
+            "언제",
+            "나와",
+            "나오",
+            "되나",
+            "되요",
+            "되나요",
+            "되면",
+            "안되면",
+            "안돼",
+            "안됨",
+            "안돼요",
+            "가능",
+            "가능해",
+            "가능한",
+            "확인",
+            "할수",
+            "할수있",
+            "할수있어",
+        }
+        cleaned: list[str] = []
+        for t in raw:
+            t2 = t.strip()
+            if not t2:
+                continue
+            # stopword는 그대로 제외하되, '링크/주소'는 wants_link 판단에만 사용한다.
+            if t2 in stop:
+                continue
+            cleaned.append(t2)
+        return _dedupe_keep_order(cleaned)[:12]
+
+    keywords = _extract_keywords(q)
+
+    def _has_any_keyword(text: str) -> bool:
+        if not text or not keywords:
+            return False
+        tl = text.lower()
+        for kw in keywords:
+            if kw.lower() in tl:
+                return True
+        return False
+
+    # Q&A는 "전체 로그"를 LLM에 그대로 넣기보다, 질문 키워드에 걸리는 메시지 + 주변 컨텍스트만 남긴다.
+    picked_idx: set[int] = set()
+    if keywords:
+        for i, m in enumerate(msgs):
+            t = (m.text or "")
+            if not t:
+                continue
+            if _has_any_keyword(t) or (wants_link and ("http://" in t or "https://" in t)):
+                for j in range(max(0, i - 2), min(len(msgs), i + 3)):
+                    picked_idx.add(j)
+    elif wants_link:
+        for i, m in enumerate(msgs):
+            t = (m.text or "")
+            if "http://" in t or "https://" in t:
+                for j in range(max(0, i - 1), min(len(msgs), i + 2)):
+                    picked_idx.add(j)
+
+    # 키워드 매칭이 하나도 없으면(=로그에 없을 가능성), 최근 메시지 일부만 남겨도 충분하다.
+    if not picked_idx:
+        # 키워드가 있는데도 하나도 안 걸리면 LLM을 호출해도 "확인 불가"가 최선이므로
+        # 여기서는 결정적으로 안내하고, 사용자가 기간을 늘려 재시도할 수 있게 힌트를 준다.
+        if keywords or wants_link:
+            hint = (
+                "대화 로그에서 근거를 찾지 못했습니다. "
+                "기간을 늘려 다시 시도해 보세요(예: `!요약 7일 <질문>` 또는 `!요약 48시간 <질문>`)."
+            )
+            return {
+                "ok": True,
+                "room_id": req.room_id,
+                "room_name": req.room_name,
+                "question": question,
+                "answer": "1) 답변: 대화 로그에서 확인할 수 없습니다.\n\n2) 근거: (현재 범위의 채팅 로그에서 관련 키워드/URL을 찾지 못했습니다.)\n\n3) 다음 액션:\n- "
+                + hint,
+                "model": "deterministic_no_match",
+            }
+
+        tail_n = min(len(msgs), 80)
+        picked = msgs[-tail_n:]
+    else:
+        picked = [msgs[i] for i in sorted(picked_idx)]
+
+    url_re = re.compile(r"https?://\S+")
+
+    def _extract_urls_from_text(text: str) -> list[str]:
+        if not text:
+            return []
+        out: list[str] = []
+        for u in url_re.findall(text):
+            # trailing punctuation 제거(간단 버전)
+            out.append(u.rstrip(").,]}>\"'"))
+        return _dedupe_keep_order(out)
+
+    def _format_evidence_line(ts: str, sender: str, text: str) -> str:
+        s = (sender or "").strip() or "사용자"
+        t = _compact_ws(text)
+        if len(t) > 180:
+            t = t[:180] + "…"
+        return f"- [{ts}] {s}: {t}"
+
+    # 1) 링크 요청은 LLM 없이 결정적으로 URL만 뽑아 응답한다(가장 흔한 실패 케이스 방지).
+    if wants_link:
+        urls: list[str] = []
+        evidence: list[str] = []
+        for m in picked:
+            text = m.text or ""
+            u = _extract_urls_from_text(text)
+            if not u:
+                continue
+            # 키워드가 있으면 키워드 포함 라인만 우선, 없으면 URL 라인 전부 수집
+            if keywords and not _has_any_keyword(text):
+                continue
+            urls.extend(u)
+            evidence.append(_format_evidence_line(m.ts, m.sender or "", text))
+
+        urls = _dedupe_keep_order(urls)[:12]
+        evidence = _dedupe_keep_order(evidence)[:5]
+        if urls:
+            answer_lines: list[str] = []
+            answer_lines.extend(
+                [
+                    "1) 답변:",
+                    "대화 로그에서 확인된 링크입니다.",
+                    "",
+                ]
+            )
+            answer_lines.extend([f"- {u}" for u in urls])
+            answer_lines.extend(["", "2) 근거:"])
+            if evidence:
+                answer_lines.extend(evidence)
+            else:
+                answer_lines.append("- (URL이 포함된 메시지에서 추출)")
+            answer_lines.extend(
+                [
+                    "",
+                    "3) 다음 액션:",
+                    "- 필요하면 `!요약 7일 <질문>`처럼 기간을 늘려 더 오래된 링크도 찾아보세요.",
+                ]
+            )
+            return {
+                "ok": True,
+                "room_id": req.room_id,
+                "room_name": req.room_name,
+                "question": question,
+                "answer": "\n".join(answer_lines).strip(),
+                "model": "deterministic_url_extract",
+            }
+
+    # 2) “언제/일정/날짜” 질문은 로그에서 날짜 표현을 우선 추출해 LLM 의존을 줄인다.
+    wants_date = bool(re.search(r"(언제|일정|날짜|몇\s*일|며칠|나와|나오|출간|업로드|오픈|발표)", q))
+
+    if wants_date and keywords:
+        date_re = re.compile(
+            r"(?:(20\d{2})[./-]([01]?\d)[./-]([0-3]?\d))|(?:(\d{1,2})\s*월\s*(\d{1,2})\s*일)|(?:(\d{1,2})\s*일)"
+        )
+        hits: list[tuple[str, str]] = []  # (date_text, evidence_line)
+        for m in picked:
+            text = _compact_ws(m.text or "")
+            if not text:
+                continue
+            if not _has_any_keyword(text):
+                continue
+            m2 = date_re.search(text)
+            if not m2:
+                continue
+            date_text = m2.group(0)
+            hits.append((date_text, _format_evidence_line(m.ts, m.sender or "", text)))
+
+        # 중복 제거
+        seen_hit: set[str] = set()
+        uniq_hits: list[tuple[str, str]] = []
+        for d, ev in hits:
+            k = f"{d}||{ev}"
+            if k in seen_hit:
+                continue
+            seen_hit.add(k)
+            uniq_hits.append((d, ev))
+
+        if uniq_hits:
+            uniq_hits = uniq_hits[:5]
+            answer_lines = [
+                "1) 답변:",
+                "대화 로그에서 확인된 일정/날짜 언급입니다.",
+                "",
+                *[f"- {d}" for d, _ in uniq_hits],
+                "",
+                "2) 근거:",
+                *[ev for _, ev in uniq_hits],
+                "",
+                "3) 다음 액션:",
+                "- 월/연도 정보가 누락된 경우(예: '28일')는 방에서 추가 확인이 필요합니다.",
+                "- 더 오래된 언급이 있을 수 있으니 `!요약 7일 <질문>`으로 범위를 늘려보세요.",
+            ]
+            return {
+                "ok": True,
+                "room_id": req.room_id,
+                "room_name": req.room_name,
+                "question": question,
+                "answer": "\n".join(answer_lines).strip(),
+                "model": "deterministic_date_extract",
+            }
+
+    def _compact_ws(s: str) -> str:
+        return re.sub(r"\s+", " ", s or "").strip()
+
+    def _excerpt_around(text: str, kw: str, max_len: int) -> str:
+        if not text or not kw or len(text) <= max_len:
+            return text
+        tl = text.lower()
+        k = kw.lower()
+        idx = tl.find(k)
+        if idx < 0:
+            return text[: max_len - 1] + "…"
+        before = min(140, max_len // 3)
+        after = max_len - before
+        start = max(0, idx - before)
+        end = min(len(text), idx + after)
+        out = text[start:end]
+        if start > 0:
+            out = "…" + out
+        if end < len(text):
+            out = out + "…"
+        return out
+
+    def _render_msg_text_for_qa(raw_text: str) -> str:
+        t = _compact_ws(raw_text)
+        if not t:
+            return ""
+        if len(t) <= max_chars_per_msg:
+            return t
+        # 키워드가 걸리면 해당 위치 주변으로 발췌(링크/표 형태의 긴 메시지에서 특히 중요)
+        for kw in keywords:
+            if kw and kw.lower() in t.lower():
+                return _excerpt_around(t, kw, max_chars_per_msg)
+        # 링크 질문인데 URL이 포함된 긴 메시지라면 URL이 나오는 구간 중심으로 발췌
+        if wants_link:
+            m = re.search(r"https?://\S+", t)
+            if m:
+                return _excerpt_around(t, m.group(0), max_chars_per_msg)
+        return t[: max_chars_per_msg - 1] + "…"
+
+    lines: list[str] = [
+        "너는 카카오톡 채팅방의 대화 로그를 근거로 질문에 답하는 분석가야.",
+        "사용자가 하는 질문은 '이 방에서 실제로 오간 대화 내용'에 관한 것이며, 너는 로그에 나온 사실만 근거로 답해야 한다.",
+        "",
+        "규칙(매우 중요):",
+        "- 아래 대화 로그에 **명시적으로 등장한 내용만** 사용한다.",
+        "- 사용자가 '링크/URL/주소'를 요청했다면, 로그에 실제로 포함된 URL만 그대로 제시한다(없으면 없다고 말한다).",
+        "- 로그에 근거가 없으면 '대화 로그에서 확인할 수 없습니다.'라고 답하고, 어떤 정보가 더 필요할지 1~3개 질문으로 되묻는다.",
+        "- 새로운 사실/규칙/링크/수치/정답을 만들어내지 않는다.",
+        "- 개인정보(전화번호, 이메일, 계좌번호 등)는 답변에서 모두 제거한다.",
+        "",
+        "출력 형식:",
+        "1) 답변: (질문에 대한 결론/가이드)",
+        "2) 근거: (로그에서 근거가 된 발언을 1~3개 '요약 인용' 형태로 제시. 예: [시간] 발신자: 요지)",
+        "3) 다음 액션: (실제로 할 일 1~5개)",
+        "",
+        f"방 이름: {req.room_name or req.room_id}",
+        f"질문: {question}",
+        "--- 대화 로그 ---",
+    ]
+
+    for m in picked:
+        text = _render_msg_text_for_qa(m.text or "")
+        if not text:
+            continue
+        sender = (m.sender or "").strip() or "사용자"
+        ts = m.ts
+        lines.append(f"[{ts}] {sender}: {text}")
+
+    lines.append("--- 위 로그를 근거로 질문에 답해라. ---")
+    prompt = "\n".join(lines)
+
+    try:
+        answer = _openai_generate_text(prompt, model=model, temperature=0.2, max_output_tokens=900)
+    except Exception as e:  # pragma: no cover - 외부 API 오류
+        log.exception(f"/chat/qa failed: {e}")
+        raise HTTPException(status_code=502, detail="chat_qa_call_failed")
+
+    answer = _strip_sensitive_numbers_in_answer(str(answer or ""))
+    if not answer.strip():
+        raise HTTPException(status_code=502, detail="empty_chat_qa_answer")
+
+    return {
+        "ok": True,
+        "room_id": req.room_id,
+        "room_name": req.room_name,
+        "question": question,
+        "answer": answer.strip(),
+        "model": model,
+    }
+
+
 def _rerank_posts(query: str, posts: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
     if not posts:
         return []
@@ -563,7 +914,30 @@ def _rerank_posts(query: str, posts: List[Dict[str, Any]], limit: int = 5) -> Li
         return sorted(candidates, key=lambda x: x.get("dist", 1.0))[:limit]
 
 
-def _pick_price_posts(posts: List[Dict[str, Any]], entity_keywords: list[str], limit: int = 5) -> List[Dict[str, Any]]:
+def _is_course_price_query(query: str, entity_keywords: list[str]) -> bool:
+    """특정 강의(기수/정규/특강) 가격 질문인지 판별한다.
+
+    목적:
+    - 강의 신청 글(메뉴 23/42)은 제목에 '가격/수강료'가 없고, 이미지에만 가격이 있을 수 있다(OCR 필요).
+    - 이 경우 (고유명 AND 가격 마커)로만 후보를 줄이면 '후기/다시보기'가 우선되어 오답이 난다.
+    """
+    q = (query or "").strip().lower()
+    if not q or not entity_keywords:
+        return False
+    # 기수/신청/정규/특강/수강 등 강의 맥락
+    if re.search(r"\d+\s*기", q):
+        return True
+    if any(k in q for k in ["정규", "정규강의", "정규 강의", "특강", "무료특강", "무료 특강", "강의", "수강", "신청", "사전신청", "커리큘럼", "커리"]):
+        return True
+    return False
+
+
+def _pick_price_posts(
+    posts: List[Dict[str, Any]],
+    entity_keywords: list[str],
+    query: str,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
     """가격/유료/할인 질문에서 후보 글을 휴리스틱으로 선정한다.
 
     목적:
@@ -573,25 +947,57 @@ def _pick_price_posts(posts: List[Dict[str, Any]], entity_keywords: list[str], l
     if not posts:
         return []
 
+    q_lower = (query or "").strip().lower()
+    want_replay = any(k in q_lower for k in ["다시보기", "녹화", "vod", "무료보기", "무료 보기"])
+    want_regular = any(k in q_lower for k in ["정규", "정규강의", "정규 강의", "신청", "사전신청", "사전 신청"])
+    has_cohort = bool(re.search(r"\d+\s*기", q_lower))
+
     primary = (entity_keywords[0].lower() if entity_keywords else "").strip()
     strong_title = ["가격", "할인", "정품", "구독", "블랙프라이데이", "블프", "쿠폰", "프로", "pro"]
+    replay_markers = ["다시보기", "보너스프로그램", "보너스 프로그램", "vod", "녹화"]
+    review_markers = ["후기", "리뷰", "체험기", "수강후기", "수강 후기"]
 
     def score(p: Dict[str, Any]) -> int:
         title = (p.get("title") or "").lower()
         body = (p.get("norm_text") or "").lower()
         text = f"{title} {body}"
         s = 0
+
+        # 강의 신청 글(23/42)은 가격이 이미지에만 있을 수 있어, 메뉴 자체를 강하게 부스트한다.
+        try:
+            mid = int(p.get("menu_id") or 0)
+        except Exception:
+            mid = 0
+        if mid in (42, 23):
+            s += 7 if (want_regular or has_cohort) else 4
+        # 무료특강 후기(32)는 가격 질문에서 오답 비중이 매우 높다.
+        if mid == 32:
+            s -= 7
+
         if primary and primary in text:
             s += 5
         # 제목에 가격 맥락이 있으면 강하게 부스트
         for kw in strong_title:
             if kw in title:
                 s += 4
+        # 가격 질문인데 '후기/리뷰' 글이면 감점 (가격이 빠진 사례가 많음)
+        if any(k in title for k in review_markers):
+            s -= 5
+        # 질문이 '정규/가격'인데 '다시보기/보너스프로그램' 글이면 감점
+        if (not want_replay) and any(k in title for k in replay_markers):
+            s -= 7
+        # 반대로 질문이 다시보기 가격이면 다시보기 글을 부스트
+        if want_replay and any(k in title for k in replay_markers):
+            s += 4
         # 숫자/금액 패턴 부스트
         if re.search(r"\\d{1,3}(,\\d{3})+\\s*원|\\d+\\s*만\\s*원", text):
             s += 3
         if any(k in text for k in ["연간", "월간", "구독료", "정가", "할인가"]):
             s += 1
+
+        # 정규/기수 질문인데 신청/정규 문구가 제목에 있으면 추가 부스트
+        if (want_regular or has_cohort) and any(k in title for k in ["정규", "정규강의", "정규 강의", "신청", "사전신청", "사전 신청"]):
+            s += 3
         return s
 
     dedup: dict[int, Dict[str, Any]] = {}
@@ -1739,6 +2145,9 @@ def _is_platform_usage_query(query: str) -> bool:
         "open chat",
         "유튜브",
         "youtube",
+        "스레드",
+        "쓰레드",
+        "threads",
         "윈도우",
         "windows",
         "안드로이드",
@@ -1760,6 +2169,15 @@ def _is_platform_usage_query(query: str) -> bool:
         "공유",
         "다운로드",
         "업로드",
+        "하루",
+        "많이",
+        "몇",
+        "제한",
+        "상관",
+        "스팸",
+        "정지",
+        "차단",
+        "제재",
         "끄",
         "켜",
         "해제",
@@ -1825,6 +2243,10 @@ def _is_general_knowledge_query(query: str) -> bool:
     # 연예/뉴스성 질문(열애설/단독/속보 등)은 카페 SSOT와 무관하므로 일반 상식(웹 검색) 경로로 보낸다.
     # - 단, 디하클 도메인 힌트가 함께 있으면 오탐이 될 수 있어 여기서는 "열애설" 등 강한 표지어 위주로만 잡는다.
     if re.search(r"(열애설|결별설|결혼설|스캔들|루머|단독|속보)", q):
+        return True
+
+    # Threads(스레드/쓰레드) 업로드 빈도/제한/제재 같은 '외부 플랫폼 정책' 질문은 카페 SSOT로 답할 근거가 없으므로 일반 상식(웹 검색) 경로로 보낸다.
+    if re.search(r"(스레드|쓰레드|threads)", q) and re.search(r"(하루|몇|많이|제한|상관|스팸|정지|차단|제재|limit|spam|ban)", q):
         return True
 
     return False
@@ -2238,6 +2660,9 @@ def _build_general_answer(query: str, model_override: str | None = None) -> tupl
             q_lower,
         )
     )
+    is_threads_policy = bool(re.search(r"(스레드|쓰레드|threads)", q_lower)) and bool(
+        re.search(r"(하루|몇|많이|제한|상관|스팸|정지|차단|제재|limit|spam|ban)", q_lower)
+    )
 
     lines = [
         "너는 디하클 카페 운영자를 돕는 조력자지만, 지금 질문은 카페 지식베이스와 직접 관련된 자료가 없다.",
@@ -2248,12 +2673,16 @@ def _build_general_answer(query: str, model_override: str | None = None) -> tupl
         "규칙:",
         "1) 반드시 첫 문장은 정확히 다음 문장으로 시작한다:",
         "   '가이드라인에는 없지만, 일반 상식으로 답변드립니다.'",
-        "2) 디하클 카페 내부 자료나 특정 강의/다시보기 링크가 있는 것처럼 꾸미지 말 것.",
-        "3) 외부 웹사이트 URL(https:// 등)은 어떤 것도 넣지 말 것.",
-        "4) 한국어로 3~6문장 정도로, 질문자가 이해하기 쉽게 설명할 것.",
-        "5) URL은 쓰지 말고, 웹 검색으로 확인한 근거를 1~2개만 '출처명 + 날짜(YYYY-MM-DD)' 형태로 괄호에 짧게 적어라.",
-        f"6) 답변의 마지막 줄에 반드시 다음 문장을 그대로 포함해라: '(검색 기준일: {today_iso})'",
-        "7) 모르는 부분은 솔직하게 모른다고 말하고, 추측은 '추측입니다'라고 명시할 것.",
+        "2) 질문이 외부 플랫폼 정책/일반 상식이면, 디하클 카페 정책/운영 규정처럼 답하지 말 것(주어를 플랫폼으로 둔다).",
+        "3) 디하클 카페 내부 자료나 특정 강의/다시보기 링크가 있는 것처럼 꾸미지 말 것.",
+        "4) 외부 웹사이트 URL(https:// 등)은 어떤 것도 넣지 말 것.",
+        "5) 한국어로 3~6문장 정도로, 질문자가 이해하기 쉽게 설명할 것.",
+        "6) 출력 형식(반드시 지킬 것):",
+        "   - 1줄: '가이드라인에는 없지만, 일반 상식으로 답변드립니다.'",
+        "   - 2~5줄: 핵심 답변(문장 또는 불릿)",
+        "   - 1줄: '근거: (출처명 YYYY-MM-DD), (출처명 YYYY-MM-DD)' (URL 금지)",
+        f"7) 답변의 마지막 줄에 반드시 다음 문장을 그대로 포함해라: '(검색 기준일: {today_iso})'",
+        "8) 모르는 부분은 솔직하게 모른다고 말하고, 추측은 '추측입니다'라고 명시할 것.",
     ]
 
     # 뉴스/루머성 질문은 오정보/명예훼손 위험이 크므로 규칙을 더 강하게 건다.
@@ -2290,6 +2719,18 @@ def _build_general_answer(query: str, model_override: str | None = None) -> tupl
                 "- 숫자(구독자/시청시간/조회수/기간)는 웹 검색으로 확인된 값만 사용한다.",
                 "- 웹 검색 쿼리에는 가능하면 'site:support.google.com' 또는 'site:youtube.com'을 포함해 공식 도움말이 상단에 오게 한다.",
                 "- 블로그/커뮤니티/카페 글은 근거로 쓰지 않는다.",
+            ]
+        )
+
+    # Threads 업로드/제재 같은 정책 질문은 "게시판 쓰레드"가 아니라 Meta의 소셜앱 Threads로 해석해야 한다.
+    if is_threads_policy and not is_rumor_news:
+        lines.extend(
+            [
+                "",
+                "추가 규칙(Threads/스레드 정책):",
+                "- 여기서 '스레드/쓰레드/Threads'는 메타(Meta)의 소셜 앱 Threads를 의미한다(게시판의 thread로 해석 금지).",
+                "- 공식적으로 '하루 N개' 같은 숫자 제한을 공개하지 않는 경우가 많다. 숫자 제한이 없다고 단정하지 말고, 공식 문서에 숫자가 없으면 '공식 문서에서 구체적인 숫자 제한을 찾지 못했다'고 말한다.",
+                "- 근거는 Meta/Instagram 공식 도움말/정책 문서(예: help.instagram.com, help.meta.com, about.meta.com) 우선으로 잡고, 커뮤니티/블로그는 근거로 쓰지 않는다.",
             ]
         )
 
@@ -3824,21 +4265,64 @@ def ask_llm(req: AskLlmRequest):
             # SSOT 수집 범위 내에서 (고유명) AND (가격/할인/구독/정품) 키워드로 DB 검색 결과를 우선 사용한다.
             if is_price_q and entity_keywords:
                 try:
-                    if menu_ids:
-                        search_menu_ids = list(menu_ids)
-                    else:
-                        search_menu_ids = [m["menu_id"] for m in get_all_menus() if m.get("collect")]
-                    if search_menu_ids:
-                        price_markers = ["가격", "비용", "금액", "할인", "정가", "할인가", "구독료", "구독 가격", "결제", "정품", "연간", "월간", "블랙프라이데이", "블프", "쿠폰", "%"]
-                        price_posts = _get_recent_posts_filtered(
-                            search_menu_ids,
+                    # 1) "강의 가격" 케이스: 신청 메뉴(23/42)에서 (고유명)만으로 먼저 찾는다.
+                    #    (가격은 이미지에만 있을 수 있어 '가격/원' 마커가 제목에 없을 수 있음 → OCR 대상)
+                    if _is_course_price_query(query_for_intent, entity_keywords):
+                        course_posts = _get_recent_posts_filtered(
+                            [23, 42],
                             limit=60,
                             keywords_all=[entity_keywords[0]],
-                            keywords_any=price_markers,
+                            keywords_any=None,
                             title_only=True,
                         )
-                        if price_posts:
-                            posts_hit = price_posts
+                        if course_posts:
+                            # vector_search 결과와 병합(중복 제거). dist는 없으므로 보수적으로 1.0 부여.
+                            merged: dict[int, dict[str, Any]] = {}
+                            for p in (course_posts + posts_hit):
+                                try:
+                                    pid = int(p.get("post_id")) if p.get("post_id") is not None else None
+                                except Exception:
+                                    pid = None
+                                if pid is None:
+                                    continue
+                                if pid not in merged:
+                                    merged[pid] = dict(p)
+                                    merged[pid].setdefault("dist", 1.0)
+                            posts_hit = list(merged.values())
+                    else:
+                        # 2) "툴/서비스 가격" 케이스: (고유명 AND 가격 마커)로 강하게 찾는다.
+                        if menu_ids:
+                            search_menu_ids = list(menu_ids)
+                        else:
+                            search_menu_ids = [m["menu_id"] for m in get_all_menus() if m.get("collect")]
+                        if search_menu_ids:
+                            price_markers = [
+                                "가격",
+                                "비용",
+                                "금액",
+                                "할인",
+                                "정가",
+                                "할인가",
+                                "구독료",
+                                "구독 가격",
+                                "결제",
+                                "정품",
+                                "연간",
+                                "월간",
+                                "블랙프라이데이",
+                                "블프",
+                                "쿠폰",
+                                "%",
+                            ]
+                            price_posts = _get_recent_posts_filtered(
+                                search_menu_ids,
+                                limit=60,
+                                keywords_all=[entity_keywords[0]],
+                                keywords_any=price_markers,
+                                title_only=True,
+                            )
+                            if price_posts:
+                                posts_hit = price_posts
                 except Exception as e:
                     log.info(f"[ask_llm] price keyword search skipped: {e}")
 
@@ -3893,7 +4377,7 @@ def ask_llm(req: AskLlmRequest):
         # LLM 재랭크 (후보 20개 내에서 상위 5개 선택)
         # - 가격/유료 질문은 LLM rerank가 다시보기 글을 집어오는 오탐이 있어 휴리스틱 우선 적용
         if is_price_q and entity_keywords:
-            ranked_posts = _pick_price_posts(posts_hit, entity_keywords, limit=5)
+            ranked_posts = _pick_price_posts(posts_hit, entity_keywords, query_for_intent, limit=5)
         else:
             ranked_posts = _rerank_posts(query_for_intent, posts_hit, limit=5)
 

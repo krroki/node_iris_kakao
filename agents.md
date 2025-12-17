@@ -158,8 +158,14 @@
       - `Talk-API: 실패`가 보여도 `auth: 적용됨`이 더 최신이면, “실패로 확정”이 아니라 **테스트 방에서 1회 재검증**이 필요한 상태일 수 있다. (런북: `docs/reference/kakao-mentions-and-reply.md`의 “빠른 복구 절차”)
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
+    - `ai-worker`는 `runtime.json.features[roomId].ai=true`인 방만 `/logs/stream?rooms=...`로 구독한다.
+      방에서 AI를 새로 켜거나/끄면 `AI_ROOMS_REFRESH_SEC`(기본 1초, 최소 250ms) 폴링으로 `runtime.json` 변경을 감지해 **즉시 재연결**하여 목록을 갱신한다(재시작 불필요).
     - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 AI 응답 텍스트는 `/send/iris/reply_text`로 대체 발신한다.
   - 기본값: `AI_DISPATCHER=worker` (레거시 롤백: `AI_DISPATCHER=bot`)
+  - 채팅요약(chatSummary): 코어(bot)가 방 로그를 MessageStore(`data/logs/<roomId>/<YYYY-MM-DD>.log`)로 기록해두고,
+    `!채팅요약`/`!요약`이 오면 KB(`/chat/summary`)로 최근 메시지를 보내 요약 결과를 답장한다.
+    - 기본 범위: **오늘(자정~현재)** + 최근 300개
+    - 롤링 범위: `!요약 24시간`, `!채팅요약 6시간`, `!채팅요약 2일` (최대 7일, 최근 300개)
   - 공지/브로드캐스트(ADR-0029): 공지 복제/브로드캐스트 큐 발신은 `broadcast-worker`가 담당한다.
     - 공지(미러링)는 `runtime.json.announcement.routes`로 source/targets를 관리하며, UI는 `http://127.0.0.1:3100/announcement`를 사용한다.
     - 공지 전파가 끝나면 소스 방에 **1회** `[공지 전파 결과]` 요약 메시지를 남긴다(이 결과 메시지는 타겟으로 재전파되지 않도록 prefix 기반으로 스킵).
@@ -185,6 +191,12 @@
           - 주기적으로 파란 PowerShell 창이 뜨면 스케줄러 작업이 콘솔로 실행 중인 것이므로,
             `windows/register_watchdog_task.ps1`로 다시 등록해 `wscript.exe` 래퍼(`windows/run_ensure_watchdog.vbs`)를 사용한다(창 플래시 방지).
         - 부팅/로그온 자동 기동(선택): `windows/register_start_all_task.ps1` (콜드 부팅 시 파이프라인 전체 기동)
+      - **KB Postgres(pgvector) 자동 복구(중요)**:
+        - KB DB는 Docker Compose(`docker-compose.yml`, 컨테이너 `iris_pg`, 포트 `5433`)로 운영한다.
+        - `windows/start_all.ps1`는 KB 서비스 기동 전에 `windows/ensure_postgres.ps1`로 Docker Desktop/컨테이너를 **선행 보장**한다.
+        - `windows/watchdog.ps1`는 Realtime API `/status`의 `kbPostgres` stage(TCP 5433)를 감지해,
+          Postgres를 자동 복구(`ensure_postgres.ps1`)한 뒤 KB를 재시작해 연결을 정상화한다.
+        - 임시 비활성화(권장 X): `setx KB_POSTGRES_ENSURE_DISABLE 1`
       - **IRIS(:5050) 복구가 안 될 때(중요)**: PortProxy가 `0.0.0.0:5050 -> 127.0.0.1:5050` 루프백으로 잡혀 있으면(iphlpsvc가 포트 점유)
         ADB forward가 `access denied(10013)`로 실패하며 IRIS가 장시간 다운될 수 있다.
         - `windows/repair_redroid_iris.ps1 -Fix`는 이제 이 루프백 PortProxy를 자동 정리하고 재시도한다.

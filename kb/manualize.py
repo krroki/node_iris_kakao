@@ -10,6 +10,7 @@ from sqlalchemy import text
 from kb.db import db_session
 from kb.jobs import start, finish
 from kb.menu_ssot import get_cafe_id, get_cafe_url
+from kb.lock import lock_scope
 
 
 def _fetch_recent_posts(limit_total: int):
@@ -264,87 +265,94 @@ def _repair_short_post_urls() -> int:
 
 
 def run():
-    jid = start("manualize")
-    try:
-        # 링크 보정(짧은 permalink) - 실행 비용이 낮아 주기적으로 보정해도 안전하다.
-        try:
-            fixed = _repair_short_post_urls()
-            if fixed:
-                print(f"[manualize] repaired short post urls: {fixed}")
-        except Exception as e:
-            print(f"[manualize] short url repair skipped: {e}")
-
-        total = int(os.getenv("KB_MANUAL_TOTAL", "200"))
-        per_menu = int(os.getenv("KB_MANUAL_PER_MENU", "20"))
-        rows = _fetch_recent_posts(total)
-        if not rows:
-            finish(jid, "done", {"menus": 0, "posts": 0, "note": "no posts"})
-            print("[manualize] no posts to manualize")
+    stale_sec = int(os.getenv("KB_MANUAL_LOCK_STALE_SEC", str(3 * 60 * 60)) or str(3 * 60 * 60))
+    with lock_scope("manualize", stale_sec=stale_sec) as acquired:
+        if not acquired:
+            print("[manualize] already running; skip")
             return
-        grouped = _group_by_menu(rows, per_menu)
-        for menu_id, posts in grouped.items():
-            body_md = _build_body_md(menu_id, posts)
-            _upsert_manual(menu_id, body_md)
 
-        # 운영/용어 정의(SSOT) 문서 upsert: RAG가 용어(예: 다시보기) 의미를 안정적으로 이해하도록 한다.
-        root = os.path.dirname(os.path.dirname(__file__))
-        glossary_path = os.path.join(root, "docs", "kb_glossary.md")
-        if os.path.exists(glossary_path):
-            try:
-                body = open(glossary_path, "r", encoding="utf-8").read().strip()
-                if body:
-                    _upsert_manual_doc("[KB] 운영 용어/인물 정의", body, status="published")
-            except Exception as e:
-                # manualize 전체를 실패시키지 않되, 로그/잡 이력으로 남긴다.
-                print(f"[manualize] static glossary upsert skipped: {e}")
-
-        # 카페 기본 정보(SSOT) 문서 upsert
-        cafe_profile_path = os.path.join(root, "docs", "cafe_profile.md")
-        if os.path.exists(cafe_profile_path):
-            try:
-                body = open(cafe_profile_path, "r", encoding="utf-8").read().strip()
-                if body:
-                    _upsert_manual_doc("[KB] 디하클 카페 기본 정보", body, status="published")
-            except Exception as e:
-                print(f"[manualize] cafe profile upsert skipped: {e}")
-
-        # 신청 게시판(23/42) 기반 강의/강사 인덱스 자동 생성
+        jid = start("manualize")
         try:
-            schedule_per_menu = int(os.getenv("KB_SCHEDULE_INDEX_PER_MENU", "15"))
-            schedule_scan_total = int(os.getenv("KB_SCHEDULE_INSTRUCTORS_SCAN_TOTAL", "300"))
-            schedule_instructors_limit = int(os.getenv("KB_SCHEDULE_INSTRUCTORS_LIMIT", "30"))
-            schedule_posts_per_instructor = int(os.getenv("KB_SCHEDULE_POSTS_PER_INSTRUCTOR", "2"))
+            # 링크 보정(짧은 permalink) - 실행 비용이 낮아 주기적으로 보정해도 안전하다.
+            try:
+                fixed = _repair_short_post_urls()
+                if fixed:
+                    print(f"[manualize] repaired short post urls: {fixed}")
+            except Exception as e:
+                print(f"[manualize] short url repair skipped: {e}")
 
-            free_rows = _fetch_posts_for_menu(23, schedule_per_menu)
-            paid_rows = _fetch_posts_for_menu(42, schedule_per_menu)
-            scan_half = max(1, schedule_scan_total // 2)
-            scan_rows = _fetch_posts_for_menu(23, scan_half) + _fetch_posts_for_menu(42, scan_half)
-            scan_rows = sorted(
-                scan_rows,
-                key=lambda r: (
-                    r.created_at if isinstance(r.created_at, _dt) else _dt.min,
-                    int(getattr(r, "post_id", 0) or 0),
-                ),
-                reverse=True,
-            )[:schedule_scan_total]
+            total = int(os.getenv("KB_MANUAL_TOTAL", "200"))
+            per_menu = int(os.getenv("KB_MANUAL_PER_MENU", "20"))
+            rows = _fetch_recent_posts(total)
+            if not rows:
+                finish(jid, "done", {"menus": 0, "posts": 0, "note": "no posts"})
+                print("[manualize] no posts to manualize")
+                return
+            grouped = _group_by_menu(rows, per_menu)
+            for menu_id, posts in grouped.items():
+                body_md = _build_body_md(menu_id, posts)
+                _upsert_manual(menu_id, body_md)
 
-            body_md = _build_schedule_instructor_index_md(
-                free_rows,
-                paid_rows,
-                scan_rows,
-                scan_limit=schedule_scan_total,
-                instructors_limit=schedule_instructors_limit,
-                per_instructor_posts=schedule_posts_per_instructor,
-            )
-            if body_md:
-                _upsert_manual_doc("[KB] 강의/강사 인덱스 (신청 게시판)", body_md, status="published")
-        except Exception as e:
-            print(f"[manualize] schedule/instructor index skipped: {e}")
-        finish(jid, "done", {"menus": len(grouped), "posts": sum(len(v) for v in grouped.values())})
-        print(f"[manualize] upserted manuals for {len(grouped)} menus")
-    except Exception as e:  # pragma: no cover
-        finish(jid, "error", {"error": str(e)})
-        raise
+            # 운영/용어 정의(SSOT) 문서 upsert: RAG가 용어(예: 다시보기) 의미를 안정적으로 이해하도록 한다.
+            root = os.path.dirname(os.path.dirname(__file__))
+            glossary_path = os.path.join(root, "docs", "kb_glossary.md")
+            if os.path.exists(glossary_path):
+                try:
+                    body = open(glossary_path, "r", encoding="utf-8").read().strip()
+                    if body:
+                        _upsert_manual_doc("[KB] 운영 용어/인물 정의", body, status="published")
+                except Exception as e:
+                    # manualize 전체를 실패시키지 않되, 로그/잡 이력으로 남긴다.
+                    print(f"[manualize] static glossary upsert skipped: {e}")
+
+            # 카페 기본 정보(SSOT) 문서 upsert
+            cafe_profile_path = os.path.join(root, "docs", "cafe_profile.md")
+            if os.path.exists(cafe_profile_path):
+                try:
+                    body = open(cafe_profile_path, "r", encoding="utf-8").read().strip()
+                    if body:
+                        _upsert_manual_doc("[KB] 디하클 카페 기본 정보", body, status="published")
+                except Exception as e:
+                    print(f"[manualize] cafe profile upsert skipped: {e}")
+
+            # 신청 게시판(23/42) 기반 강의/강사 인덱스 자동 생성
+            try:
+                schedule_per_menu = int(os.getenv("KB_SCHEDULE_INDEX_PER_MENU", "15"))
+                schedule_scan_total = int(os.getenv("KB_SCHEDULE_INSTRUCTORS_SCAN_TOTAL", "300"))
+                schedule_instructors_limit = int(os.getenv("KB_SCHEDULE_INSTRUCTORS_LIMIT", "30"))
+                schedule_posts_per_instructor = int(os.getenv("KB_SCHEDULE_POSTS_PER_INSTRUCTOR", "2"))
+
+                free_rows = _fetch_posts_for_menu(23, schedule_per_menu)
+                paid_rows = _fetch_posts_for_menu(42, schedule_per_menu)
+                scan_half = max(1, schedule_scan_total // 2)
+                scan_rows = _fetch_posts_for_menu(23, scan_half) + _fetch_posts_for_menu(42, scan_half)
+                scan_rows = sorted(
+                    scan_rows,
+                    key=lambda r: (
+                        r.created_at if isinstance(r.created_at, _dt) else _dt.min,
+                        int(getattr(r, "post_id", 0) or 0),
+                    ),
+                    reverse=True,
+                )[:schedule_scan_total]
+
+                body_md = _build_schedule_instructor_index_md(
+                    free_rows,
+                    paid_rows,
+                    scan_rows,
+                    scan_limit=schedule_scan_total,
+                    instructors_limit=schedule_instructors_limit,
+                    per_instructor_posts=schedule_posts_per_instructor,
+                )
+                if body_md:
+                    _upsert_manual_doc("[KB] 강의/강사 인덱스 (신청 게시판)", body_md, status="published")
+            except Exception as e:
+                print(f"[manualize] schedule/instructor index skipped: {e}")
+
+            finish(jid, "done", {"menus": len(grouped), "posts": sum(len(v) for v in grouped.values())})
+            print(f"[manualize] upserted manuals for {len(grouped)} menus")
+        except Exception as e:  # pragma: no cover
+            finish(jid, "error", {"error": str(e)})
+            raise
 
 
 if __name__ == "__main__":

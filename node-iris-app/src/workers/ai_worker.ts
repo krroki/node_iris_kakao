@@ -1,5 +1,6 @@
 import { Logger } from "@tsuki-chat/node-iris";
 import { promises as fs } from "fs";
+import { watchFile, unwatchFile } from "fs";
 import path from "path";
 
 import DedupCache from "../services/dedupCache";
@@ -44,6 +45,9 @@ const inflightByRoom = new Map<string, NodeJS.Timeout>();
 
 let runtimeCache: { at: number; data: RuntimeConfig } | null = null;
 const RUNTIME_CACHE_MS = 1500;
+// UI에서 방별 AI 토글을 켰을 때 "즉시 반영"되도록 runtime.json 변경 감지 폴링 간격을 짧게 둔다.
+// (기본 1초, 최소 250ms)
+const ROOMS_REFRESH_MS = Math.max(250, Math.floor((parseFloat(process.env.AI_ROOMS_REFRESH_SEC || "1") || 1) * 1000));
 
 function safeString(v: unknown): string {
   if (typeof v === "bigint") return v.toString();
@@ -212,6 +216,13 @@ function isFeatureEnabled(runtime: RuntimeConfig, roomId: string, feature: strin
   const flags = feats[String(roomId)];
   if (!flags || typeof flags !== "object") return false;
   return (flags as any)[feature] === true;
+}
+
+function computeAiRooms(runtime: RuntimeConfig): string[] {
+  const allowedRooms = Array.isArray(runtime.allowedRoomIds)
+    ? runtime.allowedRoomIds.map((x) => safeString(x)).filter(Boolean)
+    : [];
+  return allowedRooms.filter((rid) => isFeatureEnabled(runtime, rid, "ai"));
 }
 
 function parseIgnoreList(raw: string | undefined): string[] {
@@ -501,10 +512,7 @@ async function connectAndRun(): Promise<void> {
   // reconnect loop
   while (true) {
     const runtime = await loadRuntime();
-    const allowedRooms = Array.isArray(runtime.allowedRoomIds)
-      ? runtime.allowedRoomIds.map((x) => safeString(x)).filter(Boolean)
-      : [];
-    const rooms = allowedRooms.filter((rid) => isFeatureEnabled(runtime, rid, "ai"));
+    const rooms = computeAiRooms(runtime);
 
     if (rooms.length === 0) {
       logger.warn("[stream] ai-enabled rooms empty; sleeping");
@@ -514,62 +522,116 @@ async function connectAndRun(): Promise<void> {
 
     const base = safeString(process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/+$/, "");
     const since = Math.max(0, Math.floor(lastSeenMsRef.v > 0 ? lastSeenMsRef.v - 1000 : 0));
-    const url = `${base}/logs/stream?rooms=${encodeURIComponent(rooms.join(","))}&limit=200&since=${since}&interval=1000`;
+    const roomsKey = rooms.join(",");
+    const url = `${base}/logs/stream?rooms=${encodeURIComponent(roomsKey)}&limit=200&since=${since}&interval=1000`;
     logger.info("[stream] connect", { url });
 
+    let abortedByRoomChange = false;
     try {
-      const res = await fetch(url, { method: "GET", headers: { Accept: "text/event-stream" } });
-      if (!res.ok || !res.body) {
-        logger.warn("[stream] non-OK", { httpStatus: res.status });
-        await new Promise((r) => setTimeout(r, 2000));
-        continue;
+      const controller = new AbortController();
+
+      // 런타임의 ai-enabled room 목록이 변경되면(새 방 켜기/끄기) 연결을 끊고 즉시 재연결한다.
+      // 기존에는 연결이 끊길 때까지 목록이 고정되어, "AI를 켰는데 반응이 없다"가 재현될 수 있었다.
+      let debounceTimer: NodeJS.Timeout | null = null;
+      const onRuntimeChanged = () => {
+        if (debounceTimer) return;
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          void (async () => {
+            try {
+              // runtime.json 변경 직후 cache가 남아 있으면 이전 roomsKey로 판단할 수 있어 강제 무효화한다.
+              runtimeCache = null;
+              const rt2 = await loadRuntime();
+              const nextRooms = computeAiRooms(rt2);
+              const nextKey = nextRooms.join(",");
+              if (nextKey && nextKey !== roomsKey) {
+                abortedByRoomChange = true;
+                logger.info("[stream] rooms changed; reconnect", { fromCount: rooms.length, toCount: nextRooms.length });
+                try { controller.abort(); } catch {}
+              }
+            } catch {}
+          })();
+        }, 120);
+        try {
+          const t: any = debounceTimer as any;
+          if (t && typeof t.unref === "function") t.unref();
+        } catch {}
+      };
+      const runtimeWatchCb = (curr: any, prev: any) => {
+        try {
+          const cm = Number(curr?.mtimeMs);
+          const pm = Number(prev?.mtimeMs);
+          if (Number.isFinite(cm) && Number.isFinite(pm) && cm === pm) return;
+        } catch {}
+        onRuntimeChanged();
+      };
+      try {
+        watchFile(RUNTIME_PATH, { interval: ROOMS_REFRESH_MS }, runtimeWatchCb as any);
+      } catch (e) {
+        logger.warn("[stream] runtime watch failed; room toggle 반영이 느릴 수 있습니다.", { err: String(e) });
       }
 
-      const reader = (res.body as any).getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
+      try {
+        const res = await fetch(url, { method: "GET", headers: { Accept: "text/event-stream" }, signal: controller.signal });
+        if (!res.ok || !res.body) {
+          logger.warn("[stream] non-OK", { httpStatus: res.status });
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
 
+        const reader = (res.body as any).getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buf = "";
         while (true) {
-          const sep = buf.indexOf("\n\n");
-          if (sep < 0) break;
-          const chunk = buf.slice(0, sep);
-          buf = buf.slice(sep + 2);
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
 
-          const lines = chunk.split(/\r?\n/);
-          for (const ln of lines) {
-            const line = ln.trimEnd();
-            if (!line || line.startsWith(":")) continue;
-            if (!line.startsWith("data:")) continue;
-            const jsonText = line.slice(5).trim();
-            if (!jsonText) continue;
-            try {
-              const payload = JSON.parse(jsonText) as any;
-              // /logs/stream은 연결 직후 "snapshot"을 1회 내보낸다.
-              // AI 워커는 snapshot을 처리하면 과거 질문을 다시 답변하는 문제가 생길 수 있으므로,
-              // "append"(증분)만 처리한다.
-              if (payload?.type && String(payload.type) !== "append") continue;
-              const roomsObj = payload?.rooms;
-              if (roomsObj && typeof roomsObj === "object") {
-                for (const [rid, entries] of Object.entries(roomsObj as Record<string, unknown>)) {
-                  if (!Array.isArray(entries)) continue;
-                  for (const ent of entries as any[]) {
-                    if (!ent || typeof ent !== "object") continue;
-                    await processEntry({ ...(ent as any), roomId: rid }, lastSeenMsRef);
+          while (true) {
+            const sep = buf.indexOf("\n\n");
+            if (sep < 0) break;
+            const chunk = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+
+            const lines = chunk.split(/\r?\n/);
+            for (const ln of lines) {
+              const line = ln.trimEnd();
+              if (!line || line.startsWith(":")) continue;
+              if (!line.startsWith("data:")) continue;
+              const jsonText = line.slice(5).trim();
+              if (!jsonText) continue;
+              try {
+                const payload = JSON.parse(jsonText) as any;
+                // /logs/stream은 연결 직후 "snapshot"을 1회 내보낸다.
+                // AI 워커는 snapshot을 처리하면 과거 질문을 다시 답변하는 문제가 생길 수 있으므로,
+                // "append"(증분)만 처리한다.
+                if (payload?.type && String(payload.type) !== "append") continue;
+                const roomsObj = payload?.rooms;
+                if (roomsObj && typeof roomsObj === "object") {
+                  for (const [rid, entries] of Object.entries(roomsObj as Record<string, unknown>)) {
+                    if (!Array.isArray(entries)) continue;
+                    for (const ent of entries as any[]) {
+                      if (!ent || typeof ent !== "object") continue;
+                      await processEntry({ ...(ent as any), roomId: rid }, lastSeenMsRef);
+                    }
                   }
                 }
+              } catch (e) {
+                logger.warn("[stream] parse error", { err: String(e) });
               }
-            } catch (e) {
-              logger.warn("[stream] parse error", { err: String(e) });
             }
           }
         }
+      } finally {
+        try { unwatchFile(RUNTIME_PATH, runtimeWatchCb as any); } catch {}
+        try { if (debounceTimer) clearTimeout(debounceTimer); } catch {}
       }
     } catch (e) {
-      logger.warn("[stream] connection error", { err: String(e) });
+      if (abortedByRoomChange) {
+        logger.info("[stream] aborted (rooms changed)");
+      } else {
+        logger.warn("[stream] connection error", { err: String(e) });
+      }
     }
 
     await new Promise((r) => setTimeout(r, 1500));

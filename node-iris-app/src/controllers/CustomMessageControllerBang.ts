@@ -124,6 +124,7 @@ class CustomMessageControllerBang {
     // 원문 텍스트 추출: msg/msg.text/command+param 등 여러 필드를 안전하게 검사
     let raw = "";
     const cmd = typeof msg?.command === "string" && msg.command ? String(msg.command).trim() : "";
+    const param = typeof msg?.param === "string" && msg.param ? String(msg.param).trim() : "";
     if (typeof msg?.msg === "string" && msg.msg) {
       raw = msg.msg;
     } else if (typeof msg?.text === "string" && msg.text) {
@@ -133,12 +134,14 @@ class CustomMessageControllerBang {
     }
     raw = String(raw || "").trim();
 
-    // '!채팅요약' 접두 명령만 인식한다.
+    // '!채팅요약'/'!요약' 접두 명령만 인식한다.
     // - cmd === '채팅요약' 인 경우는 Prefix('!')에 의해 파싱된 정식 명령
     // - raw.startsWith('!채팅요약') 는 혹시 모를 원문 텍스트 기반 백업 경로
     const isChatSummaryCmd =
       cmd === "채팅요약" ||
-      raw.startsWith("!채팅요약");
+      cmd === "요약" ||
+      raw.startsWith("!채팅요약") ||
+      raw.startsWith("!요약");
 
     if (!isChatSummaryCmd) {
       return;
@@ -155,26 +158,97 @@ class CustomMessageControllerBang {
     const roomId = String((context as any)?.room?.id ?? "");
     const roomName = (await context.room.name) || "";
 
+    let chatQaQuestion = "";
     try {
-      const messages = await messageStore.loadRecentMessages(roomId, 300);
+      // 기본: "오늘(자정~현재)" 기준. 옵션으로 최근 N시간(롤링) 지원.
+      // - 예: !채팅요약 24시간 / !요약 6시간 / !채팅요약 12h
+      // - 예: !요약 당근 비즈니스 가입 안되면 어떻게 해?
+      // - 예: !요약 24시간 당근 비즈니스 가입 안되면 어떻게 해?
+      const rawParam = (() => {
+        const p = String(param || "").trim();
+        if (p) return p;
+        const m = String(raw || "").trim().match(/^!(?:채팅요약|요약)\s+(.+)$/);
+        return m && m[1] ? String(m[1]).trim() : "";
+      })();
+
+      const parseDurationTokenToHours = (token: string): number | null => {
+        const t = String(token || "").trim().replace(/[,\uFF0C]/g, "");
+        if (!t) return null;
+        const mH = t.match(/^(\d+)(?:시간|h)$/i);
+        const mD = t.match(/^(\d+)(?:일|d)$/i);
+        if (mH) return Number(mH[1]);
+        if (mD) return Number(mD[1]) * 24;
+        if (t === "24" || t.toLowerCase() === "24h") return 24;
+        if (t === "12" || t.toLowerCase() === "12h") return 12;
+        return null;
+      };
+
+      const tokens = String(rawParam || "").trim().split(/\s+/).filter(Boolean);
+      let hours: number | null = null;
+      let question = "";
+      if (tokens.length) {
+        const h = parseDurationTokenToHours(tokens[0]);
+        if (h != null) {
+          hours = h;
+          question = tokens.slice(1).join(" ").trim();
+        } else {
+          question = tokens.join(" ").trim();
+        }
+      }
+      chatQaQuestion = question;
+
+      // Q&A 모드(질문이 있을 때)는 기본 범위를 "오늘"이 아니라 "최근 N시간"으로 잡는다.
+      // - 사용자가 '바로 위'라고 말하는 정보가 전날/이전 날짜에 있는 케이스가 많다.
+      // - 지나치게 넓히면 비용/지연이 증가하므로 기본은 보수적으로 72h(3일)로 둔다.
+      const defaultQaHours = 72;
+      if (question && hours == null) {
+        hours = defaultQaHours;
+      }
+
+      // 안전: 1h~168h(7d)만 허용 (대형 방에서 과도한 파일 파싱 방지)
+      if (hours != null) {
+        if (!Number.isFinite(hours) || hours <= 0) hours = null;
+        else hours = Math.min(168, Math.max(1, Math.floor(hours)));
+      }
+
+      const limit = question ? 600 : 300;
+      const messages = hours == null
+        ? await messageStore.loadRecentMessages(roomId, limit)
+        : await messageStore.loadMessagesForHours(roomId, hours, limit, 8);
       if (!messages.length) {
-        await safeReply(this.logger, context, "오늘 날짜 기준으로 요약할 채팅 로그가 없습니다.", 6000);
+        const msgNo = (() => {
+          if (question) {
+            return hours == null
+              ? "오늘 날짜 기준으로 답변할 채팅 로그가 없습니다."
+              : `최근 ${hours}시간 기준으로 답변할 채팅 로그가 없습니다.`;
+          }
+          return hours == null
+            ? "오늘 날짜 기준으로 요약할 채팅 로그가 없습니다."
+            : `최근 ${hours}시간 기준으로 요약할 채팅 로그가 없습니다.`;
+        })();
+        await safeReply(this.logger, context, msgNo, 6000);
         return;
       }
 
       const base = process.env.KB_URL || "http://127.0.0.1:8610";
-      const res = await fetch(`${base.replace(/\/+$/, "")}/chat/summary`, {
+      const endpoint = question ? "/chat/qa" : "/chat/summary";
+      const reqBody: any = {
+        room_id: roomId,
+        room_name: roomName,
+        window_hours: hours,
+        message_limit: 300,
+        messages: messages.map((m) => ({
+          ts: m.ts,
+          sender: m.sender,
+          text: m.text,
+        })),
+      };
+      if (question) reqBody.question = question;
+
+      const res = await fetch(`${base.replace(/\/+$/, "")}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          room_id: roomId,
-          room_name: roomName,
-          messages: messages.map((m) => ({
-            ts: m.ts,
-            sender: m.sender,
-            text: m.text,
-          })),
-        }),
+        body: JSON.stringify(reqBody),
       });
 
       let body: any = null;
@@ -185,25 +259,35 @@ class CustomMessageControllerBang {
       }
 
       if (!res.ok || !body?.ok) {
-        this.logger.warn("[chat-summary] failed", {
+        this.logger.warn(question ? "[chat-qa] failed" : "[chat-summary] failed", {
           status: res.status,
           body,
         });
-        await safeReply(this.logger, context, "채팅 요약 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", 6000);
+        await safeReply(
+          this.logger,
+          context,
+          question ? "채팅 질문 답변 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." : "채팅 요약 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+          6000,
+        );
         return;
       }
 
       const answer: string = String(body.answer || "").trim();
       if (!answer) {
-        await safeReply(this.logger, context, "채팅 요약 결과가 비어 있습니다.", 6000);
+        await safeReply(this.logger, context, question ? "채팅 질문 답변 결과가 비어 있습니다." : "채팅 요약 결과가 비어 있습니다.", 6000);
         return;
       }
 
       await safeReply(this.logger, context, answer, 15000);
     } catch (e) {
-      this.logger.error("[chat-summary] unexpected error", e as any);
+      this.logger.error(chatQaQuestion ? "[chat-qa] unexpected error" : "[chat-summary] unexpected error", e as any);
       try {
-        await safeReply(this.logger, context, "채팅 요약 처리 중 예기치 못한 오류가 발생했습니다.", 6000);
+        await safeReply(
+          this.logger,
+          context,
+          chatQaQuestion ? "채팅 질문 답변 처리 중 예기치 못한 오류가 발생했습니다." : "채팅 요약 처리 중 예기치 못한 오류가 발생했습니다.",
+          6000,
+        );
       } catch {}
     }
   }

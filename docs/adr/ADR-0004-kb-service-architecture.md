@@ -91,6 +91,9 @@
 ### 복구 명령어
 
 ```powershell
+# 0. (권장) Docker Desktop/iris_pg 자동 보장(자가복구용)
+powershell -ExecutionPolicy Bypass -File .\windows\ensure_postgres.ps1
+
 # 1. PostgreSQL 시작
 cd C:\dev\12.kakao
 docker compose up -d postgres
@@ -105,6 +108,13 @@ powershell -ExecutionPolicy Bypass -File .\windows\kb_service.ps1
 curl http://127.0.0.1:8610/health
 curl http://127.0.0.1:8610/stats
 ```
+
+### 자동 복구(운영 기본)
+
+- `windows/start_all.ps1`는 KB 서비스 기동 전에 `windows/ensure_postgres.ps1`를 호출해
+  Docker Desktop/컨테이너(`iris_pg`)를 선행 보장한다.
+- `windows/watchdog.ps1`는 Realtime API `/status`의 `kbPostgres` stage(TCP 5433)를 감지해
+  Postgres 복구 → KB 재시작 순으로 자동 정상화를 수행한다.
 
 ### 해야 할 일 vs 하지 말아야 할 일
 

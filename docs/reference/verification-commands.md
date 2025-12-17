@@ -216,6 +216,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 
 | 시나리오 | 명령 | 설명 |
 |----------|------|------|
+| KB Postgres(5433) 자동 보장 | `pwsh windows/ensure_postgres.ps1` | Docker Desktop/컨테이너(`iris_pg`)를 자동 기동하고 healthy까지 대기 (watchdog/start_all에서 자동 호출되지만, 수동 복구 시 유용) |
 | KB 계약 + RAG 회귀 + SAFE_MODE 스모크 | `python scripts/test_kb_e2e.py` | KB 계약 테스트, RAG 결과 검증, SAFE_MODE 토크 API 차단 여부를 한 번에 점검 |
 | KB 수집/임베딩 신선도 점검 | `python scripts/kb_status.py` | 메뉴별 수집 최신일(예: 무료 특강/정규 강의가 며칠 전까지 들어왔는지), 포스트/임베딩 개수, 스케줄 상태(`/schedule`)를 한 번에 확인 |
 | SAFE_MODE 스모크 단독 실행 | `python scripts/test_safe_mode.py` | `/runtime`으로 safeMode 토글 → `/send/talkapi/dispatch`가 safeMode=true일 때 403을 반환하는지 확인 (테스트 후 원래 값 복원). payload의 roomId는 기본적으로 테스트 방(`TEST_ROOM_ID=18462226881291012`)을 사용 |

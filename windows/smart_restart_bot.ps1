@@ -155,10 +155,10 @@ function Stop-ExistingBot {
         return
     }
 
-    foreach ($pid in $targets) {
+    foreach ($procPid in $targets) {
         try {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
-            Write-Status "Stopped bot process (PID: $pid)" "Yellow"
+            Stop-Process -Id $procPid -Force -ErrorAction SilentlyContinue
+            Write-Status "Stopped bot process (PID: $procPid)" "Yellow"
         } catch {}
     }
 }
