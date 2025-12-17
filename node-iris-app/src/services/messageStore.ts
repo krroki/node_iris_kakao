@@ -434,10 +434,17 @@ export class MessageStore {
     );
     const sender = context.sender as any;
     const senderId = sender ? String(sender.id ?? "") : undefined;
-    const senderName = await this.resolveMaybeAsync(
+    const senderNameRaw = await this.resolveMaybeAsync(
       sender && typeof sender.getName === "function" ? sender.getName.bind(sender) : undefined,
-      sender?.name,
+      typeof sender?.nickname === "string" ? sender.nickname : sender?.name,
     );
+    const senderName = (() => {
+      const s = typeof senderNameRaw === "string" ? senderNameRaw.trim() : "";
+      if (!s) return undefined;
+      // 일부 환경에서 sender.name/getName이 userId(숫자)로 관측되므로, 순수 숫자는 이름으로 채택하지 않는다.
+      if (/^\d{6,}$/.test(s)) return undefined;
+      return s;
+    })();
     const messageId =
       context.message && "id" in context.message ? String((context.message as any).id ?? "") : undefined;
     // msg가 객체인 경우 JSON.stringify로 변환, 문자열이면 그대로 사용

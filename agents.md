@@ -4,6 +4,20 @@
 **프로젝트 요약**: Redroid(Hyper‑V) + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE) 운영. Python 봇, TypeScript IRIS 어댑터, Next.js 대시보드(FastAPI+SSE), 운영 스크립트로 구성된다.  
 **주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), FastAPI(+SSE), Next.js(React), Playwright, PowerShell.
 
+---
+
+## (중요) 발신 메시지 UX 가드레일(전 기능 공통)
+
+- **userId(숫자) 노출 금지**: `296043063`, `32079002` 같은 숫자 식별자는 유저에게 절대 보여주지 않는다.
+  - 출력에는 **닉네임(표시 이름)**만 사용한다.
+  - 닉네임을 모르면 숫자를 그대로 쓰지 말고 **“어떤 분”** 같은 완곡한 표현으로 처리한다.
+- **답변 포맷(가독성)**:
+  - “~요약해 드릴게요” 문장 뒤에는 **빈 줄 1개**를 넣는다.
+  - 섹션 헤더는 **콜론(`:`) 없이** 단독 라인으로 출력한다.
+    - 예: `💡 요약 내용` (다음 줄부터 본문)
+    - 예: `🔗 관련 링크` (다음 줄부터 URL만)
+- **금지**: `근거(Evidence)`, `다음 액션(Next Action)`, 타임스탬프/로그 원문 인용(예: `[2025-…]`)을 사용자에게 노출하지 않는다.
+
 핵심 문서 링크
 - `docs/ops/core-feature-split-plan.md` - 코어/기능 워커 분리 구현계획서(Welcome 1차)
 - `docs/adr/ADR-0027-core-logstore-and-feature-workers.md` - 코어(LogStore) 상시 가동 + 기능(Feature) 워커 분리(Welcome 1차) 결정(SSOT)

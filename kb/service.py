@@ -404,13 +404,16 @@ def chat_summary(req: ChatSummaryRequest):
         "- 말투는 친절한 구어체(존댓말, ~해요/~네요)로 써줘.",
         "- '답변:', '근거:', '다음 액션:', '참고 로그:' 같은 보고서형 헤더는 절대 쓰지 마.",
         "- 타임스탬프([2025-...])나 로그 원문을 그대로 복사해서 보여주지 마.",
+        "- 발신자 이름이 숫자만(예: 296043063)이라면 userId일 수 있으니, 그 숫자를 그대로 쓰지 말고 '어떤 분'처럼 완곡하게 표현해줘.",
         "- 대화 로그에 명시적으로 나온 내용만 말하고, 없는 건 솔직하게 '대화에서 못 찾았어요'라고 말해줘.",
         "- 개인정보(전화번호/이메일/계좌 등)는 절대 노출하지 마.",
         "",
         "출력 구조(모바일 친화):",
         "1) 첫 줄: \"내용 찾아봤어요! 요약해 드릴게요 📝\" 같은 짧은 말",
-        "2) **💡 요약 내용**: 2~5줄로 핵심만",
-        "3) (있을 때만) **🔗 관련 링크**: 로그에 실제로 나온 URL만 줄바꿈으로 나열",
+        "2) **💡 요약 내용**",
+        "   - 다음 줄부터 2~5줄로 핵심만(불릿은 선택)",
+        "3) (있을 때만) **🔗 관련 링크**",
+        "   - 다음 줄부터 URL만 줄바꿈으로 나열",
         "",
         f"방 이름: {req.room_name or req.room_id}",
         "--- 대화 로그 ---",
@@ -591,7 +594,7 @@ def chat_qa(req: ChatQaRequest):
         return None
 
     requester = _extract_requester_name()
-    requester_disp = f"**{requester}**님, " if requester else ""
+    requester_disp = f"**{requester}**님, " if requester and not re.match(r"^\d{6,}$", requester.strip()) else ""
     # Q&A는 "전체 로그"를 LLM에 그대로 넣기보다, 질문 키워드에 걸리는 메시지 + 주변 컨텍스트만 남긴다.
     picked_idx: set[int] = set()
     if keywords:
@@ -622,7 +625,7 @@ def chat_qa(req: ChatQaRequest):
                 "room_id": req.room_id,
                 "room_name": req.room_name,
                 "question": question,
-                "answer": "\n".join([f"{requester_disp}{hint}", hint2]).strip(),
+                "answer": "\n".join([f"{requester_disp}{hint}", "", hint2]).strip(),
                 "model": "deterministic_no_match",
             }
 
@@ -733,6 +736,7 @@ def chat_qa(req: ChatQaRequest):
         "- 말투는 분석 보고서체가 아니라, 친절하고 자연스러운 구어체(존댓말, ~해요/~네요).",
         "- '답변:', '근거:', '다음 액션:', '참고 로그:' 같은 헤더는 절대 출력하지 마.",
         "- 타임스탬프([2025-...])나 로그 원문을 그대로 복사해서 보여주지 마(필요하면 자연스럽게 요약만).",
+        "- 발신자 이름이 숫자만(예: 296043063)이라면 userId일 수 있으니, 그 숫자를 그대로 쓰지 말고 '어떤 분'처럼 완곡하게 표현해줘.",
         "- 대화 로그에 명시적으로 나온 내용만 말하고, 없는 건 솔직하게 없다고 말해줘.",
         "- 링크/URL/주소를 요청했다면, 로그에 실제로 포함된 URL만 그대로 적어줘(없으면 없다고 말해줘).",
         "- 개인정보(전화번호/이메일/계좌번호 등)는 답변에서 모두 제거해줘.",
@@ -742,9 +746,11 @@ def chat_qa(req: ChatQaRequest):
         f"- \"흠, 최근 대화 내역을 찾아봤는데 **<키워드>** 관련 얘기는 아직 안 나왔어요 😅\" 같은 톤으로 말해줘.",
         "- \"혹시 아시는 분 계시면 알려주세요!\" + \"공지/고정글도 한 번 확인해 주세요\" 정도만 덧붙여줘.",
         "CASE 2) 정보가 확실하게 있을 때:",
-        f"- \"{requester_disp}질문하신 내용 찾아봤어요! 봇이 요약해 드릴게요 📝\"",
-        "- **💡 요약 내용**: 2~3줄로 핵심만",
-        "- (있으면) **🔗 관련 링크**: URL만",
+        f"- 첫 줄: \"{requester_disp}질문하신 내용 찾아봤어요! 봇이 요약해 드릴게요 📝\"",
+        "- 다음 줄은 반드시 빈 줄 1개",
+        "- 다음은 **💡 요약 내용** (콜론 없이) 라인을 단독으로 출력",
+        "- 그 아래 줄부터 2~3줄로 핵심만",
+        "- (있으면) 빈 줄 1개 후 **🔗 관련 링크** 라인을 단독으로 출력하고, 아래 줄부터 URL만 출력",
         "CASE 3) 일부만 있거나 모호할 때:",
         "- \"아쉽게도 **<핵심 정보>**는 대화에서 못 찾았어요 😭\"",
         "- 대신 확인된 내용은 **💡 요약 내용**으로 1~3줄로 정리해줘.",
@@ -828,6 +834,13 @@ def _postprocess_chat_answer(answer: str) -> str:
         if re.match(r"^\s*[-*]\s*\[(20\d{2}[-./]\d{1,2}[-./]\d{1,2}[^\]]*|\d{1,2}:\d{2}(?::\d{2})?)\]\s*[^:]+:\s*.+$", raw):
             continue
 
+        # userId 노출 방지:
+        # - 숫자만 닉네임(예: 296043063, 32079002)이 답변에 그대로 섞이면 보기/프라이버시가 나쁘므로 완곡하게 치환한다.
+        # - 단, 금액/코드 등 "의미 있는 숫자"까지 뭉텅이로 바꾸면 답이 망가지므로 조사/호칭 패턴에만 한정한다.
+        line = re.sub(r"\b\d{6,}\b\s*님", "어떤 분", line)
+        line = re.sub(r"\b\d{6,}\b(?=(이|가|은|는|을|를|에게|한테|에서|도|만|과|와|랑|으로|로)\b)", "어떤 분", line)
+        line = re.sub(r"@\s*\b\d{6,}\b", "@어떤 분", line)
+
         # 공백 정리
         line = re.sub(r"\s{2,}", " ", line).strip()
         out_lines.append(line)
@@ -842,7 +855,13 @@ def _postprocess_chat_answer(answer: str) -> str:
         normalized.append(line)
         prev_blank = blank
 
-    return "\n".join(normalized).strip()
+    out = "\n".join(normalized).strip()
+    # "💡 요약 내용:" 처럼 콜론이 붙는 패턴은 줄바꿈으로 교정
+    out = re.sub(r"(?m)^\s*(\*\*?💡\s*요약\s*내용\*\*?)\s*:\s*", r"\1\n", out)
+    out = re.sub(r"(?m)^\s*(💡\s*요약\s*내용)\s*:\s*", r"\1\n", out)
+    out = re.sub(r"(?m)^\s*(\*\*?🔗\s*관련\s*링크\*\*?)\s*:\s*", r"\1\n", out)
+    out = re.sub(r"(?m)^\s*(🔗\s*관련\s*링크)\s*:\s*", r"\1\n", out)
+    return out.strip()
 
 
 def _rerank_posts(query: str, posts: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
