@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+# 이 워킹트리는 "main만 사용"이 SSOT다. (agents.md 0.1)
+# 브랜치가 main이 아니면 커밋 자체를 차단해 재발을 막는다.
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+if [ -z "$branch" ]; then
+  echo "[GIT-GUARD] ERROR: detached HEAD 상태에서는 커밋할 수 없습니다." >&2
+  echo "[GIT-GUARD]        이 워킹트리는 main-only입니다. (docs/sessions/main.md / agents.md 참고)" >&2
+  exit 1
+fi
+
+if [ "$branch" != "main" ]; then
+  echo "[GIT-GUARD] ERROR: 이 워킹트리에서는 main 브랜치에서만 커밋할 수 있습니다." >&2
+  echo "[GIT-GUARD]        현재 브랜치: $branch" >&2
+  echo "[GIT-GUARD]        즉시 복구: git symbolic-ref HEAD refs/heads/main" >&2
+  exit 1
+fi
+
+exit 0
+

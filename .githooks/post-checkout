@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+# post-checkout은 checkout을 "막을 수는" 없지만, 즉시 경고를 띄워 사고를 줄인다.
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+if [ -z "$branch" ]; then
+  echo "[GIT-GUARD] WARN: detached HEAD 상태입니다. 이 워킹트리는 main-only입니다." >&2
+  echo "[GIT-GUARD]       복구: git symbolic-ref HEAD refs/heads/main" >&2
+  exit 0
+fi
+
+if [ "$branch" != "main" ]; then
+  echo "[GIT-GUARD] WARN: main-only 워킹트리에서 브랜치가 변경되었습니다: $branch" >&2
+  echo "[GIT-GUARD]       이 상태에서 커밋/푸시는 차단됩니다(pre-commit/pre-push)." >&2
+  echo "[GIT-GUARD]       즉시 복구: git symbolic-ref HEAD refs/heads/main" >&2
+fi
+
+exit 0
+

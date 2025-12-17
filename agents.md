@@ -26,11 +26,33 @@
 
 - `git checkout <branch>` / `git switch <branch>` (워킹트리 흔들림 → 다른 세션 작업 파손)
 - 새 브랜치 생성 후 체크아웃(동일 이유)
+- `git switch -c ...` / `git checkout -b ...` 같은 **브랜치 생성 자체**
+- detached HEAD(특정 커밋 체크아웃) 상태로 작업/커밋
 
 이 워킹트리에서 허용되는 Git 작업은 아래뿐이다:
 
 - `main`에서 변경 반영 → `git commit` (필요 시 여러 커밋)
 - (외부에서) PR/Epic 워크플로가 필요하면 **별도 clone/worktree**에서 수행
+
+### (중요) 기술적 가드(실수 방지)
+
+이 저장소는 main-only 운영을 강제하기 위해 Git 훅을 사용한다.
+
+- 훅 위치: `.githooks/`
+- 적용: `core.hooksPath=.githooks` (이 워킹트리 기준)
+- 효과:
+  - `main`이 아닌 브랜치에서는 **커밋/푸시가 차단**된다.
+  - 단, Git 특성상 “체크아웃/브랜치 생성” 자체를 100% 막지는 못하므로, 위의 **절대 금지 규칙을 사람이 지키는 것이 SSOT**다.
+
+### 실수 복구(즉시)
+
+브랜치가 `main`이 아니게 된 것을 발견하면, **파일을 건드리지 않고** 아래로 즉시 복구한다.
+
+- 복구:
+  - `git symbolic-ref HEAD refs/heads/main`
+- 확인:
+  - `git status -sb` 가 `## main`인지 확인
+  - 필요 시: `powershell -NoProfile -ExecutionPolicy Bypass -File windows/enforce_main_only_git.ps1`
 
 세션 로그는 기본적으로 `docs/sessions/main.md`에 누적 기록한다. (기존 브랜치별 세션 로그는 역사 기록으로 유지)
 
