@@ -23,6 +23,81 @@ import { messageStore } from "../services";
 // 운영 안전: 테스트 커맨드(!welcome:test / !reply:test)는 테스트 전용 오픈채팅방에서만 수행한다.
 const TEST_COMMAND_ROOM_ID = "18462226881291012";
 
+function sanitizeChatAnswer(raw: string): string {
+  let s = String(raw || "").replace(/\r\n/g, "\n");
+  if (!s.trim()) return "";
+
+  const out: string[] = [];
+  for (const ln of s.split("\n")) {
+    const line = String(ln || "").trimEnd();
+    const t = line.trim();
+    if (!t) {
+      out.push("");
+      continue;
+    }
+
+    // 보고서형 헤더 제거
+    if (/^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|다음\s*할\s*일|To\s*do|TODO|참고\s*로그)\s*:?\s*$/i.test(t)) {
+      continue;
+    }
+    let cleaned = line.replace(
+      /^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|다음\s*할\s*일|To\s*do|TODO|참고\s*로그)\s*:\s*/i,
+      "",
+    );
+
+    // 타임스탬프/로그 인용 라인 제거: "- [ts] sender: text"
+    if (/^\s*[-*]\s*\[(20\d{2}[-./]\d{1,2}[-./]\d{1,2}[^\]]*|\d{1,2}:\d{2}(?::\d{2})?)\]\s*[^:]+:\s*.+$/i.test(t)) {
+      continue;
+    }
+
+    // 캡처/첨부 메타 라인 제거: "[...png 352x476]"
+    if (/^\s*\[[^\]]+\.(png|jpg|jpeg|gif|webp)\s+[0-9]{2,4}x[0-9]{2,4}\]\s*$/i.test(t)) {
+      continue;
+    }
+
+    // 인라인 타임스탬프 제거
+    cleaned = cleaned.replace(/\[(20\d{2}[-./]\d{1,2}[-./]\d{1,2}[^\]]*)\]/g, "");
+    cleaned = cleaned.replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g, "");
+
+    // userId(숫자) 노출 방지(제한적으로 치환)
+    cleaned = cleaned.replace(/\b\d{6,}\b\s*님\b/g, "어떤 분");
+    cleaned = cleaned.replace(/\b\d{6,}\b(?=(이|가|은|는|을|를|에게|한테|에서|도|만|과|와|랑|으로|로|께|부터|까지)\b)/g, "어떤 분");
+    cleaned = cleaned.replace(/@\s*\b\d{6,}\b/g, "@어떤 분");
+
+    cleaned = cleaned.replace(/\s{2,}/g, " ").trim();
+    out.push(cleaned);
+  }
+
+  // 연속 빈 줄 최대 1개
+  const compacted: string[] = [];
+  let prevBlank = false;
+  for (const ln of out) {
+    const blank = !String(ln || "").trim();
+    if (blank && prevBlank) continue;
+    compacted.push(ln);
+    prevBlank = blank;
+  }
+  s = compacted.join("\n").trim();
+
+  // 링크 푸터가 있는데 URL이 없거나 "없음"이면 푸터 제거
+  if (/^---\s*$/m.test(s) && /^🔗\s*관련\s*링크\s*$/m.test(s)) {
+    const parts = s.split(/^---\s*$/m);
+    if (parts.length >= 2) {
+      const head = parts[0].trimEnd();
+      const tail = parts.slice(1).join("---").trim();
+      const hasUrl = /https?:\/\//i.test(tail);
+      const hasNone = /(없음|없어요|없습니다)/.test(tail);
+      if (!hasUrl || hasNone) {
+        s = head.trim();
+      }
+    }
+  }
+
+  // 첫 줄 다음 빈 줄 1개(가독성) 보정
+  s = s.replace(/^([^\n]+)\n(💡\s*요약\s*내용|🔗\s*관련\s*링크|---|\d+\.\s+|- )/m, "$1\n\n$2");
+  return s.trim();
+}
+
 // "!" 접두사 전용(운영 커맨드와 분리)
 @Prefix("!")
 @MessageController
@@ -278,7 +353,8 @@ class CustomMessageControllerBang {
         return;
       }
 
-      await safeReply(this.logger, context, answer, 15000);
+      const sanitized = sanitizeChatAnswer(answer);
+      await safeReply(this.logger, context, sanitized || answer, 15000);
     } catch (e) {
       this.logger.error(chatQaQuestion ? "[chat-qa] unexpected error" : "[chat-summary] unexpected error", e as any);
       try {
