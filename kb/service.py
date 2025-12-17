@@ -397,24 +397,20 @@ def chat_summary(req: ChatSummaryRequest):
     msgs = req.messages[-max_messages:]
 
     lines: list[str] = [
-        "너는 카카오톡 방의 대화 로그에서 '실제 실행 가능한 인사이트'를 뽑아주는 분석가야.",
-        "아래는 한 채팅방에서 오늘 주고받은 주요 메시지 일부다.",
+        "너는 '디하클(디지털노마드 하이클래스)' 오픈채팅방의 친절하고 센스 있는 AI 매니저야.",
+        "사용자가 '!요약'을 요청했어. 아래 대화 로그(Context)를 바탕으로 핵심만 깔끔하게 요약해줘.",
         "",
-        "요약 스타일:",
-        "- 대화 내용을 시간순으로 나열하지 말고, 핵심 인사이트와 결론 위주로 정리한다.",
-        "- 반복된 잡담·호응(ㅋㅋ, 네네 등)은 과감하게 무시하고, 의미 있는 결정·질문·문제 제기만 남긴다.",
-        "- '무엇을 고민했고', '어떤 결정/합의가 있었으며', '앞으로 무엇을 해야 하는지(다음 액션)'를 중심으로 쓴다.",
-        "- 각 인사이트 항목마다 반드시 구체적인 예시를 한 줄 이상 포함한다.",
-        "  예) \"핵심 인사이트: ChatGPT로 쇼츠 대본 자동화 가능\" 바로 아래 줄에",
-        "      \"예: 수강생이 '내 스타일 알지?' 한마디로도 쇼츠 대본이 나왔다고 공유함\" 처럼 실제 발언을 요약해라.",
+        "제일 중요한 규칙(필수):",
+        "- 말투는 친절한 구어체(존댓말, ~해요/~네요)로 써줘.",
+        "- '답변:', '근거:', '다음 액션:', '참고 로그:' 같은 보고서형 헤더는 절대 쓰지 마.",
+        "- 타임스탬프([2025-...])나 로그 원문을 그대로 복사해서 보여주지 마.",
+        "- 대화 로그에 명시적으로 나온 내용만 말하고, 없는 건 솔직하게 '대화에서 못 찾았어요'라고 말해줘.",
+        "- 개인정보(전화번호/이메일/계좌 등)는 절대 노출하지 마.",
         "",
-        "규칙:",
-        "- 로그에 실제로 등장한 내용만 사용하고, 새로운 사실이나 수치를 만들어내지 않는다.",
-        "- 개인정보(전화번호, 이메일, 계좌번호 등)는 요약에서 모두 제거한다.",
-        "- '/수정', '/유령' 같은 명령어는 어떤 목적/결과였는지만 한 줄로 요약한다.",
-        "- 섹션 제목 예시: '핵심 인사이트', '결정/합의', '리스크/이슈', '다음 액션' 등 3~5개 정도.",
-        "- 각 섹션의 불릿마다 1) 요약 문장 + 2) 바로 아래 '예:'로 시작하는 구체 사례 한 줄을 붙인다.",
-        "- 로그가 거의 없으면 '오늘은 의미 있는 논의가 거의 없었습니다.'처럼 짧게 사실만 말한다.",
+        "출력 구조(모바일 친화):",
+        "1) 첫 줄: \"내용 찾아봤어요! 요약해 드릴게요 📝\" 같은 짧은 말",
+        "2) **💡 요약 내용**: 2~5줄로 핵심만",
+        "3) (있을 때만) **🔗 관련 링크**: 로그에 실제로 나온 URL만 줄바꿈으로 나열",
         "",
         f"방 이름: {req.room_name or req.room_id}",
         "--- 대화 로그 ---",
@@ -427,8 +423,7 @@ def chat_summary(req: ChatSummaryRequest):
         if len(text) > max_chars_per_msg:
             text = text[:max_chars_per_msg] + "…"
         sender = (m.sender or "").strip() or "사용자"
-        ts = m.ts
-        lines.append(f"[{ts}] {sender}: {text}")
+        lines.append(f"{sender}: {text}")
 
     lines.append("--- 위 로그를 규칙에 따라 요약해라. ---")
     prompt = "\n".join(lines)
@@ -442,11 +437,13 @@ def chat_summary(req: ChatSummaryRequest):
     if not answer:
         raise HTTPException(status_code=502, detail="empty_chat_summary_answer")
 
+    # 모델이 간혹 보고서형 헤더/타임스탬프를 섞는 경우가 있어, 최후 방어로 제거한다.
+    answer = _postprocess_chat_answer(str(answer or ""))
     return {
         "ok": True,
         "room_id": req.room_id,
         "room_name": req.room_name,
-        "answer": answer,
+        "answer": answer.strip(),
         "model": model,
     }
 
@@ -543,6 +540,58 @@ def chat_qa(req: ChatQaRequest):
                 return True
         return False
 
+    def _compact_ws(s: str) -> str:
+        return re.sub(r"\s+", " ", s or "").strip()
+
+    def _excerpt_around(text: str, kw: str, max_len: int) -> str:
+        if not text or not kw or len(text) <= max_len:
+            return text
+        tl = text.lower()
+        k = kw.lower()
+        idx = tl.find(k)
+        if idx < 0:
+            return text[: max_len - 1] + "…"
+        before = min(140, max_len // 3)
+        after = max_len - before
+        start = max(0, idx - before)
+        end = min(len(text), idx + after)
+        out = text[start:end]
+        if start > 0:
+            out = "…" + out
+        if end < len(text):
+            out = out + "…"
+        return out
+
+    def _render_msg_text_for_qa(raw_text: str) -> str:
+        t = _compact_ws(raw_text)
+        if not t:
+            return ""
+        if len(t) <= max_chars_per_msg:
+            return t
+        # 키워드가 걸리면 해당 위치 주변으로 발췌(링크/표 형태의 긴 메시지에서 특히 중요)
+        for kw in keywords:
+            if kw and kw.lower() in t.lower():
+                return _excerpt_around(t, kw, max_chars_per_msg)
+        # 링크 질문인데 URL이 포함된 긴 메시지라면 URL이 나오는 구간 중심으로 발췌
+        if wants_link:
+            m = re.search(r"https?://\S+", t)
+            if m:
+                return _excerpt_around(t, m.group(0), max_chars_per_msg)
+        return t[: max_chars_per_msg - 1] + "…"
+
+    def _extract_requester_name() -> str | None:
+        # Node가 messages에 '!요약 ...' 메시지를 포함하는 경우가 있어, 마지막 커맨드 발신자를 요청자로 본다.
+        for m in reversed(req.messages or []):
+            t = (m.text or "").strip()
+            if not t:
+                continue
+            if t.startswith("!요약") or t.startswith("!채팅요약") or t.startswith("!요약:") or t.startswith("!채팅요약:"):
+                name = (m.sender or "").strip()
+                return name or None
+        return None
+
+    requester = _extract_requester_name()
+    requester_disp = f"**{requester}**님, " if requester else ""
     # Q&A는 "전체 로그"를 LLM에 그대로 넣기보다, 질문 키워드에 걸리는 메시지 + 주변 컨텍스트만 남긴다.
     picked_idx: set[int] = set()
     if keywords:
@@ -565,17 +614,16 @@ def chat_qa(req: ChatQaRequest):
         # 키워드가 있는데도 하나도 안 걸리면 LLM을 호출해도 "확인 불가"가 최선이므로
         # 여기서는 결정적으로 안내하고, 사용자가 기간을 늘려 재시도할 수 있게 힌트를 준다.
         if keywords or wants_link:
-            hint = (
-                "대화 로그에서 근거를 찾지 못했습니다. "
-                "기간을 늘려 다시 시도해 보세요(예: `!요약 7일 <질문>` 또는 `!요약 48시간 <질문>`)."
-            )
+            kw_hint = " / ".join(keywords[:3]) if keywords else "질문하신 내용"
+            hint = f"흠, 최근 대화 내역을 찾아봤는데 **{kw_hint}** 관련 얘기는 아직 안 나왔어요 😅"
+            hint2 = "혹시 공지/고정글에 있을 수도 있으니 한 번만 확인해 주세요!"
+            hint3 = "만약 예전 대화에서 나온 내용이면 `!요약 7일 <질문>`처럼 기간을 늘려서 다시 물어봐도 좋아요."
             return {
                 "ok": True,
                 "room_id": req.room_id,
                 "room_name": req.room_name,
                 "question": question,
-                "answer": "1) 답변: 대화 로그에서 확인할 수 없습니다.\n\n2) 근거: (현재 범위의 채팅 로그에서 관련 키워드/URL을 찾지 못했습니다.)\n\n3) 다음 액션:\n- "
-                + hint,
+                "answer": "\n".join([f"{requester_disp}{hint}", hint2, hint3]).strip(),
                 "model": "deterministic_no_match",
             }
 
@@ -595,52 +643,28 @@ def chat_qa(req: ChatQaRequest):
             out.append(u.rstrip(").,]}>\"'"))
         return _dedupe_keep_order(out)
 
-    def _format_evidence_line(ts: str, sender: str, text: str) -> str:
-        s = (sender or "").strip() or "사용자"
-        t = _compact_ws(text)
-        if len(t) > 180:
-            t = t[:180] + "…"
-        return f"- [{ts}] {s}: {t}"
-
     # 1) 링크 요청은 LLM 없이 결정적으로 URL만 뽑아 응답한다(가장 흔한 실패 케이스 방지).
     if wants_link:
-        urls: list[str] = []
-        evidence: list[str] = []
+        urls_kw: list[str] = []
+        urls_any: list[str] = []
         for m in picked:
             text = m.text or ""
             u = _extract_urls_from_text(text)
             if not u:
                 continue
-            # 키워드가 있으면 키워드 포함 라인만 우선, 없으면 URL 라인 전부 수집
-            if keywords and not _has_any_keyword(text):
-                continue
-            urls.extend(u)
-            evidence.append(_format_evidence_line(m.ts, m.sender or "", text))
+            urls_any.extend(u)
+            if keywords and _has_any_keyword(text):
+                urls_kw.extend(u)
 
-        urls = _dedupe_keep_order(urls)[:12]
-        evidence = _dedupe_keep_order(evidence)[:5]
+        urls = _dedupe_keep_order(urls_kw)[:8] if urls_kw else _dedupe_keep_order(urls_any)[:8]
         if urls:
-            answer_lines: list[str] = []
-            answer_lines.extend(
-                [
-                    "1) 답변:",
-                    "대화 로그에서 확인된 링크입니다.",
-                    "",
-                ]
-            )
-            answer_lines.extend([f"- {u}" for u in urls])
-            answer_lines.extend(["", "2) 근거:"])
-            if evidence:
-                answer_lines.extend(evidence)
-            else:
-                answer_lines.append("- (URL이 포함된 메시지에서 추출)")
-            answer_lines.extend(
-                [
-                    "",
-                    "3) 다음 액션:",
-                    "- 필요하면 `!요약 7일 <질문>`처럼 기간을 늘려 더 오래된 링크도 찾아보세요.",
-                ]
-            )
+            answer_lines: list[str] = [
+                f"{requester_disp}질문하신 내용 찾아봤어요! 링크만 깔끔하게 모아드릴게요 📝",
+                "",
+                "**🔗 관련 링크**",
+                *urls,
+            ]
+            # 링크를 못 찾았을 때와 달리, 여기서는 굳이 기간 힌트까지 길게 쓰지 않는다.
             return {
                 "ok": True,
                 "room_id": req.room_id,
@@ -682,18 +706,16 @@ def chat_qa(req: ChatQaRequest):
 
         if uniq_hits:
             uniq_hits = uniq_hits[:5]
+            # 타임스탬프/근거 노출 금지: 날짜 텍스트만 자연스럽게 전달한다.
+            dates = _dedupe_keep_order([d for d, _ in uniq_hits])[:5]
+            hint_line = "표현이 '28일'처럼 월/연도가 빠져 있으면, 정확한 날짜는 방에서 한 번만 더 확인해보는 게 좋을 것 같아요!"
             answer_lines = [
-                "1) 답변:",
-                "대화 로그에서 확인된 일정/날짜 언급입니다.",
+                f"{requester_disp}질문하신 내용 찾아봤어요! 대화에서 날짜/일정 언급이 이렇게 있었어요 📝",
                 "",
-                *[f"- {d}" for d, _ in uniq_hits],
+                "**💡 요약 내용**",
+                *[f"- {d}" for d in dates],
                 "",
-                "2) 근거:",
-                *[ev for _, ev in uniq_hits],
-                "",
-                "3) 다음 액션:",
-                "- 월/연도 정보가 누락된 경우(예: '28일')는 방에서 추가 확인이 필요합니다.",
-                "- 더 오래된 언급이 있을 수 있으니 `!요약 7일 <질문>`으로 범위를 늘려보세요.",
+                hint_line,
             ]
             return {
                 "ok": True,
@@ -704,60 +726,30 @@ def chat_qa(req: ChatQaRequest):
                 "model": "deterministic_date_extract",
             }
 
-    def _compact_ws(s: str) -> str:
-        return re.sub(r"\s+", " ", s or "").strip()
-
-    def _excerpt_around(text: str, kw: str, max_len: int) -> str:
-        if not text or not kw or len(text) <= max_len:
-            return text
-        tl = text.lower()
-        k = kw.lower()
-        idx = tl.find(k)
-        if idx < 0:
-            return text[: max_len - 1] + "…"
-        before = min(140, max_len // 3)
-        after = max_len - before
-        start = max(0, idx - before)
-        end = min(len(text), idx + after)
-        out = text[start:end]
-        if start > 0:
-            out = "…" + out
-        if end < len(text):
-            out = out + "…"
-        return out
-
-    def _render_msg_text_for_qa(raw_text: str) -> str:
-        t = _compact_ws(raw_text)
-        if not t:
-            return ""
-        if len(t) <= max_chars_per_msg:
-            return t
-        # 키워드가 걸리면 해당 위치 주변으로 발췌(링크/표 형태의 긴 메시지에서 특히 중요)
-        for kw in keywords:
-            if kw and kw.lower() in t.lower():
-                return _excerpt_around(t, kw, max_chars_per_msg)
-        # 링크 질문인데 URL이 포함된 긴 메시지라면 URL이 나오는 구간 중심으로 발췌
-        if wants_link:
-            m = re.search(r"https?://\S+", t)
-            if m:
-                return _excerpt_around(t, m.group(0), max_chars_per_msg)
-        return t[: max_chars_per_msg - 1] + "…"
-
     lines: list[str] = [
-        "너는 카카오톡 채팅방의 대화 로그를 근거로 질문에 답하는 분석가야.",
-        "사용자가 하는 질문은 '이 방에서 실제로 오간 대화 내용'에 관한 것이며, 너는 로그에 나온 사실만 근거로 답해야 한다.",
+        "너는 '디하클(디지털노마드 하이클래스)' 오픈채팅방의 친절하고 센스 있는 AI 매니저야.",
+        "사용자의 질문(\"!요약 <질문>\")에 대해, 제공된 대화 로그(Context)만 보고 답해줘.",
         "",
-        "규칙(매우 중요):",
-        "- 아래 대화 로그에 **명시적으로 등장한 내용만** 사용한다.",
-        "- 사용자가 '링크/URL/주소'를 요청했다면, 로그에 실제로 포함된 URL만 그대로 제시한다(없으면 없다고 말한다).",
-        "- 로그에 근거가 없으면 '대화 로그에서 확인할 수 없습니다.'라고 답하고, 어떤 정보가 더 필요할지 1~3개 질문으로 되묻는다.",
-        "- 새로운 사실/규칙/링크/수치/정답을 만들어내지 않는다.",
-        "- 개인정보(전화번호, 이메일, 계좌번호 등)는 답변에서 모두 제거한다.",
+        "제약(무조건 지켜):",
+        "- 말투는 분석 보고서체가 아니라, 친절하고 자연스러운 구어체(존댓말, ~해요/~네요).",
+        "- '답변:', '근거:', '다음 액션:', '참고 로그:' 같은 헤더는 절대 출력하지 마.",
+        "- 타임스탬프([2025-...])나 로그 원문을 그대로 복사해서 보여주지 마(필요하면 자연스럽게 요약만).",
+        "- 대화 로그에 명시적으로 나온 내용만 말하고, 없는 건 솔직하게 없다고 말해줘.",
+        "- 링크/URL/주소를 요청했다면, 로그에 실제로 포함된 URL만 그대로 적어줘(없으면 없다고 말해줘).",
+        "- 개인정보(전화번호/이메일/계좌번호 등)는 답변에서 모두 제거해줘.",
         "",
-        "출력 형식:",
-        "1) 답변: (질문에 대한 결론/가이드)",
-        "2) 근거: (로그에서 근거가 된 발언을 1~3개 '요약 인용' 형태로 제시. 예: [시간] 발신자: 요지)",
-        "3) 다음 액션: (실제로 할 일 1~5개)",
+        "답변 템플릿(상황별):",
+        "CASE 1) 정보가 전혀 없을 때:",
+        f"- \"흠, 최근 대화 내역을 찾아봤는데 **<키워드>** 관련 얘기는 아직 안 나왔어요 😅\" 같은 톤으로 말해줘.",
+        "- \"혹시 아시는 분 계시면 알려주세요!\" + \"공지/고정글도 한 번 확인해 주세요\" 정도만 덧붙여줘.",
+        "CASE 2) 정보가 확실하게 있을 때:",
+        f"- \"{requester_disp}질문하신 내용 찾아봤어요! 봇이 요약해 드릴게요 📝\"",
+        "- **💡 요약 내용**: 2~3줄로 핵심만",
+        "- (있으면) **🔗 관련 링크**: URL만",
+        "CASE 3) 일부만 있거나 모호할 때:",
+        "- \"아쉽게도 **<핵심 정보>**는 대화에서 못 찾았어요 😭\"",
+        "- 대신 확인된 내용은 **💡 요약 내용**으로 1~3줄로 정리해줘.",
+        "- 마지막에 \"정확한 건 공지/운영진 확인이 빠를 것 같아요\" 정도로 마무리해줘.",
         "",
         f"방 이름: {req.room_name or req.room_id}",
         f"질문: {question}",
@@ -769,8 +761,7 @@ def chat_qa(req: ChatQaRequest):
         if not text:
             continue
         sender = (m.sender or "").strip() or "사용자"
-        ts = m.ts
-        lines.append(f"[{ts}] {sender}: {text}")
+        lines.append(f"{sender}: {text}")
 
     lines.append("--- 위 로그를 근거로 질문에 답해라. ---")
     prompt = "\n".join(lines)
@@ -782,6 +773,7 @@ def chat_qa(req: ChatQaRequest):
         raise HTTPException(status_code=502, detail="chat_qa_call_failed")
 
     answer = _strip_sensitive_numbers_in_answer(str(answer or ""))
+    answer = _postprocess_chat_answer(answer)
     if not answer.strip():
         raise HTTPException(status_code=502, detail="empty_chat_qa_answer")
 
@@ -793,6 +785,56 @@ def chat_qa(req: ChatQaRequest):
         "answer": answer.strip(),
         "model": model,
     }
+
+
+def _postprocess_chat_answer(answer: str) -> str:
+    """chat/summary, chat/qa 전용 후처리.
+
+    - 보고서형 헤더(근거/다음 액션/참고 로그/답변 등) 제거
+    - 타임스탬프 패턴 제거
+    - 로그 원문 인용처럼 보이는 라인(예: "- [ts] sender: ...") 제거
+    """
+    s = str(answer or "")
+    if not s.strip():
+        return ""
+
+    # 1) 라인 단위 정리
+    out_lines: list[str] = []
+    for raw in s.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            out_lines.append("")
+            continue
+
+        # 금지 헤더/섹션 타이틀 제거(영/한 혼합 방어)
+        if re.match(r"^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|참고\s*로그)\s*:?\s*$", line, re.I):
+            continue
+        # "답변: ..." 같은 접두 제거
+        line = re.sub(r"^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|참고\s*로그)\s*:\s*", "", line, flags=re.I)
+
+        # 타임스탬프/로그 표기 제거
+        line = re.sub(r"\[(20\d{2}[-./]\d{1,2}[-./]\d{1,2}[^\]]*)\]", "", line)
+        line = re.sub(r"\[(\d{1,2}:\d{2}(?::\d{2})?)\]", "", line)
+
+        # "- [2025-..] sender: ..." 또는 "- [12:34] sender: ..." 같은 로그 인용 라인은 제거
+        if re.match(r"^\s*[-*]\s*\[(20\d{2}[-./]\d{1,2}[-./]\d{1,2}[^\]]*|\d{1,2}:\d{2}(?::\d{2})?)\]\s*[^:]+:\s*.+$", raw):
+            continue
+
+        # 공백 정리
+        line = re.sub(r"\s{2,}", " ", line).strip()
+        out_lines.append(line)
+
+    # 2) 빈 줄 정리(연속 빈 줄 최대 1개)
+    normalized: list[str] = []
+    prev_blank = False
+    for line in out_lines:
+        blank = not line.strip()
+        if blank and prev_blank:
+            continue
+        normalized.append(line)
+        prev_blank = blank
+
+    return "\n".join(normalized).strip()
 
 
 def _rerank_posts(query: str, posts: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
