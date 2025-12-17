@@ -526,6 +526,47 @@ def chat_qa(req: ChatQaRequest):
             "할수있",
             "할수있어",
         }
+
+        def _normalize_token(tok: str) -> list[str]:
+            s = (tok or "").strip()
+            if not s:
+                return []
+
+            out = [s]
+
+            # honorific/조사 제거(키워드 매칭률 개선)
+            # - 예: "마라하기님" -> "마라하기", "인터뷰글은" -> "인터뷰글"
+            # NOTE: 너무 공격적으로 자르면 의미가 깨질 수 있어, 흔한 접미만 보수적으로 처리한다.
+            suffixes = [
+                "님",
+                "에서",
+                "에게",
+                "한테",
+                "으로",
+                "부터",
+                "까지",
+                "은",
+                "는",
+                "이",
+                "가",
+                "을",
+                "를",
+                "에",
+                "도",
+                "만",
+                "과",
+                "와",
+                "랑",
+                "로",
+                "께",
+            ]
+            for suf in suffixes:
+                if s.endswith(suf) and len(s) > len(suf) + 1:
+                    out.append(s[: -len(suf)])
+                    break
+
+            return [x for x in out if x and x not in stop]
+
         cleaned: list[str] = []
         for t in raw:
             t2 = t.strip()
@@ -534,7 +575,7 @@ def chat_qa(req: ChatQaRequest):
             # stopword는 그대로 제외하되, '링크/주소'는 wants_link 판단에만 사용한다.
             if t2 in stop:
                 continue
-            cleaned.append(t2)
+            cleaned.extend(_normalize_token(t2))
         return _dedupe_keep_order(cleaned)[:12]
 
     keywords = _extract_keywords(q)

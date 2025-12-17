@@ -137,7 +137,45 @@ function buildLocalQaFallback(question: string, messages: Array<{ sender?: strin
     "요약",
     "채팅요약",
   ]);
-  const keywords = tokens.filter((t) => !stop.has(t)).slice(0, 10);
+  const normalizeToken = (tok: string): string[] => {
+    const s = String(tok || "").trim();
+    if (!s) return [];
+    const out: string[] = [s];
+    const suffixes = [
+      "님",
+      "에서",
+      "에게",
+      "한테",
+      "으로",
+      "부터",
+      "까지",
+      "은",
+      "는",
+      "이",
+      "가",
+      "을",
+      "를",
+      "에",
+      "도",
+      "만",
+      "과",
+      "와",
+      "랑",
+      "로",
+      "께",
+    ];
+    for (const suf of suffixes) {
+      if (s.endsWith(suf) && s.length > suf.length + 1) {
+        out.push(s.slice(0, -suf.length));
+        break;
+      }
+    }
+    return out;
+  };
+
+  const keywords = Array.from(
+    new Set(tokens.flatMap((t) => normalizeToken(t)).filter((t) => t && !stop.has(t))),
+  ).slice(0, 10);
   const hasAnyKeyword = (text: string) => {
     const tl = String(text || "").toLowerCase();
     return keywords.some((kw) => tl.includes(kw.toLowerCase()));
