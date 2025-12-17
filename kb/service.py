@@ -617,13 +617,12 @@ def chat_qa(req: ChatQaRequest):
             kw_hint = " / ".join(keywords[:3]) if keywords else "질문하신 내용"
             hint = f"흠, 최근 대화 내역을 찾아봤는데 **{kw_hint}** 관련 얘기는 아직 안 나왔어요 😅"
             hint2 = "혹시 공지/고정글에 있을 수도 있으니 한 번만 확인해 주세요!"
-            hint3 = "만약 예전 대화에서 나온 내용이면 `!요약 7일 <질문>`처럼 기간을 늘려서 다시 물어봐도 좋아요."
             return {
                 "ok": True,
                 "room_id": req.room_id,
                 "room_name": req.room_name,
                 "question": question,
-                "answer": "\n".join([f"{requester_disp}{hint}", hint2, hint3]).strip(),
+                "answer": "\n".join([f"{requester_disp}{hint}", hint2]).strip(),
                 "model": "deterministic_no_match",
             }
 
@@ -708,7 +707,7 @@ def chat_qa(req: ChatQaRequest):
             uniq_hits = uniq_hits[:5]
             # 타임스탬프/근거 노출 금지: 날짜 텍스트만 자연스럽게 전달한다.
             dates = _dedupe_keep_order([d for d, _ in uniq_hits])[:5]
-            hint_line = "표현이 '28일'처럼 월/연도가 빠져 있으면, 정확한 날짜는 방에서 한 번만 더 확인해보는 게 좋을 것 같아요!"
+            hint_line = "표현이 '28일'처럼 월/연도가 빠져 있을 수도 있어서, 딱 떨어지는 날짜로는 못 박기 어렵네요."
             answer_lines = [
                 f"{requester_disp}질문하신 내용 찾아봤어요! 대화에서 날짜/일정 언급이 이렇게 있었어요 📝",
                 "",
@@ -807,10 +806,19 @@ def _postprocess_chat_answer(answer: str) -> str:
             continue
 
         # 금지 헤더/섹션 타이틀 제거(영/한 혼합 방어)
-        if re.match(r"^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|참고\s*로그)\s*:?\s*$", line, re.I):
+        if re.match(
+            r"^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|다음\s*할\s*일|To\s*do|TODO|참고\s*로그)\s*:?\s*$",
+            line,
+            re.I,
+        ):
             continue
         # "답변: ..." 같은 접두 제거
-        line = re.sub(r"^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|참고\s*로그)\s*:\s*", "", line, flags=re.I)
+        line = re.sub(
+            r"^\s*(\d+\)\s*)?(답변|근거|증거|Evidence|Next Action|다음\s*액션|다음\s*할\s*일|To\s*do|TODO|참고\s*로그)\s*:\s*",
+            "",
+            line,
+            flags=re.I,
+        )
 
         # 타임스탬프/로그 표기 제거
         line = re.sub(r"\[(20\d{2}[-./]\d{1,2}[-./]\d{1,2}[^\]]*)\]", "", line)
