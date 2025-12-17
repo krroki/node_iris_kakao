@@ -98,6 +98,140 @@ function sanitizeChatAnswer(raw: string): string {
   return s.trim();
 }
 
+function buildLocalQaFallback(question: string, messages: Array<{ sender?: string; text: string }>): string {
+  const q = String(question || "").trim();
+  if (!q) return "";
+
+  const wantsLink = /(링크|url|URL|주소)/.test(q);
+  const wantsDate = /(언제|일정|날짜|몇\s*일|며칠|나와|나오|출간|업로드|오픈|발표)/.test(q);
+
+  const tokens = (q.match(/[0-9A-Za-z가-힣]{2,}/g) || []).map((t) => t.trim()).filter(Boolean);
+  const stop = new Set([
+    "링크",
+    "주소",
+    "알려줘",
+    "알려주세요",
+    "어떻게",
+    "어케",
+    "뭐야",
+    "무엇",
+    "언제",
+    "나와",
+    "나오",
+    "되나",
+    "되요",
+    "되나요",
+    "되면",
+    "안되면",
+    "안돼",
+    "안됨",
+    "안돼요",
+    "가능",
+    "가능해",
+    "가능한",
+    "확인",
+    "할수",
+    "할수있",
+    "할수있어",
+    "질문",
+    "요약",
+    "채팅요약",
+  ]);
+  const keywords = tokens.filter((t) => !stop.has(t)).slice(0, 10);
+  const hasAnyKeyword = (text: string) => {
+    const tl = String(text || "").toLowerCase();
+    return keywords.some((kw) => tl.includes(kw.toLowerCase()));
+  };
+
+  const extractUrls = (text: string): string[] => {
+    const out: string[] = [];
+    const re = /https?:\/\/\S+/g;
+    for (const m of String(text || "").match(re) || []) {
+      out.push(String(m).replace(/[).,]}>\"']+$/g, ""));
+    }
+    return out;
+  };
+
+  // 1) 링크 질문: URL만 모아서 푸터에 넣는다.
+  if (wantsLink) {
+    const urls: string[] = [];
+    for (const m of messages) {
+      const t = String(m?.text || "");
+      if (!t) continue;
+      if (keywords.length > 0 && !hasAnyKeyword(t)) continue;
+      urls.push(...extractUrls(t));
+    }
+    const uniq = Array.from(new Set(urls)).slice(0, 10);
+    if (uniq.length === 0) {
+      return [
+        "아쉽게도 대화에서 관련 링크는 아직 못 찾았어요 😥",
+        "",
+        "💡 요약 내용",
+        "- 공지/고정글에 있을 수도 있으니 한 번만 확인해 주세요.",
+        "- 링크가 들어간 메시지가 있었다면, 그 메시지 앞뒤 키워드로 다시 한 번 물어봐도 좋아요.",
+      ].join("\n").trim();
+    }
+    return [
+      "찾아봤는데, 대화에서 관련 링크가 있었어요 😊",
+      "",
+      "💡 요약 내용",
+      "- 대화에서 확인된 링크만 모아뒀어요.",
+      "",
+      "---",
+      "🔗 관련 링크",
+      ...uniq,
+    ].join("\n").trim();
+  }
+
+  // 2) 날짜/일정 질문: 날짜 표현만 뽑아서 안내한다.
+  if (wantsDate && keywords.length > 0) {
+    const dateRe =
+      /(?:(20\d{2})[./-]([01]?\d)[./-]([0-3]?\d))|(?:(\d{1,2})\s*월\s*(\d{1,2})\s*일)|(?:(\d{1,2})\s*일)/;
+    const dates: string[] = [];
+    for (const m of messages) {
+      const t = String(m?.text || "");
+      if (!t) continue;
+      if (!hasAnyKeyword(t)) continue;
+      const mm = t.match(dateRe);
+      if (!mm) continue;
+      dates.push(String(mm[0]).trim());
+    }
+    const uniq = Array.from(new Set(dates)).slice(0, 5);
+    if (uniq.length > 0) {
+      return [
+        "찾아봤어요! 대화에서 일정/날짜 언급이 이렇게 있었어요 😊",
+        "",
+        "💡 요약 내용",
+        ...uniq.map((d) => `- ${d}`),
+        "",
+        "📌 표현이 '28일'처럼 월/연도가 빠져 있을 수도 있어서, 딱 떨어지는 날짜로는 못 박기 어렵네요 😥",
+      ].join("\n").trim();
+    }
+  }
+
+  // 3) 일반 질문: 키워드가 걸리는 라인이 있으면 그 존재만 요약한다(원문 인용은 피함).
+  const matched = messages.filter((m) => hasAnyKeyword(String(m?.text || "")));
+  if (matched.length > 0) {
+    const ks = keywords.slice(0, 3).join(", ");
+    return [
+      "결론부터 말하면, 대화에서 딱 떨어지는 답은 아직 못 찾았어요 😥",
+      "",
+      "💡 요약 내용",
+      `- 대신 **${ks || "질문 관련"}** 얘기는 대화에 언급이 있었어요.`,
+      "- 정확한 답이 필요하면 공지/운영진 확인이 제일 빠를 것 같아요.",
+    ].join("\n").trim();
+  }
+
+  // 4) 아무 것도 못 찾음
+  return [
+    "아쉽게도 대화에서 질문하신 내용은 아직 못 찾았어요 😥",
+    "",
+    "💡 요약 내용",
+    "- 공지/고정글에 있을 수도 있으니 한 번만 확인해 주세요.",
+    "- 키워드를 조금 더 구체적으로 바꿔서 다시 물어봐도 좋아요.",
+  ].join("\n").trim();
+}
+
 // "!" 접두사 전용(운영 커맨드와 분리)
 @Prefix("!")
 @MessageController
@@ -338,12 +472,14 @@ class CustomMessageControllerBang {
           status: res.status,
           body,
         });
-        await safeReply(
-          this.logger,
-          context,
-          question ? "채팅 질문 답변 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." : "채팅 요약 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
-          6000,
-        );
+        if (question) {
+          const fallback = buildLocalQaFallback(question, messages);
+          if (fallback) {
+            await safeReply(this.logger, context, sanitizeChatAnswer(fallback) || fallback, 15000);
+            return;
+          }
+        }
+        await safeReply(this.logger, context, question ? "채팅 질문 답변 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." : "채팅 요약 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", 6000);
         return;
       }
 

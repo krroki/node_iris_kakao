@@ -692,7 +692,7 @@ def chat_qa(req: ChatQaRequest):
         date_re = re.compile(
             r"(?:(20\d{2})[./-]([01]?\d)[./-]([0-3]?\d))|(?:(\d{1,2})\s*월\s*(\d{1,2})\s*일)|(?:(\d{1,2})\s*일)"
         )
-        hits: list[tuple[str, str]] = []  # (date_text, evidence_line)
+        hits: list[str] = []
         for m in picked:
             text = _compact_ws(m.text or "")
             if not text:
@@ -703,22 +703,14 @@ def chat_qa(req: ChatQaRequest):
             if not m2:
                 continue
             date_text = m2.group(0)
-            hits.append((date_text, _format_evidence_line(m.ts, m.sender or "", text)))
+            hits.append(date_text)
 
         # 중복 제거
-        seen_hit: set[str] = set()
-        uniq_hits: list[tuple[str, str]] = []
-        for d, ev in hits:
-            k = f"{d}||{ev}"
-            if k in seen_hit:
-                continue
-            seen_hit.add(k)
-            uniq_hits.append((d, ev))
+        uniq_hits = _dedupe_keep_order([d for d in hits if d])[:5]
 
         if uniq_hits:
-            uniq_hits = uniq_hits[:5]
             # 타임스탬프/근거 노출 금지: 날짜 텍스트만 자연스럽게 전달한다.
-            dates = _dedupe_keep_order([d for d, _ in uniq_hits])[:5]
+            dates = uniq_hits
             hint_line = "표현이 '28일'처럼 월/연도가 빠져 있을 수도 있어서, 딱 떨어지는 날짜로는 못 박기 어렵네요 😥"
             answer_lines = [
                 f"{requester_disp}찾아봤어요! 대화에서 일정/날짜 언급이 이렇게 있었어요 😊",
