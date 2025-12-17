@@ -13,6 +13,7 @@
 - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
 - `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
 - `docs/reference/kakao-room-command-triggers.md` – 방별 명령어(FAQ) `!등록/!삭제/!명령어/!키` 기능/권한/Reply payload 레퍼런스
+- `docs/reference/auto-faq-worker.md` – 무명령어 자동 FAQ(질문 트리거) 설계/가드레일(후보 추출→승인→자동응답, 강의ID/글로벌 스코프, 링크/일정 “추측 금지”)
 - `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 
@@ -233,6 +234,11 @@
       - **IRIS(:5050) 복구가 안 될 때(중요)**: PortProxy가 `0.0.0.0:5050 -> 127.0.0.1:5050` 루프백으로 잡혀 있으면(iphlpsvc가 포트 점유)
         ADB forward가 `access denied(10013)`로 실패하며 IRIS가 장시간 다운될 수 있다.
         - `windows/repair_redroid_iris.ps1 -Fix`는 이제 이 루프백 PortProxy를 자동 정리하고 재시도한다.
+      - **Hyper-V IP 변경(중요)**: Redroid VM의 IP가 바뀌면 ADB 대상(`<ip>:5555`)도 바뀐다.
+        - 복구 스크립트는 마지막 성공 값을 `data/redroid_device.json`에 캐시한다.
+        - 대시보드(`http://localhost:3100`)의 **IRIS 연결 (Hyper-V IP/ADB)** 섹션에서
+          현재 캐시 값(앱이 찾는 IP) 확인 + 새 IP 저장 + IRIS 복구 실행이 가능하다.
+        - VM 내부에서 `hostname -I`로 IP를 확인했다면, 보통 첫 번째 `172.*` IP를 사용한다(예: `172.192.204.123:5555`).
         - `windows/setup_iris_port.ps1`는 기본적으로 PortProxy를 $LocalPort에 직접 걸지 않으며, 필요 시 `-ExposePort <포트>`로만 노출한다(충돌 방지).
 
     | 상황 | 권장 명령 |

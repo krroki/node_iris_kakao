@@ -69,6 +69,17 @@ export default function Home() {
   const [exclude, setExclude] = useState<string>("");
   const [limit, setLimit] = useState<number>(80);
 
+  // IRIS/Redroid 연결(ADB device 캐시)
+  const [irisUrl, setIrisUrl] = useState<string>("http://127.0.0.1:5050");
+  const [redroidDevice, setRedroidDevice] = useState<string>("");
+  const [redroidDeviceUpdatedAt, setRedroidDeviceUpdatedAt] = useState<string | null>(null);
+  const [redroidDeviceCachePath, setRedroidDeviceCachePath] = useState<string | null>(null);
+  const [redroidVmIp, setRedroidVmIp] = useState<string | null>(null);
+  const [redroidDetectedDevice, setRedroidDetectedDevice] = useState<string | null>(null);
+  const [redroidDeviceLoading, setRedroidDeviceLoading] = useState<boolean>(false);
+  const [redroidDeviceSaving, setRedroidDeviceSaving] = useState<boolean>(false);
+  const [redroidDeviceMsg, setRedroidDeviceMsg] = useState<string | null>(null);
+
   // 강의 운영(roster-worker) 설정/상태
   const [courseRosterConfig, setCourseRosterConfig] = useState<CourseRosterConfig | null>(null);
   const [courseRosterConfigExists, setCourseRosterConfigExists] = useState<boolean>(false);
@@ -121,6 +132,70 @@ export default function Home() {
   const watchdog = useWatchdog();
 
   const diagCommand = `cd C:\\dev\\12.kakao && powershell -ExecutionPolicy Bypass -File .\\scripts\\diagnose_realtime.ps1`;
+
+  // Load Redroid ADB device cache (data/redroid_device.json)
+  useEffect(() => {
+    let cancelled = false;
+    let timer: any = null;
+    const load = async () => {
+      setRedroidDeviceLoading(true);
+      try {
+        const r = await fetch(`/api/device/redroid`, { cache: "no-store" });
+        const j: any = await r.json().catch(() => null);
+        if (!r.ok || !j || j.ok !== true) {
+          throw new Error(String(j?.error || `HTTP ${r.status}`));
+        }
+        if (cancelled) return;
+        setIrisUrl(String(j.irisUrl || "http://127.0.0.1:5050"));
+        setRedroidDevice(String(j.device || ""));
+        setRedroidDeviceUpdatedAt(j.updatedAt ? String(j.updatedAt) : null);
+        setRedroidDeviceCachePath(j.cachePath ? String(j.cachePath) : null);
+        setRedroidVmIp(j.vmIp ? String(j.vmIp) : null);
+        setRedroidDetectedDevice(j.detectedDevice ? String(j.detectedDevice) : null);
+      } catch (e: any) {
+        if (cancelled) return;
+        setRedroidDeviceMsg(`ADB 대상 로드 실패: ${String(e?.message || e)}`);
+      } finally {
+        if (!cancelled) setRedroidDeviceLoading(false);
+      }
+    };
+    void load();
+    timer = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      try { if (timer) clearInterval(timer); } catch {}
+    };
+  }, []);
+
+  const saveRedroidDevice = useCallback(async () => {
+    const v = String(redroidDevice || "").trim();
+    if (!v) {
+      setRedroidDeviceMsg("ADB 대상(device)이 비어 있습니다. 예) 172.192.204.123 또는 172.192.204.123:5555");
+      return;
+    }
+    setRedroidDeviceSaving(true);
+    setRedroidDeviceMsg(null);
+    try {
+      const r = await fetch(`/api/device/redroid`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device: v }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setIrisUrl(String(j.irisUrl || "http://127.0.0.1:5050"));
+      setRedroidDevice(String(j.device || v));
+      setRedroidDeviceUpdatedAt(j.updatedAt ? String(j.updatedAt) : null);
+      setRedroidDeviceCachePath(j.cachePath ? String(j.cachePath) : null);
+      setRedroidDeviceMsg("저장 완료. 필요하면 아래 버튼으로 IRIS 복구를 실행하세요.");
+    } catch (e: any) {
+      setRedroidDeviceMsg(`저장 실패: ${String(e?.message || e)}`);
+    } finally {
+      setRedroidDeviceSaving(false);
+    }
+  }, [redroidDevice]);
 
   // Load rooms list
   useEffect(() => {
@@ -740,6 +815,87 @@ export default function Home() {
         </pre>
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
           디버그 · allLogs: {debugCounts.allCount}개 / roomLogs: {debugCounts.roomKeys}방, 총 {debugCounts.roomTotal}행
+        </div>
+      </div>
+
+      {/* IRIS/Redroid 연결(ADB IP) */}
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>IRIS 연결 (Hyper-V IP/ADB)</h3>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 8, lineHeight: 1.5 }}>
+          - 앱이 IRIS를 확인하는 주소: <code>{irisUrl}</code>
+          <br />
+          - IRIS 복구 스크립트가 ADB로 붙을 대상(캐시):{" "}
+          <code title={redroidDeviceCachePath || ""}>{redroidDevice || "(없음)"}</code>
+          {redroidDeviceUpdatedAt ? (
+            <>
+              {" "}
+              <span style={{ color: "var(--text-muted)" }}>
+                (갱신: {new Date(redroidDeviceUpdatedAt).toLocaleString()})
+              </span>
+            </>
+          ) : null}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <input
+            className="filter-input"
+            style={{ minWidth: 260, maxWidth: 420 }}
+            value={redroidDevice}
+            disabled={redroidDeviceLoading || redroidDeviceSaving}
+            onChange={(e) => setRedroidDevice(e.target.value)}
+            placeholder="예) 172.192.204.123 또는 172.192.204.123:5555"
+          />
+          <button className="btn-save" onClick={() => void saveRedroidDevice()} disabled={redroidDeviceSaving || redroidDeviceLoading}>
+            {redroidDeviceSaving ? "저장 중…" : "ADB 대상 저장"}
+          </button>
+          <button
+            className="btn-outline"
+            onClick={() => {
+              if (redroidDetectedDevice) {
+                setRedroidDevice(redroidDetectedDevice);
+                setRedroidDeviceMsg(`자동 감지값을 입력했습니다: ${redroidDetectedDevice}`);
+              }
+            }}
+            disabled={!redroidDetectedDevice || redroidDeviceLoading || redroidDeviceSaving}
+            title="Hyper-V(MAC→ARP) 기반으로 Windows에서 도달 가능한 IP를 추정합니다."
+          >
+            자동 감지값 적용
+          </button>
+          <button
+            className="btn-outline"
+            onClick={() => {
+              const v = String(redroidDevice || "").trim();
+              if (v) navigator.clipboard?.writeText?.(v);
+              alert("Hyper-V에서 `hostname -I`로 나온 IP 중 ADB용 IP를 넣으세요.\n예) 172.192.204.123 (권장) / 172.17.0.1 (대개 내부 브릿지)\n\n현재 입력값을 복사했습니다.");
+            }}
+            disabled={!String(redroidDevice || "").trim()}
+            title="입력값 복사 + 안내"
+          >
+            복사/안내
+          </button>
+          <button
+            className="btn-outline"
+            onClick={() => void repairDevice(String(redroidDevice || "").trim() || undefined)}
+            disabled={deviceRepairing}
+            title="windows/repair_redroid_iris.ps1 -Fix (-Device 옵션 포함)"
+          >
+            {deviceRepairing ? "복구 실행 중…" : "IRIS 복구 실행"}
+          </button>
+        </div>
+        {(redroidDeviceMsg || deviceRepairMessage) && (
+          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            {redroidDeviceMsg && <div>{redroidDeviceMsg}</div>}
+            {deviceRepairMessage && <div>{deviceRepairMessage}</div>}
+          </div>
+        )}
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          - watchdog에서 IRIS /config가 연속 실패하면 <code>repair_redroid_iris.ps1 -Fix</code>가 실행됩니다.
+          캐시가 예전 IP(예: <code>172.20.x.x:5555</code>)면 Hyper-V IP 변경 시 복구가 계속 실패할 수 있습니다.
+          {redroidVmIp ? (
+            <>
+              <br />- (참고) Windows에서 감지한 redroid VM IP: <code>{redroidVmIp}</code> (권장 ADB 대상:{" "}
+              <code>{redroidDetectedDevice || `${redroidVmIp}:5555`}</code>)
+            </>
+          ) : null}
         </div>
       </div>
 

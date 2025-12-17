@@ -10,7 +10,7 @@ type UsePipelineStatusResult = {
   deviceRepairing: boolean;
   deviceRepairMessage: string | null;
   restartBot: () => Promise<void>;
-  repairDevice: () => Promise<void>;
+  repairDevice: (device?: string) => Promise<void>;
 };
 
 export function usePipelineStatus(): UsePipelineStatusResult {
@@ -76,15 +76,22 @@ export function usePipelineStatus(): UsePipelineStatusResult {
     }
   }, [fetchPipelineStatus]);
 
-  const repairDevice = useCallback(async () => {
+  const repairDevice = useCallback(async (device?: string) => {
+    const deviceHint = device && String(device).trim()
+      ? `\n\n(ADB 대상: ${String(device).trim()})`
+      : "";
     const confirmRepair = window.confirm(
-      "Redroid / IRIS 단말 자동 복구를 시도할까요?\n(Hyper-V VM은 이미 실행 중이라고 가정합니다.)",
+      "Redroid / IRIS 단말 자동 복구를 시도할까요?\n(Hyper-V VM은 이미 실행 중이라고 가정합니다.)" + deviceHint,
     );
     if (!confirmRepair) return;
     setDeviceRepairing(true);
     setDeviceRepairMessage(null);
     try {
-      const res = await fetch(`/api/device/repair`, { method: "POST" });
+      const res = await fetch(`/api/device/repair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(device ? { device } : {}),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok === false) {
         throw new Error(data?.error || `HTTP ${res.status}`);

@@ -160,6 +160,13 @@ if (-not (Test-Path $AdbPath)) {
   exit 1
 }
 
+Write-Info "Starting adb server (start-server)"
+try {
+  & $AdbPath start-server 2>&1 | Out-Host
+} catch {
+  Write-Warn "adb start-server 실패(계속 진행): $($_.Exception.Message)"
+}
+
 function Get-FirstAdbDeviceId {
   param([string]$AdbPath)
   try {
@@ -175,6 +182,18 @@ function Get-FirstAdbDeviceId {
   return $null
 }
 
+function Is-AdbDeviceListed {
+  param([string]$AdbPath, [string]$DeviceId)
+  try {
+    $out = & $AdbPath devices 2>$null
+    if (-not $out) { return $false }
+    $needle = [Regex]::Escape([string]$DeviceId)
+    return ($out -match ("(?m)^" + $needle + "\\s+device\\s*$"))
+  } catch {
+    return $false
+  }
+}
+
 Write-Info "Checking Hyper-V VM state: $VmName"
 $vm = Get-VM -Name $VmName -ErrorAction SilentlyContinue
 if (-not $vm) {
@@ -186,27 +205,56 @@ if ($vm.State -ne 'Running') {
   exit 1
 }
 
-if (-not $Device) {
-  $Device = Get-FirstAdbDeviceId -AdbPath $AdbPath
+#
+# ADB device 선택 (중요)
+# - Hyper-V IP 변경으로 캐시가 쉽게 드리프트 되므로, "캐시 1개"에 고정하지 말고
+#   후보들을 순서대로 시도해 실제로 devices에 잡히는 값을 선택한다.
+#
+$candidates = @()
+if ($Device) { $candidates += @([string]$Device) }
+$first = Get-FirstAdbDeviceId -AdbPath $AdbPath
+if ($first) { $candidates += @([string]$first) }
+$cached = Read-DeviceCache -Path $deviceCachePath
+if ($cached) {
+  $candidates += @([string]$cached)
+  Write-Info "Cached ADB device candidate: $cached ($deviceCachePath)"
 }
-if (-not $Device) {
-  $cached = Read-DeviceCache -Path $deviceCachePath
-  if ($cached) {
-    $Device = $cached
-    Write-Info "Using cached ADB device: $Device ($deviceCachePath)"
-  }
+$vmIp = Get-RedroidVmIp -Name $VmName
+if ($vmIp) { $candidates += @("$vmIp:5555") }
+
+# dedup/normalize
+$seen = @{}
+$cand2 = @()
+foreach ($c in $candidates) {
+  $t = [string]$c
+  if (-not $t) { continue }
+  if ($seen.ContainsKey($t)) { continue }
+  $seen[$t] = $true
+  $cand2 += @($t)
 }
-if (-not $Device) {
-  $vmIp = Get-RedroidVmIp -Name $VmName
-  if ($vmIp) { $Device = "$vmIp:5555" }
-}
-if (-not $Device) {
+
+if ($cand2.Count -eq 0) {
   Write-Err "ADB device를 자동 감지하지 못했습니다. -Device '<ip>:5555' 로 지정하세요."
   exit 1
 }
 
-Write-Info "ADB connect: $Device"
-try { & $AdbPath connect $Device | Out-Host } catch {}
+$picked = $null
+foreach ($cand in $cand2) {
+  Write-Info "ADB connect: $cand"
+  try { & $AdbPath connect $cand 2>&1 | Out-Host } catch {}
+  Start-Sleep -Milliseconds 200
+  if (Is-AdbDeviceListed -AdbPath $AdbPath -DeviceId $cand) {
+    $picked = $cand
+    break
+  }
+}
+
+if (-not $picked) {
+  Write-Err ("ADB connect 실패: 어떤 후보도 devices에 잡히지 않았습니다. candidates={0}" -f ($cand2 -join ", "))
+  exit 1
+}
+
+$Device = $picked
 Write-DeviceCache -Path $deviceCachePath -Device $Device
 
 # PortProxy 루프백 매핑(0.0.0.0:$IrisLocalPort -> 127.0.0.1:$IrisLocalPort)이 남아있으면

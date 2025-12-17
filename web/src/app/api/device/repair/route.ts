@@ -20,19 +20,26 @@ async function updateDeviceCache(ok: boolean, detail: string, extra?: Record<str
   await fs.writeFile(DEVICE_HEALTH_CACHE, JSON.stringify(cache, null, 2), 'utf-8');
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   const ps = 'powershell.exe';
   const script = path.join(ROOT, 'windows', 'repair_redroid_iris.ps1');
+  const body = await request.json().catch(() => ({} as any));
+  const deviceRaw = typeof (body as any)?.device === 'string' ? String((body as any).device).trim() : '';
 
   try {
-    const { stdout, stderr } = await execFileAsync(ps, [
+    const args = [
       '-NoProfile',
       '-ExecutionPolicy',
       'Bypass',
       '-File',
       script,
       '-Fix',
-    ], {
+    ] as string[];
+    if (deviceRaw) {
+      args.push('-Device', deviceRaw);
+    }
+
+    const { stdout, stderr } = await execFileAsync(ps, args, {
       cwd: ROOT,
       timeout: 120000,
     });
@@ -67,4 +74,3 @@ export async function POST() {
     );
   }
 }
-
