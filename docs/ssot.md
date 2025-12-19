@@ -81,6 +81,7 @@
 | 2025-12-19 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` |
 | 2025-12-19 | Welcome: 오픈프로필 닫기 안내 + 5분 기본닉 닉네임 변경 리마인더 | `docs/adr/ADR-0043-welcome-open-profile-guide-and-5m-nickname-reminder.md` |
 | 2025-12-19 | 운영: Watchdog hung 방지 + UI에서 Watchdog/워커 재시작 | `docs/adr/ADR-0023-watchdog-auto-restart.md`, `docs/agents.md` |
+| 2025-12-19 | 공지: 이미지 전파 “성공 보고/실제 미발신” 핫픽스(에코 확인 + 지연/재시도) | `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md` |
 | 2025-12-15 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백(워커/명령) | `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md` |
 | 2025-12-15 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 추가 | `docs/adr/ADR-0033-openchat-members-sheets-worker.md` |
 | 2025-12-15 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | `docs/adr/ADR-0031-messagestore-emfile-mitigation.md` |

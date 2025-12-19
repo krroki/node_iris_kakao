@@ -77,3 +77,27 @@
   - `node-iris-app/src/controllers/CustomBatchController.ts` (dispatcher gate)
   - `server/log_utils.py` (`imageUrls` 노출)
   - `windows/start_broadcast_worker.ps1`, `windows/start_all.ps1`, `windows/watchdog.ps1`
+
+---
+
+## Update (2025-12-19) — 공지 이미지 “성공 보고/실제 미발신” 핫픽스
+
+### 문제
+- 공지(이미지 포함) 전파에서 **텍스트는 정상 발신**되지만,
+  이미지가 “성공”으로 집계/보고된 뒤에도 **일부 타겟 방에 실제 이미지가 누락**되는 케이스가 발생했다.
+
+### 근본 원인
+1. Talk-API `dispatch_raw`로 이미지(type=27, `attachment.imageUrls`) 발신을 시도했으나, Talk-API가 `status=-500`으로 실패하는 환경이 있었다.
+2. 실패 시 IRIS `/reply_media`로 폴백했지만, IRIS는 HTTP 200을 빠르게 반환해도 실제 UI 발신이 **비동기/지연**으로 처리될 수 있다.
+   이때 여러 방에 연속 발신 속도가 너무 빠르면, 일부 요청이 **성공으로 응답되더라도 실제 전송이 누락**될 수 있었다.
+3. broadcast-worker는 기존에 IRIS 응답(HTTP 200/ok)만으로 성공 처리하여 “성공 보고”와 “실제 발신”이 불일치했다.
+
+### 조치
+- broadcast-worker는 IRIS 이미지 폴백 시:
+  - 타겟 간 **최소 간격(기본 2.5s)** 을 강제하고,
+  - MessageStore 로그(`node-iris-app/data/logs/<roomId>/*.log`)에서 “IRIS가 보낸 이미지” 에코를 짧게 확인한 뒤에만 성공으로 판정한다.
+  - 에코가 관측되지 않으면 **1회 재시도** 후 실패로 집계한다.
+
+### 영향
+- 공지 이미지 전파의 성공/실패 집계가 실제 발신과 일치하도록 개선되며,
+  IRIS 폴백 경로에서도 누락 가능성을 낮춘다(완전 제거는 IRIS 내부 구현에 의존).

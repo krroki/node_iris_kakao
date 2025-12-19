@@ -272,3 +272,10 @@
     - `windows/watchdog.ps1`: `start_all.ps1`을 `Start-Process`로 별도 프로세스 spawn(로그 리다이렉션)해 watchdog 루프 블록 방지.
     - `windows/ensure_watchdog.ps1`: 프로세스는 살아있어도 `windows/watchdog.log`가 오래 멈추면(hung) 자동 재기동(`-MaxLogAgeSec`, 기본 900s).
     - UI(3100): `Watchdog 재시작` 버튼(`/api/watchdog` POST) + `봇/워커 프로세스` 카드에서 워커 재시작 버튼(`/api/bot/workers/restart`) 추가.
+
+- 운영 장애(공지 이미지 전파 성공/미발신) 핫픽스:
+  - 증상: 공지(이미지 포함) 전파에서 “성공”으로 보고되지만 타겟 방에 이미지가 누락되는 케이스 발생.
+  - 원인(대표): Talk-API raw 이미지 발신이 `status=-500`으로 실패 → IRIS `/reply_media` 폴백으로 전환되며, IRIS 응답이 HTTP 200이어도 실제 UI 발신은 비동기/지연 처리라 연속 발신 속도가 빠르면 누락 가능.
+  - 조치: `broadcast-worker`에서 IRIS 이미지 폴백 시 **최소 간격(2.5s)** 강제 + MessageStore 로그 에코 확인 후 성공 판정(미관측 시 1회 재시도).
+  - 코드: `node-iris-app/src/workers/broadcast_worker.ts`, `node-iris-app/src/utils/iris.ts`
+  - 문서: `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md`, `docs/ssot.md`

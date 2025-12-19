@@ -66,6 +66,17 @@ const TARGET_DEDUP = new DedupCache(5 * 60 * 1000); // 5분 (source msg -> targe
 const SENT_IMAGE_DEDUP = new DedupCache(3 * 60 * 1000); // 3분 (worker가 보낸 이미지 감지용)
 const SENT_TEXT_DEDUP = new DedupCache(3 * 60 * 1000); // 3분 (worker가 보낸 텍스트 감지용)
 
+// IRIS/Talk-API senderId (루프/자기 복제 방지)
+const IRIS_SENDER_ID = "434886784";
+
+// IRIS /reply_media 는 HTTP 200으로 빠르게 응답해도 실제 UI 전송이 뒤늦게(또는 실패) 처리될 수 있다.
+// 공지 미러링(여러 방 연속 발신)에서는 속도가 너무 빠르면 “성공으로 보고되는데 실제 미발신”이 발생할 수 있어,
+// 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
+const IRIS_MEDIA_MIN_GAP_MS = 2500;
+const IRIS_MEDIA_ECHO_TIMEOUT_MS = 15_000;
+const IRIS_MEDIA_ECHO_POLL_MS = 700;
+const IRIS_MEDIA_LOG_SCAN_BYTES = 256 * 1024;
+
 // (Legacy) mirror marker detection
 // - 과거에는 루프 방지용으로 텍스트 끝에 숨김 마커를 붙였으나, 일부 환경에서 zero-width가 제거되며
 //   마커가 그대로 노출되는 문제가 있어 더 이상 추가하지 않는다.
@@ -78,6 +89,12 @@ function safeString(v: unknown): string {
   if (typeof v === "bigint") return v.toString();
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
   return String(v ?? "").trim();
+}
+
+function sleepMs(ms: number): Promise<void> {
+  const t = Math.max(0, Math.floor(ms));
+  if (t === 0) return Promise.resolve();
+  return new Promise((r) => setTimeout(r, t));
 }
 
 function isPidAlive(pidRaw: unknown): boolean {
@@ -336,13 +353,103 @@ function hashTextForDedup(text: string): string {
   return crypto.createHash("sha1").update(norm).digest("hex");
 }
 
+function isImageMessageType(msgType: unknown): boolean {
+  const rawType = typeof msgType === "number" ? msgType : Number(msgType);
+  if (!Number.isFinite(rawType)) return false;
+  const baseType = (rawType as number) & ~16384;
+  return baseType === 2 || baseType === 27 || baseType === 71;
+}
+
 function shouldIgnoreSender(entry: StreamEntry): boolean {
   const sid = safeString(entry.senderId);
   const sn = safeString(entry.senderName || entry.sender).toLowerCase();
-  const ignoreIds = ["434886784"]; // IRIS 계정(senderId) - 루프/자기 복제 방지
+  const ignoreIds = [IRIS_SENDER_ID]; // IRIS 계정(senderId) - 루프/자기 복제 방지
   const ignoreNames = ["iris"];
   if (sid && ignoreIds.includes(sid)) return true;
   if (sn && ignoreNames.includes(sn)) return true;
+  return false;
+}
+
+async function findLatestRoomLogPath(roomId: string): Promise<string | null> {
+  const rid = safeString(roomId);
+  if (!rid) return null;
+  const dir = path.join(APP_ROOT, "data", "logs", rid);
+  try {
+    const names = await fs.readdir(dir).catch(() => []);
+    const files = (names || [])
+      .filter((n) => typeof n === "string" && /^\d{4}-\d{2}-\d{2}\.log$/.test(n))
+      .sort()
+      .reverse();
+    if (files.length === 0) return null;
+    return path.join(dir, files[0]!);
+  } catch {
+    return null;
+  }
+}
+
+async function hasIrisImageEchoSince(roomId: string, sinceMs: number): Promise<boolean> {
+  const p = await findLatestRoomLogPath(roomId);
+  if (!p) return false;
+  const st = await fs.stat(p).catch(() => null);
+  if (!st || !st.isFile()) return false;
+
+  const size = Number(st.size) || 0;
+  const start = Math.max(0, size - IRIS_MEDIA_LOG_SCAN_BYTES);
+  const len = Math.max(0, size - start);
+  if (len <= 0) return false;
+
+  let fh: any = null;
+  try {
+    fh = await (fs as any).open(p, "r");
+    const buf = Buffer.allocUnsafe(len);
+    await fh.read(buf, 0, len, start);
+    const txt = buf.toString("utf8");
+    const lines = txt.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i] || "";
+      if (!line) continue;
+      if (!line.includes(IRIS_SENDER_ID)) continue;
+      if (!line.includes("\"messageType\"")) continue;
+
+      let obj: any = null;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      const sid = safeString(obj?.snapshot?.senderId ?? obj?.senderId);
+      if (sid !== IRIS_SENDER_ID) continue;
+
+      const ts = safeString(obj?.timestamp ?? obj?.ts);
+      const tms = ts ? Date.parse(ts) : NaN;
+      if (!Number.isFinite(tms)) continue;
+      if (tms + 1500 < sinceMs) continue; // slight skew allowance
+
+      const mt = obj?.payload?.messageType;
+      if (!isImageMessageType(mt)) continue;
+
+      return true;
+    }
+  } catch {
+    return false;
+  } finally {
+    try {
+      await fh?.close?.();
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
+async function waitForIrisImageEcho(roomId: string, sinceMs: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
+  while (Date.now() < deadline) {
+    const ok = await hasIrisImageEchoSince(roomId, sinceMs);
+    if (ok) return true;
+    await sleepMs(IRIS_MEDIA_ECHO_POLL_MS);
+  }
   return false;
 }
 
@@ -374,10 +481,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
 
   // 이미지 메시지는 messageText가 "사진"/"photo"로 들어오는 경우가 많다.
   // 공지 미러링에서는 placeholder 텍스트를 그대로 전파하지 않고, 실제 이미지 전송만 수행한다.
-  const rawType = Number(entry.messageType);
-  const msgType = Number.isFinite(rawType) ? rawType : NaN;
-  const baseType = Number.isFinite(msgType) ? (msgType & ~16384) : NaN;
-  const isImageMsg = baseType === 2 || baseType === 27 || baseType === 71;
+  const isImageMsg = isImageMessageType(entry.messageType);
 
   let text = normalizeText(entry.text);
   if (images.length > 0 && isImageMsg) {
@@ -514,7 +618,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
         // Record "sent image" so when the mirrored image appears in logs we can ignore it.
         // (No visible marker in the message body)
         SENT_IMAGE_DEDUP.mark(`sent_img:${targetId}:${h}`);
-        const okTalk = await tryServerTalkApiDispatchRaw(logger, targetId, "", 27, { imageUrls: images }, 15000);
+        const okTalk = await tryServerTalkApiDispatchRaw(logger, targetId, "photo", 27, { imageUrls: images }, 15000);
         if (okTalk) {
           ok = ok && true;
         } else {
@@ -527,9 +631,31 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
               logger.warn("[announce] image download failed", { roomId: targetId, url, err: String(e) });
             }
           }
-          const okIris =
-            imagesBase64.length > 0 ? await tryServerIrisReplyMedia(logger, targetId, imagesBase64, 30000) : false;
+          let okIris = false;
+          let usedIris = false;
+          if (imagesBase64.length > 0) {
+            usedIris = true;
+            const attempt1At = Date.now();
+            okIris = await tryServerIrisReplyMedia(logger, targetId, imagesBase64, 30000);
+            if (okIris) {
+              const echoed = await waitForIrisImageEcho(targetId, attempt1At, IRIS_MEDIA_ECHO_TIMEOUT_MS);
+              if (!echoed) {
+                logger.warn("[announce] iris reply_media returned ok but image echo not observed; retry once", { roomId: targetId });
+                await sleepMs(IRIS_MEDIA_MIN_GAP_MS);
+                const attempt2At = Date.now();
+                const ok2 = await tryServerIrisReplyMedia(logger, targetId, imagesBase64, 30000);
+                const echoed2 = ok2 ? await waitForIrisImageEcho(targetId, attempt2At, IRIS_MEDIA_ECHO_TIMEOUT_MS) : false;
+                okIris = ok2 && echoed2;
+              }
+            }
+          }
+
           ok = okIris && ok;
+
+          // IRIS 이미지 발신은 UI 자동화 지연이 크므로, 다음 타겟으로 넘어가기 전에 최소 간격을 둔다.
+          if (usedIris) {
+            await sleepMs(IRIS_MEDIA_MIN_GAP_MS);
+          }
         }
       }
 

@@ -94,6 +94,26 @@ if (result === null) {
 
 ---
 
+## 운영 장애: 공지 이미지 “성공 보고/실제 미발신”
+
+### 증상
+- 공지(이미지 포함) 전파에서 “성공”으로 집계/보고되지만, 실제 타겟 방에 이미지가 누락됨
+
+### 근본 원인(대표)
+- Talk-API raw 이미지 발신이 `status=-500`으로 실패하는 환경에서 IRIS `/reply_media` 폴백으로 전환되며,
+  IRIS 응답이 HTTP 200이어도 실제 UI 발신은 비동기/지연 처리라 “연속 발신 속도”가 빠르면 누락될 수 있음
+
+### 조치(현재 기본 동작)
+- broadcast-worker는 IRIS 이미지 폴백 시:
+  - 타겟 간 최소 간격을 강제하고
+  - MessageStore 로그 에코를 확인한 뒤에만 성공으로 판정(미관측 시 1회 재시도)
+
+### 운영 복구
+1. `broadcast-worker` 재기동: `windows/start_broadcast_worker.ps1 -Restart`
+2. (필요 시) Watchdog 재기동: `windows/ensure_watchdog.ps1 -Restart` 또는 UI(3100) 홈의 **Watchdog 재시작**
+
+---
+
 ## Welcome 운영: 오픈프로필 닫기 안내 + 5분 기본닉 리마인더
 
 ### 오픈프로필 닫기 안내

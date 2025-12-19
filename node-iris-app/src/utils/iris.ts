@@ -80,16 +80,17 @@ export async function tryServerIrisReplyMedia(
     }
     if (!data?.ok) {
       logger.warn("[iris] reply_media failed", {
+        roomId,
         ok: data?.ok,
         httpStatus: data?.iris?.httpStatus,
         count: data?.sent?.count,
       });
       return false;
     }
-    logger.info("[iris] reply_media ok", { count: data?.sent?.count });
+    logger.info("[iris] reply_media ok", { roomId, count: data?.sent?.count });
     return true;
   } catch (e) {
-    logger.warn("[iris] reply_media error", { err: String(e) });
+    logger.warn("[iris] reply_media error", { roomId, err: String(e) });
     return false;
   }
 }
