@@ -149,6 +149,29 @@ def _extract_naver_cafe_club_id(raw: str) -> str:
     m = re.search(r"(?:clubid|clubId|search\.clubid|search\.clubId)=(\d+)", s, flags=re.IGNORECASE)
     if m:
         return str(m.group(1) or "").strip()
+    m2 = re.search(r"/cafes/(\d+)", s, flags=re.IGNORECASE)
+    if m2:
+        return str(m2.group(1) or "").strip()
+    return ""
+
+
+def _infer_roster_sheet_name(room_name: str) -> str:
+    name = str(room_name or "").strip()
+    if not name:
+        return ""
+    m = re.match(r"^(?:\d+\.)?\s*(?:\(([^)]+)\)|\[([^\]]+)\])", name)
+    if not m:
+        return ""
+    prefix = str(m.group(1) or m.group(2) or "").strip()
+    if not prefix:
+        return ""
+    p = re.sub(r"\s+", "", prefix)
+    if "사담" in p:
+        return "ROSTER_CHAT"
+    if "공지" in p:
+        return "ROSTER_NOTICE"
+    if "프리미엄" in p:
+        return "ROSTER_PREMIUM"
     return ""
 
 
@@ -659,6 +682,31 @@ class CourseRosterWorker:
                 f"- 예시 파일을 참고해 roomId별 시트/카페 설정을 등록하세요: config/course_roster_worker.example.json"
             )
 
+        room_name_by_id: Dict[str, str] = {}
+        try:
+            url = f"{self.realtime_base}/rooms"
+            resp = requests.get(url, timeout=10)
+            if resp.ok:
+                j = resp.json()
+                candidates = None
+                if isinstance(j, list):
+                    candidates = j
+                elif isinstance(j, dict):
+                    if isinstance(j.get("rooms"), list):
+                        candidates = j.get("rooms")
+                    elif isinstance(j.get("value"), list):
+                        candidates = j.get("value")
+                for it in candidates or []:
+                    if not isinstance(it, dict):
+                        continue
+                    rid = str(it.get("roomId") or it.get("id") or it.get("chat_id") or it.get("chatId") or "").strip()
+                    rname = str(it.get("roomName") or it.get("name") or it.get("title") or "").strip()
+                    if rid and rname:
+                        room_name_by_id[rid] = rname
+        except Exception as e:
+            self.log("WARN", "failed to fetch /rooms for rosterSheetName inference", error=str(e))
+            room_name_by_id = {}
+
         rooms: Dict[str, RoomConfig] = {}
         for rid, v in rooms_obj.items():
             rid2 = str(rid or "").strip()
@@ -667,7 +715,9 @@ class CourseRosterWorker:
 
             enabled = bool(v.get("enabled", True))
             sheet_id = _parse_spreadsheet_id(str(v.get("spreadsheetId") or v.get("sheetId") or "").strip())
-            roster_sheet = str(v.get("rosterSheet") or v.get("rosterSheetName") or "ROSTER_RAW").strip() or "ROSTER_RAW"
+            roster_sheet_raw = str(v.get("rosterSheet") or v.get("rosterSheetName") or "").strip()
+            inferred_sheet = _infer_roster_sheet_name(room_name_by_id.get(rid2, ""))
+            roster_sheet = roster_sheet_raw or inferred_sheet or "ROSTER_RAW"
             cafe_source_raw = str(v.get("cafeSource") or "").strip().lower()
             cafe_csv = str(v.get("cafeCsvPath") or "").strip()
             cafe_club_id = str(v.get("cafeClubId") or v.get("clubId") or "").strip()
@@ -709,6 +759,8 @@ class CourseRosterWorker:
             missing: list[str] = []
             if not sheet_id:
                 missing.append("spreadsheetId")
+            if not roster_sheet_raw and not inferred_sheet:
+                missing.append("rosterSheetName(infer_failed)")
             if cafe_source == "crawler":
                 if not cafe_club_id:
                     missing.append("cafeClubId")
@@ -789,6 +841,10 @@ class CourseRosterWorker:
     def _is_send_enabled(self, runtime: Dict[str, Any], room_id: str) -> Tuple[bool, str]:
         if bool(runtime.get("safeMode", True)):
             return False, "SAFE_MODE"
+
+        course_ops = runtime.get("courseOps")
+        if not isinstance(course_ops, dict) or course_ops.get("sendEnabled") is not True:
+            return False, "COURSE_OPS_SEND_DISABLED"
         if not self._is_room_allowed(runtime, room_id):
             return False, "ROOM_NOT_ALLOWED"
 

@@ -187,7 +187,7 @@
 ## 2. 저장소 맵 & 책임
 - **Python 봇 코어**: `src/`, `tests/`, `scripts/` – Redroid(Hyper‑V)/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
-- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영 토글/강의톡방 배지**는 RoomCard의 **강의 운영** 섹션)  
+- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영(카페/등급/Sheets)**은 `/course`에서 코스 단위로 관리하며, RoomCard에서는 링크/배지만 노출)  
 - **기본닉 멘션(ADR-0041)**: 방 카드의 `기본닉 멘션` 토글이 방별 스위치이며, 2차/3차 안내 간격(24h/48h 등)은 **3100 홈 상단 카드**에서 변경해 `runtime.nicknameReminder.warningSchedule`에 저장한다.
 - **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
 - **구(스트림릿) 대시보드**: `dashboard/` – 임시/레거시로 보관(운영 기본에서 제외).  
@@ -263,7 +263,8 @@
     - 공지가 안 나가면 `windows/logs/broadcast_worker.out.log`에서 `[announce] completed`/`[talkapi] dispatch*`를 확인하고, 실패한 `roomId`/`talkStatus`를 근거로 타겟/allowlist 설정을 점검한다.
     - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 공지/브로드캐스트 텍스트는 `/send/iris/reply_text`, 이미지 발신은(가능하면) URL→base64 후 `/send/iris/reply_media`로 대체 발신한다.
     - (2025-12-19) 공지 이미지 폴백(IRIS `/reply_media`)은 HTTP 200이어도 실제 UI 발신이 지연/누락될 수 있어,
-      `broadcast-worker`가 이미지 base64를 1회 캐시하고 “빠른 1차 배치 전송 → 에코 확인 → 실패 방만 느린 간격 재시도(최대 2회)” 후 성공 처리하도록 보강했다. (결과 프리픽스: `📣 공지 전송 결과`)
+      `broadcast-worker`가 이미지 base64를 1회 캐시하고 “빠른 1차 배치 전송 → 에코 확인 → 실패 방만 느린 간격 재시도(최대 1회)” 후 성공 처리하도록 보강했다. (결과 프리픽스: `📣 공지 전송 결과`)
+      - 최근(10분) IRIS 이미지 미발신 이력이 있는 방은 “같은 공지 내 재시도” 대상에서 제외한다. (상태: `node-iris-app/data/iris_media_health.json`)
     - **중복 실행 방지(중요)**: `broadcast-worker`는 `node-iris-app/data/locks/broadcast_worker.lock` 싱글톤 락으로 1개만 동작한다. watchdog도 중복 실행 감지 시 자동 재기동으로 정리한다.
   - 기본값: `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker` (레거시 롤백: 각각 `...=bot`)
   - **중복 실행 방지(코어/bot)**: bot은 `node-iris-app/data/bot.lock` 싱글톤 락으로 1개만 동작한다(잘못된 cwd로 `node dist/index.js`를 실행해도 즉시 종료).

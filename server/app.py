@@ -1259,6 +1259,37 @@ async def update_runtime(request: Request):
     safe = body.get("safeMode")
     if isinstance(safe, bool):
         cur["safeMode"] = safe
+
+    # course ops config (legacy roster-worker send gate)
+    if isinstance(body, dict) and "courseOps" in body:
+        course_ops = body.get("courseOps")
+        if course_ops is None:
+            cur.pop("courseOps", None)
+        elif not isinstance(course_ops, dict):
+            raise HTTPException(status_code=400, detail="courseOps must be an object or null")
+        else:
+            allowed_co_keys = {"sendEnabled"}
+            for k in course_ops.keys():
+                if k not in allowed_co_keys:
+                    raise HTTPException(status_code=400, detail=f"courseOps.{k} is not allowed")
+
+            cur_co = cur.get("courseOps")
+            if not isinstance(cur_co, dict):
+                cur_co = {}
+
+            if "sendEnabled" in course_ops:
+                v = course_ops.get("sendEnabled")
+                if v is None:
+                    cur_co.pop("sendEnabled", None)
+                elif isinstance(v, bool):
+                    cur_co["sendEnabled"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="courseOps.sendEnabled must be boolean or null")
+
+            if cur_co:
+                cur["courseOps"] = cur_co
+            else:
+                cur.pop("courseOps", None)
     # talk-api runtime config (optional)
     talk = body.get("talkApi")
     if isinstance(talk, dict):

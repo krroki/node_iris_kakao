@@ -1,31 +1,11 @@
 ﻿import React, { useEffect, useState } from 'react';
-import { CourseRosterRoomConfig, LogEntry, OpenchatMembersSheetsRoomConfig, RoomInfo, RoomFeatures, RoomMember, RoomMembersResponse, RoomAdminsResponse } from '../types';
+import { LogEntry, OpenchatMembersSheetsRoomConfig, RoomInfo, RoomFeatures, RoomMember, RoomMembersResponse, RoomAdminsResponse } from '../types';
 import LogViewer from './LogViewer';
-
-function extractNaverCafeClubId(raw: string): string {
-    const s = String(raw || '').trim();
-    if (!s) return '';
-    const m = s.match(/(?:clubid|clubId|search\\.clubid|search\\.clubId)=(\\d+)/i);
-    return m ? String(m[1] || '').trim() : '';
-}
-
-function inferCourseRosterSheetName(roomName: string): string {
-    const s = String(roomName || '').trim();
-    if (/^\\(사담방\\)/.test(s)) return 'ROSTER_CHAT';
-    if (/^\\(공지방\\)/.test(s)) return 'ROSTER_NOTICE';
-    if (/^\\(프리미엄방\\)/.test(s)) return 'ROSTER_PREMIUM';
-    return 'ROSTER_RAW';
-}
 
 interface RoomCardProps {
     room: RoomInfo;
     logs: LogEntry[];
     features: RoomFeatures;
-    courseRosterConfig?: CourseRosterRoomConfig | null;
-    courseRosterConfigExists?: boolean;
-    courseRosterHasServiceAccount?: boolean;
-    courseRosterConfigDirty?: boolean;
-    onUpdateCourseRosterConfig?: (roomId: string, patch: Partial<CourseRosterRoomConfig>) => void;
     openchatMembersSheetsConfig?: OpenchatMembersSheetsRoomConfig | null;
     openchatMembersSheetsConfigExists?: boolean;
     openchatMembersSheetsHasServiceAccount?: boolean;
@@ -47,11 +27,6 @@ export default function RoomCard({
     room,
     logs,
     features,
-    courseRosterConfig,
-    courseRosterConfigExists,
-    courseRosterHasServiceAccount,
-    courseRosterConfigDirty,
-    onUpdateCourseRosterConfig,
     openchatMembersSheetsConfig,
     openchatMembersSheetsConfigExists,
     openchatMembersSheetsHasServiceAccount,
@@ -85,7 +60,6 @@ export default function RoomCard({
     const [avatarError, setAvatarError] = useState(false);
 
     const rawRoomName = String(room.roomName || "").trim();
-    const rosterDefaultSheetName = inferCourseRosterSheetName(rawRoomName);
     const inferredCourseRoom = /^\((사담방|공지방|프리미엄방)\)/.test(rawRoomName);
     const isCourseRoom =
         features.courseRoom === true ||
@@ -112,34 +86,6 @@ export default function RoomCard({
     const [adminsRefreshing, setAdminsRefreshing] = useState(false);
     const [adminsRefreshMsg, setAdminsRefreshMsg] = useState<string | null>(null);
     const [adminsRefreshErr, setAdminsRefreshErr] = useState<string | null>(null);
-
-    const rosterCfg: any = (courseRosterConfig && typeof courseRosterConfig === "object") ? courseRosterConfig : {};
-    const rosterSpreadsheetId = String(rosterCfg.spreadsheetId || "").trim();
-    const rosterSheetName = String(rosterCfg.rosterSheetName || "").trim();
-    const rosterCafeSource = String(rosterCfg.cafeSource || "").trim().toLowerCase() === "csv" ? "csv" : "crawler";
-    const rosterCafeUrl = String(rosterCfg.cafeUrl || "").trim();
-    const rosterCafeClubId = String(rosterCfg.cafeClubId || "").trim();
-    const rosterCrawlerRepoPath = String(rosterCfg.crawlerRepoPath || "C:\\dev\\naver-cafe-member-crawler").trim();
-    const rosterCrawlerPythonExe = String(rosterCfg.crawlerPythonExe || "").trim()
-        || `${rosterCrawlerRepoPath}\\venv\\Scripts\\python.exe`;
-    const rosterCrawlerSettingsPath = String(rosterCfg.crawlerSettingsPath || "").trim();
-    const rosterCafeCsvPath = String(rosterCfg.cafeCsvPath || "").trim();
-    const rosterJoinUrl = String(rosterCfg.joinUrl || "").trim();
-    const rosterCsvExists: boolean | undefined = rosterCfg.cafeCsvExists;
-    const rosterCrawlerRepoExists: boolean | undefined = rosterCfg.crawlerRepoExists;
-    const rosterCrawlerPythonExists: boolean | undefined = rosterCfg.crawlerPythonExists;
-    const rosterCrawlerSettingsExists: boolean | undefined = rosterCfg.crawlerSettingsExists;
-    const rosterParsedSheetId = String(rosterCfg.parsedSpreadsheetId || "").trim();
-    const rosterCafeConfigOk = rosterCafeSource === "csv"
-        ? (!!rosterCafeCsvPath && rosterCsvExists !== false)
-        : (
-            !!rosterCafeClubId
-            && rosterCrawlerRepoExists !== false
-            && rosterCrawlerPythonExists !== false
-            && rosterCrawlerSettingsExists !== false
-        );
-    const rosterConfigIncomplete = !rosterSpreadsheetId || !rosterCafeConfigOk;
-    const rosterCanOperate = !!features.courseRoster && !rosterConfigIncomplete && !!courseRosterHasServiceAccount;
 
     const openchatSheetsCfg: any = (openchatMembersSheetsConfig && typeof openchatMembersSheetsConfig === "object") ? openchatMembersSheetsConfig : {};
     const openchatSheetsEnabled = openchatSheetsCfg.enabled === true;
@@ -570,190 +516,24 @@ export default function RoomCard({
 
                 <div className="room-controls-section">
                     <div className="room-controls-title">강의 운영</div>
-                    <div className="room-controls">
-                        <label className="control-label" title="강의 운영 톡방으로 표시(배지)합니다. (기본: 방 이름 접두어로 자동 추론)">
-                            <input
-                                type="checkbox"
-                                checked={isCourseRoom}
-                                onChange={e => {
-                                    const v = e.target.checked;
-                                    onToggleFeature(room.roomId, 'courseRoom', v);
-                                    if (!v && !!features.courseRoster) {
-                                        onToggleFeature(room.roomId, 'courseRoster', false);
-                                    }
-                                }}
-                            />
-                            강의톡방
-                        </label>
-                        <label
-                            className="control-label"
-                            title="카페 가입/닉네임 확인 안내(멘션) + 시트 upsert 워커를 활성화합니다."
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                        <a
+                            href="/course"
+                            className="btn-outline"
+                            style={{ padding: '6px 10px', fontSize: 12 }}
+                            title="코스 단위 강의 운영 설정으로 이동"
                         >
-                            <input
-                                type="checkbox"
-                                checked={!!features.courseRoster}
-                                onChange={e => {
-                                    const v = e.target.checked;
-                                    if (v && !isCourseRoom) {
-                                        onToggleFeature(room.roomId, 'courseRoom', true);
-                                    }
-                                     onToggleFeature(room.roomId, 'courseRoster', v);
-                                     // UX: courseRoster를 켜면 설정 엔트리를 자동 생성해 "설정 필요" 상태를 명확히 만든다.
-                                     if (v && (!courseRosterConfig || typeof courseRosterConfig !== "object")) {
-                                        onUpdateCourseRosterConfig?.(room.roomId, { enabled: true, rosterSheetName: rosterDefaultSheetName });
-                                     }
-                                 }}
-                                 disabled={!isCourseRoom && !features.courseRoster}
-                             />
-                            카페/닉네임 검증
-                        </label>
+                            강의 운영 탭에서 관리
+                        </a>
+                        {isCourseRoom && (
+                            <span className="tag tag-course" title="방 이름 접두어로 강의톡방 자동 추론">
+                                강의톡방(추론)
+                            </span>
+                        )}
                     </div>
                     <div className="room-controls-note">
-                        강의톡방 자동 추론: <code>(사담방)</code>, <code>(공지방)</code>, <code>(프리미엄방)</code> 접두어가 있으면 강의톡방으로 표시됩니다.
+                        강의 운영(카페/닉네임 검증, 등급 기반 참여 점검)은 코스 단위로 관리합니다.
                     </div>
-
-                    {isCourseRoom && (
-                        <div style={{ marginTop: 10 }}>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', fontSize: 12 }}>
-                                <span className="tag tag-excluded" title="로스터 설정 파일 존재 여부">
-                                    설정파일 {courseRosterConfigExists ? 'OK' : '없음'}
-                                </span>
-                                <span className="tag tag-excluded" title="Google Sheets 서비스 계정 키">
-                                    서비스계정 {courseRosterHasServiceAccount ? 'OK' : '없음'}
-                                </span>
-                                {rosterCafeSource === "csv" ? (
-                                    <span className="tag tag-excluded" title="카페 CSV 경로 존재 여부(로컬, 레거시)">
-                                        CSV {rosterCafeCsvPath
-                                            ? (rosterCsvExists === true ? 'OK' : (rosterCsvExists === false ? '없음' : '확인필요'))
-                                            : '미설정'}
-                                    </span>
-                                ) : (
-                                    <>
-                                        <span className="tag tag-excluded" title="카페 clubId 설정 여부(크롤러 모드)">
-                                            clubId {rosterCafeClubId ? 'OK' : '미설정'}
-                                        </span>
-                                        <span className="tag tag-excluded" title="naver-cafe-member-crawler 경로(레포/venv/settings)">
-                                            크롤러 {(rosterCrawlerRepoExists === true && rosterCrawlerPythonExists === true && rosterCrawlerSettingsExists !== false)
-                                                ? 'OK'
-                                                : ((rosterCrawlerRepoExists === false || rosterCrawlerPythonExists === false || rosterCrawlerSettingsExists === false) ? '없음' : '확인필요')}
-                                        </span>
-                                    </>
-                                )}
-                                <span className="tag tag-excluded" title="스프레드시트 ID(파싱 결과)">
-                                    시트 {rosterSpreadsheetId ? (rosterParsedSheetId ? 'OK' : '확인필요') : '미설정'}
-                                </span>
-                                {features.courseRoster && (
-                                    <span className={rosterCanOperate ? "tag tag-active" : "tag tag-excluded"}>
-                                        {rosterCanOperate ? "운영 가능" : "설정 필요"}
-                                    </span>
-                                )}
-                                {courseRosterConfigDirty && <span className="tag tag-inactive">강의설정 저장 필요</span>}
-                            </div>
-
-                            <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
-                                <input
-                                    className="filter-input"
-                                    value={rosterSpreadsheetId}
-                                    placeholder="스프레드시트 URL 또는 ID (예: https://docs.google.com/spreadsheets/d/.../edit)"
-                                    onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { spreadsheetId: e.target.value })}
-                                />
-                                <div style={{ display: 'flex', gap: 8 }}>
-                                    <input
-                                         className="filter-input"
-                                         style={{ flex: 1 }}
-                                         value={rosterSheetName}
-                                         placeholder={`시트 탭 이름 (빈칸이면: ${rosterDefaultSheetName})`}
-                                         onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { rosterSheetName: e.target.value })}
-                                     />
-                                    <label className="control-label" title="roomId 매핑을 roster-worker에서 사용할지 여부(기본 ON)">
-                                        <input
-                                            type="checkbox"
-                                            checked={rosterCfg.enabled !== false}
-                                            onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { enabled: e.target.checked })}
-                                        />
-                                        사용
-                                    </label>
-                                </div>
-                                <select
-                                    className="filter-input"
-                                    value={rosterCafeSource}
-                                    onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { cafeSource: (e.target.value === "csv" ? "csv" : "crawler") })}
-                                    title="카페 데이터 소스 선택"
-                                >
-                                    <option value="crawler">카페 소스: 크롤러(권장, CSV 불필요)</option>
-                                    <option value="csv">카페 소스: CSV(레거시)</option>
-                                </select>
-                                {rosterCafeSource === "crawler" ? (
-                                    <>
-                                        <input
-                                            className="filter-input"
-                                            value={rosterCafeUrl}
-                                            placeholder="카페 URL (clubId 자동 추출용, 예: https://cafe.naver.com/ManageWholeMember.nhn?clubid=30819883)"
-                                            onChange={(e) => {
-                                                const cafeUrl = e.target.value;
-                                                const extracted = extractNaverCafeClubId(cafeUrl);
-                                                const patch: Partial<CourseRosterRoomConfig> = { cafeUrl };
-                                                if (extracted && extracted !== rosterCafeClubId) patch.cafeClubId = extracted;
-                                                onUpdateCourseRosterConfig?.(room.roomId, patch);
-                                            }}
-                                        />
-                                        <input
-                                            className="filter-input"
-                                            value={rosterCafeClubId}
-                                            placeholder="카페 clubId (예: 30819883)"
-                                            onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { cafeClubId: e.target.value })}
-                                        />
-                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                                            로그인(ID/PW)은 이 UI에서 입력하지 않습니다.
-                                            <br />
-                                            <code>naver-cafe-member-crawler</code>의 <code>settings.json</code>(<code>account.naver_id</code>/<code>account.naver_pw</code>)을 사용합니다.
-                                            <br />
-                                            <code>settingsPath</code>를 비우면 <code>%LOCALAPPDATA%\\NaverCafeMemberCrawler\\config\\settings.json</code> → <code>&lt;crawlerRepoPath&gt;\\config\\settings.json</code> 순서로 자동 탐색합니다.
-                                        </div>
-                                        <details style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                                            <summary style={{ cursor: 'pointer' }}>크롤러 고급 설정(보통은 비워도 됨)</summary>
-                                            <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-                                                <input
-                                                    className="filter-input"
-                                                    value={rosterCrawlerRepoPath}
-                                                    placeholder="크롤러 레포 경로 (기본: C:\\dev\\naver-cafe-member-crawler)"
-                                                    onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { crawlerRepoPath: e.target.value })}
-                                                />
-                                                <input
-                                                    className="filter-input"
-                                                    value={rosterCrawlerPythonExe}
-                                                    placeholder="크롤러 python.exe 경로 (예: ...\\venv\\Scripts\\python.exe)"
-                                                    onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { crawlerPythonExe: e.target.value })}
-                                                />
-                                                <input
-                                                    className="filter-input"
-                                                    value={rosterCrawlerSettingsPath}
-                                                    placeholder="settings.json 경로(선택, 비우면 자동 탐색)"
-                                                    onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { crawlerSettingsPath: e.target.value })}
-                                                />
-                                            </div>
-                                        </details>
-                                    </>
-                                ) : (
-                                    <input
-                                        className="filter-input"
-                                        value={rosterCafeCsvPath}
-                                        placeholder="카페 멤버 CSV 경로 (레거시)"
-                                        onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { cafeCsvPath: e.target.value })}
-                                    />
-                                )}
-                                <input
-                                    className="filter-input"
-                                    value={rosterJoinUrl}
-                                    placeholder="카페 가입 URL (선택)"
-                                    onChange={(e) => onUpdateCourseRosterConfig?.(room.roomId, { joinUrl: e.target.value })}
-                                />
-                                <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                                    강의 운영 설정을 변경했다면, 아래 <b>저장</b>을 눌러 반영하세요. (런타임 + 강의 운영 설정을 함께 저장)
-                                </div>
-                            </div>
-                        </div>
-                    )}
                 </div>
             </div>
 

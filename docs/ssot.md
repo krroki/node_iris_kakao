@@ -5,6 +5,7 @@
 - 목적: 루팅 안드로이드 + IRIS + Hyper-V 리눅스 봇 서버 조합으로 카카오톡 오픈채팅(명령어, 환영, 방송)을 안정적으로 운영.
 - 현재 상태: Hyper-V/루팅 단말 기반 설치 가이드 정리 및 요구사항 문서 갱신 완료 (2025-10-28).
 
+- 2025-12-19: 강의 운영 UI 정리 — RoomCard의 강의 운영(카페 CSV/시트 입력) 제거, `/course` 탭에서 코스 자동 감지 + v2(등급 기반 참여 점검) 설정/워커 관리로 통합. v1 roster-worker는 `rosterSheetName` 미설정 시 방 이름 접두어로 기본 탭명(`ROSTER_CHAT/ROSTER_NOTICE/ROSTER_PREMIUM`)을 추론한다.
 - 2025-12-12: welcome 템플릿 SSOT 정합성 강화(신규입장/`welcome:test`에서 runtime.json.templateByFeature.welcome → welcomeTemplateName 순으로만 사용) 및 템플릿 미존재 시 기본 환영 폴백 발송 금지.
 - 2025-12-12: KB 스케줄 영속화(`secrets.KB_SCHEDULE_JSON`) + 서비스 재시작 시 스케줄러 자동 재개(즉시 1회 실행), 작업 실행은 `windows/kb_task_runner.ps1`(task별 lock + 의존성 자동 보정)로 통일.
 - 2025-12-12: RAG 라우팅/일반 상식 경로 개선 — node-iris는 `?디하클` 접두어를 제거한 질문 본문 + `context_tags`(기본 `dinohighclass`, 필요 시 `sajulab*`)를 KB로 전달, KB는 `context_tags`가 있으면 기본적으로 도메인(RAG) 경로를 시도하되 유튜브 수익화/venv 등 명백한 일반 상식 질문은 `general_out_of_scope`로 처리(고정 프리픽스 + URL 출력 금지).

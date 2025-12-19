@@ -52,6 +52,17 @@ type WorkerState = {
   updatedAt: string;
 };
 
+type IrisMediaHealthRoom = {
+  lastOkAt?: number;
+  lastFailAt?: number;
+  consecutiveFails?: number;
+};
+
+type IrisMediaHealthFile = {
+  updatedAt: string;
+  rooms: Record<string, IrisMediaHealthRoom>;
+};
+
 const logger = new Logger("broadcast-worker");
 
 const STATE_PATH = path.join(APP_ROOT, "data", "broadcast_worker_state.json");
@@ -74,10 +85,15 @@ const IRIS_SENDER_ID = "434886784";
 // 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
 const IRIS_MEDIA_MIN_GAP_MS = 1000;
 const IRIS_MEDIA_RETRY_GAP_MS = 2500;
-const IRIS_MEDIA_MAX_ATTEMPTS = 3; // 1회 + retry 2회
-const IRIS_MEDIA_ECHO_TIMEOUT_MS = 15_000;
+const IRIS_MEDIA_MAX_ATTEMPTS = 2; // 1회 + retry 1회 (체감 속도 개선)
+const IRIS_MEDIA_ECHO_TIMEOUT_MS = 8000;
 const IRIS_MEDIA_ECHO_POLL_MS = 700;
 const IRIS_MEDIA_LOG_SCAN_BYTES = 256 * 1024;
+
+// 최근에 IRIS 이미지 발송이 실패했던 방은, 같은 공지 내에서 추가 retry를 시도해도 체감 속도만 느려지는 경우가 많다.
+// 따라서 "최근 실패(10분)" 방은 첫 시도까지만 하고, 같은 공지 내 retry 대상에서 제외한다.
+const IRIS_MEDIA_HEALTH_PATH = path.join(APP_ROOT, "data", "iris_media_health.json");
+const IRIS_MEDIA_RECENT_FAIL_TTL_MS = 10 * 60 * 1000;
 
 // (Legacy) mirror marker detection
 // - 과거에는 루프 방지용으로 텍스트 끝에 숨김 마커를 붙였으나, 일부 환경에서 zero-width가 제거되며
@@ -200,6 +216,84 @@ async function writeJsonAtomic(dst: string, data: unknown): Promise<void> {
         console.error("[broadcast-worker] cleanup tmp failed:", e);
       }
     }
+  }
+}
+
+function numOrZero(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function getIrisMediaRoomHealthSnapshot(health: IrisMediaHealthFile, roomId: string): IrisMediaHealthRoom {
+  const rid = safeString(roomId);
+  if (!rid) return {};
+  const raw = health.rooms[rid];
+  if (!raw || typeof raw !== "object") return {};
+  return {
+    lastOkAt: numOrZero((raw as any).lastOkAt) || undefined,
+    lastFailAt: numOrZero((raw as any).lastFailAt) || undefined,
+    consecutiveFails: numOrZero((raw as any).consecutiveFails) || undefined,
+  };
+}
+
+function hasRecentIrisMediaFail(room: IrisMediaHealthRoom, nowMs: number): boolean {
+  const lastFailAt = numOrZero(room.lastFailAt);
+  if (!lastFailAt) return false;
+  return nowMs - lastFailAt < IRIS_MEDIA_RECENT_FAIL_TTL_MS;
+}
+
+async function loadIrisMediaHealth(): Promise<IrisMediaHealthFile> {
+  const obj = await readJsonSafe(IRIS_MEDIA_HEALTH_PATH);
+  const roomsRaw = obj.rooms;
+  const rooms = (roomsRaw && typeof roomsRaw === "object") ? (roomsRaw as Record<string, unknown>) : {};
+
+  const outRooms: Record<string, IrisMediaHealthRoom> = {};
+  for (const [rid, v] of Object.entries(rooms)) {
+    if (!rid || !v || typeof v !== "object") continue;
+    const r: any = v;
+    const lastOkAt = numOrZero(r.lastOkAt) || undefined;
+    const lastFailAt = numOrZero(r.lastFailAt) || undefined;
+    const consecutiveFails = numOrZero(r.consecutiveFails) || undefined;
+    if (!lastOkAt && !lastFailAt && !consecutiveFails) continue;
+    outRooms[rid] = { lastOkAt, lastFailAt, consecutiveFails };
+  }
+
+  const updatedAt = typeof obj.updatedAt === "string" && obj.updatedAt ? obj.updatedAt : new Date().toISOString();
+  return { updatedAt, rooms: outRooms };
+}
+
+async function updateIrisMediaHealthBatch(ok: Set<string>, failed: Set<string>): Promise<void> {
+  try {
+    const cur = await loadIrisMediaHealth();
+    const nowMs = Date.now();
+
+    const rooms: Record<string, IrisMediaHealthRoom> = { ...cur.rooms };
+
+    for (const rid0 of failed) {
+      const rid = safeString(rid0);
+      if (!rid) continue;
+      const prev = rooms[rid] || {};
+      const prevConsecutive = numOrZero(prev.consecutiveFails);
+      rooms[rid] = {
+        ...prev,
+        lastFailAt: nowMs,
+        consecutiveFails: prevConsecutive + 1,
+      };
+    }
+
+    for (const rid0 of ok) {
+      const rid = safeString(rid0);
+      if (!rid) continue;
+      const prev = rooms[rid] || {};
+      rooms[rid] = {
+        ...prev,
+        lastOkAt: nowMs,
+        consecutiveFails: 0,
+      };
+    }
+
+    await writeJsonAtomic(IRIS_MEDIA_HEALTH_PATH, { updatedAt: new Date().toISOString(), rooms });
+  } catch {
+    // keep best-effort only (no fallback)
   }
 }
 
@@ -534,8 +628,34 @@ async function dispatchIrisImagesToTargets(
   }
   if (unique.length === 0) return new Set();
 
+  const health = await loadIrisMediaHealth();
+  const roomHealthAtStart = new Map<string, IrisMediaHealthRoom>();
+  for (const rid of unique) {
+    roomHealthAtStart.set(rid, getIrisMediaRoomHealthSnapshot(health, rid));
+  }
+
   const okFinal = new Set<string>();
-  let pending = unique;
+  const nowMsAtStart = Date.now();
+  const pendingInitial = unique
+    .slice()
+    .sort((a, b) => {
+      const ha = roomHealthAtStart.get(a) || {};
+      const hb = roomHealthAtStart.get(b) || {};
+      const fa = hasRecentIrisMediaFail(ha, nowMsAtStart) ? 1 : 0;
+      const fb = hasRecentIrisMediaFail(hb, nowMsAtStart) ? 1 : 0;
+      if (fa !== fb) return fa - fb; // recent-fail last
+
+      const oka = numOrZero(ha.lastOkAt);
+      const okb = numOrZero(hb.lastOkAt);
+      if (oka !== okb) return okb - oka; // recent-ok first
+
+      const la = numOrZero(ha.lastFailAt);
+      const lb = numOrZero(hb.lastFailAt);
+      if (la !== lb) return la - lb; // older fail first (more chance to recover)
+
+      return String(a).localeCompare(String(b));
+    });
+  let pending = pendingInitial;
 
   const gaps = Array.isArray(gapMsList) && gapMsList.length > 0 ? gapMsList : [IRIS_MEDIA_MIN_GAP_MS, IRIS_MEDIA_RETRY_GAP_MS];
   const maxAttempts = Math.max(1, Math.min(IRIS_MEDIA_MAX_ATTEMPTS, gaps.length));
@@ -561,9 +681,19 @@ async function dispatchIrisImagesToTargets(
       }
     }
 
-    // 마지막 attempt가 아니면, retry는 더 느린 gap로만 진행되도록 한다.
-    pending = nextPending;
+    if (attempt >= maxAttempts - 1) break;
+
+    // 같은 공지 내에서 반복 실패 방의 retry는 체감 속도만 느려질 수 있어,
+    // "최근 실패" 방은 retry 대상에서 제외한다.
+    const nowMs = Date.now();
+    pending = nextPending.filter((rid) => !hasRecentIrisMediaFail(roomHealthAtStart.get(rid) || {}, nowMs));
   }
+
+  const failedFinal = new Set<string>();
+  for (const rid of unique) {
+    if (!okFinal.has(rid)) failedFinal.add(rid);
+  }
+  await updateIrisMediaHealthBatch(okFinal, failedFinal);
 
   return okFinal;
 }
@@ -777,8 +907,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       } else {
         const gapFast = Math.max(delayMs, IRIS_MEDIA_MIN_GAP_MS);
         const gapRetry = Math.max(delayMs, IRIS_MEDIA_RETRY_GAP_MS);
-        const gapRetry2 = Math.max(delayMs, IRIS_MEDIA_RETRY_GAP_MS * 2);
-        const okSet = await dispatchIrisImagesToTargets(irisImageTargets, imagesBase64, [gapFast, gapRetry, gapRetry2]);
+        const okSet = await dispatchIrisImagesToTargets(irisImageTargets, imagesBase64, [gapFast, gapRetry]);
         for (const rid of irisImageTargets) {
           imageOkByTarget.set(rid, okSet.has(rid));
         }

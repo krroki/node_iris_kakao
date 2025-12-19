@@ -246,12 +246,19 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
 
 ### 10.1) UI에서 어디를 설정하나?
 
-- UI: `http://127.0.0.1:3100`
-- 상단 카드: **강의 운영 v2 (등급 기반 참여 점검)**
+- UI: `http://127.0.0.1:3100/course` (강의 운영 탭)
+- 상단: **강의톡방 자동 감지** + v2 설정 저장/워커 재시작/서비스계정 업로드
+  - 코스 자동 감지: 방 이름 접두어 `(사담방)`/`(공지방)`/`(프리미엄방)` 기준으로 3방을 1코스로 묶음
+  - 감지된 코스를 v2 설정에 추가하는 버튼 제공(초기에는 enabled=false 권장)
+- 코스 카드(코스 단위)
+  - `clubId`(카페 URL/clubId 입력 → 숫자 clubId로 설정)
+  - `spreadsheetId`(URL 또는 ID)
+  - 탭 이름(기본값: `CAFE_RAW`/`OPENCHAT_RAW`/`RULES_RAW`/`AUDIT_VIEW`/`AUDIT_LOG`)
+  - 등급 규칙: `premiumGrades`, `staffGrades` (그 외 등급은 일반/새싹 취급)
+- 하단: **v2 워커 설정(전역)**
   - 워커 ON/OFF(`worker.enabled`)
   - 주기(초반/안정화): `hotIntervalSec`, `hotDays`, `steadyIntervalSec`
   - 크롤러 경로: `crawler.repoPath`, `crawler.pythonExe`, `crawler.settingsPath`
-  - 코스별 설정: `clubId`, `spreadsheetId`, 탭 이름, 등급 규칙, (필요 시) roomId override
 
 > 중요: Google Sheets 쓰기 권한은 **Chrome 로그인**이 아니라 **서비스 계정** 권한이다.  
 > 시트 문서에 서비스 계정 이메일을 **Editor**로 공유해야 업서트가 된다.

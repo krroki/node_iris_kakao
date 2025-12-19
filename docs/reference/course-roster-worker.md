@@ -63,12 +63,11 @@
 
 UI(대시보드)에서의 위치:
 
-- `localhost:3100` → 방 카드(RoomCard) → **강의 운영** 섹션
-  - `강의톡방` 배지/토글: 방 이름 접두어로 자동 추론(예: `(사담방)`, `(공지방)`, `(프리미엄방)`) + 수동 override 가능
-  - `카페/닉네임 검증` 토글: `runtime.features[roomId].courseRoster`를 제어(켜면 워커가 멘션 안내/시트 업서트를 수행)
-  - roomId별 `spreadsheetId/rosterSheetName/cafeSource/cafeUrl/cafeClubId/joinUrl` 설정은 **UI에서 직접 입력 후 저장**한다(파일: `data/course_roster_worker.json`).
-    - CSV(`cafeCsvPath`)는 레거시 옵션이며, 기본/권장은 크롤러(`cafeSource=crawler`)다.
-  - 서비스 계정 JSON도 **UI에서 업로드** 가능하다(파일: `data/gcp_service_account.json`).
+- `http://127.0.0.1:3100/course` → **강의 운영** 탭(코스 단위)
+  - 코스 자동 감지: 방 이름 접두어 `(사담방)`/`(공지방)`/`(프리미엄방)` 기준으로 3방을 1코스로 묶는다.
+  - (레거시 v1) `courseRoster` 런타임 토글: 코스 카드에서 3방을 한 번에 ON/OFF (`runtime.features[roomId].courseRoster`).
+  - v1 roomId별 시트/카페 설정은 파일로 유지: `data/course_roster_worker.json` (CSV(`cafeCsvPath`)는 레거시).
+  - 서비스 계정 JSON 업로드: `/course`에서 업로드(파일: `data/gcp_service_account.json`).
 
 ---
 
@@ -124,7 +123,7 @@ UI(대시보드)에서의 위치:
 
 roster-worker는 강의별 스프레드시트 탭에 **key 기반 upsert**를 수행한다.
 
-- 탭 기본값(UI): `(사담방)`→`ROSTER_CHAT`, `(공지방)`→`ROSTER_NOTICE`, `(프리미엄방)`→`ROSTER_PREMIUM` (미매칭이면 `ROSTER_RAW`)
+- 탭 기본값: `rosterSheetName`이 비어있으면 방 이름 접두어로 추론한다: `(사담방)`→`ROSTER_CHAT`, `(공지방)`→`ROSTER_NOTICE`, `(프리미엄방)`→`ROSTER_PREMIUM` (추론 실패 시 해당 room 설정은 disabled)
 
 - key: `roomId:kakaoUserId`
 - 서비스 계정 JSON: `data/gcp_service_account.json` (gitignore)

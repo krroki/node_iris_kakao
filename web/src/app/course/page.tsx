@@ -1,226 +1,281 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "../dashboard.css";
-
-import type { CourseRosterConfig, CourseRosterRoomConfig } from "../../types";
+import { CourseMembershipAuditConfig, CourseMembershipAuditCourse, RoomInfo } from "../../types";
 
 type RoomType = "chat" | "notice" | "premium";
 
-type RoomInfo = {
-  roomId: string;
-  roomName: string;
-  activeMembersCount?: number | null;
-};
+function normStr(v: unknown): string {
+  return String(v ?? "").trim();
+}
 
-type CourseGroup = {
-  courseKey: string;
-  rooms: Partial<Record<RoomType, RoomInfo>>;
-};
-
-function normStr(v: any): string {
-  return String(v || "").trim();
+function splitList(raw: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of String(raw || "")
+    .split(/[,\n/]/g)
+    .map((s) => s.trim())
+    .filter(Boolean)) {
+    if (seen.has(part)) continue;
+    seen.add(part);
+    out.push(part);
+  }
+  return out;
 }
 
 function extractNaverCafeClubId(raw: string): string {
-  const s = normStr(raw);
+  const s = String(raw || "").trim();
   if (!s) return "";
-  const m = s.match(/[?&]clubid=(\d{3,})/i);
-  return m ? String(m[1]) : "";
+  const m = s.match(/(?:clubid|clubId|search\.clubid|search\.clubId)=(\d+)/i);
+  if (m && m[1]) return String(m[1]).trim();
+  const m2 = s.match(/\/cafes\/(\d+)/i);
+  if (m2 && m2[1]) return String(m2[1]).trim();
+  return "";
 }
 
-function inferRoomTypeAndCourseKey(roomNameRaw: string): { roomType: RoomType; courseKey: string } | null {
-  const s = normStr(roomNameRaw);
+function inferRoomTypeAndCourseKey(roomName: string): { roomType: RoomType; courseKey: string } | null {
+  const s = String(roomName || "").trim();
   if (!s) return null;
-  const m = s.match(/^\((사담방|공지방|프리미엄방)\)\s*(.+)$/);
+  const m = s.match(/^(?:\d+\.)?\s*(?:\(([^)]+)\)|\[([^\]]+)\])\s*(.+)$/);
   if (!m) return null;
-  const prefix = String(m[1]);
-  const courseKey = normStr(m[2]);
-  const roomType: RoomType =
-    prefix === "사담방" ? "chat" :
-      (prefix === "공지방" ? "notice" : "premium");
-  if (!courseKey) return null;
-  return { roomType, courseKey };
+  const prefix = String(m[1] || m[2] || "").trim();
+  const base = String(m[3] || "").trim();
+  if (!prefix || !base) return null;
+
+  const p = prefix.replace(/\s+/g, "");
+  if (p.includes("사담")) return { roomType: "chat", courseKey: base };
+  if (p.includes("공지")) return { roomType: "notice", courseKey: base };
+  if (p.includes("프리미엄")) return { roomType: "premium", courseKey: base };
+  return null;
 }
 
-function inferRosterSheetName(roomType: RoomType): string {
-  if (roomType === "chat") return "ROSTER_CHAT";
-  if (roomType === "notice") return "ROSTER_NOTICE";
-  return "ROSTER_PREMIUM";
+function ensureAuditConfigBase(prev: CourseMembershipAuditConfig | null): CourseMembershipAuditConfig {
+  if (prev && typeof prev === "object") return prev;
+  return {
+    version: 1,
+    worker: {
+      enabled: false,
+      hotIntervalSec: 600,
+      hotDays: 14,
+      steadyIntervalSec: 10800,
+      crawler: {
+        repoPath: "C:\\dev\\naver-cafe-member-crawler",
+        pythonExe: "C:\\dev\\naver-cafe-member-crawler\\venv\\Scripts\\python.exe",
+        settingsPath: "",
+      },
+    },
+    courses: {},
+  };
 }
 
-function pickUniformValue(values: string[]): { value: string; mixed: boolean } {
-  const uniq = Array.from(new Set(values.map((v) => normStr(v)).filter((v) => v.length > 0)));
-  if (uniq.length === 1) return { value: uniq[0], mixed: false };
-  if (uniq.length === 0) return { value: "", mixed: false };
-  return { value: "", mixed: true };
+function ensureAuditCourseBase(prev: CourseMembershipAuditCourse | null | undefined): CourseMembershipAuditCourse {
+  const base: CourseMembershipAuditCourse = {
+    enabled: true,
+    clubId: "",
+    spreadsheetId: "",
+    tabs: {
+      cafeRaw: "CAFE_RAW",
+      openchatRaw: "OPENCHAT_RAW",
+      rulesRaw: "RULES_RAW",
+      audit: "AUDIT_VIEW",
+      auditLog: "AUDIT_LOG",
+    },
+    gradeRules: {
+      premiumGrades: [],
+      staffGrades: [],
+    },
+    rooms: { chat: "", notice: "", premium: "" },
+  };
+  if (!prev || typeof prev !== "object") return base;
+  return {
+    ...base,
+    ...prev,
+    tabs: { ...base.tabs, ...(prev.tabs || {}) },
+    gradeRules: { ...base.gradeRules, ...(prev.gradeRules || {}) },
+    rooms: { ...base.rooms, ...(prev.rooms || {}) },
+  };
 }
 
 export default function CourseOpsPage() {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
+  const [roomsError, setRoomsError] = useState<string | null>(null);
 
-  const [courseRosterConfig, setCourseRosterConfig] = useState<CourseRosterConfig | null>(null);
-  const [courseRosterConfigExists, setCourseRosterConfigExists] = useState<boolean>(false);
-  const [courseRosterConfigPath, setCourseRosterConfigPath] = useState<string | null>(null);
-  const [courseRosterConfigDirty, setCourseRosterConfigDirty] = useState<boolean>(false);
-  const [courseRosterConfigSaving, setCourseRosterConfigSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [courseRosterConfigError, setCourseRosterConfigError] = useState<string | null>(null);
-  const [courseRosterServiceAccount, setCourseRosterServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
+  const [runtime, setRuntime] = useState<any | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runtimeSaving, setRuntimeSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
-  const [filter, setFilter] = useState<string>("");
+  const [auditConfig, setAuditConfig] = useState<CourseMembershipAuditConfig | null>(null);
+  const [auditExists, setAuditExists] = useState(false);
+  const [auditPath, setAuditPath] = useState<string | null>(null);
+  const [auditDirty, setAuditDirty] = useState(false);
+  const [auditSaving, setAuditSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditServiceAccount, setAuditServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
+  const [gradeTextByCourse, setGradeTextByCourse] = useState<Record<string, { premiumText: string; staffText: string }>>({});
 
-  const roomsById = useMemo(() => {
-    const m = new Map<string, RoomInfo>();
-    for (const r of rooms) m.set(String(r.roomId), r);
-    return m;
-  }, [rooms]);
+  const [auditWorkerStatus, setAuditWorkerStatus] = useState<any | null>(null);
+  const [auditWorkerStatusError, setAuditWorkerStatusError] = useState<string | null>(null);
 
-  const courses = useMemo(() => {
-    const grouped = new Map<string, Partial<Record<RoomType, RoomInfo>>>();
-    for (const r of rooms) {
+  const inferredCourses = useMemo(() => {
+    const grouped: Record<string, Record<RoomType, RoomInfo[]>> = {};
+    for (const r of rooms || []) {
       const inf = inferRoomTypeAndCourseKey(r.roomName);
       if (!inf) continue;
-      const cur = grouped.get(inf.courseKey) || {};
-      cur[inf.roomType] = r;
-      grouped.set(inf.courseKey, cur);
+      grouped[inf.courseKey] ||= { chat: [], notice: [], premium: [] };
+      grouped[inf.courseKey][inf.roomType].push(r);
     }
-    const list: CourseGroup[] = [];
-    for (const [courseKey, roomsMap] of grouped.entries()) {
-      list.push({ courseKey, rooms: roomsMap });
-    }
-    list.sort((a, b) => a.courseKey.localeCompare(b.courseKey));
+    const keys = Object.keys(grouped).sort();
+    return keys.map((k) => ({ courseKey: k, rooms: grouped[k] }));
+  }, [rooms]);
 
-    const f = normStr(filter).toLowerCase();
-    if (!f) return list;
-    return list.filter((c) => c.courseKey.toLowerCase().includes(f));
-  }, [rooms, filter]);
+  const courseKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const c of inferredCourses) keys.add(c.courseKey);
+    for (const k of Object.keys(auditConfig?.courses || {})) keys.add(k);
+    return Array.from(keys).sort();
+  }, [inferredCourses, auditConfig]);
+
+  const courseOpsSendEnabled = useMemo(() => {
+    const co = runtime && typeof runtime === "object" ? (runtime as any).courseOps : null;
+    return !!(co && typeof co === "object" && (co as any).sendEnabled === true);
+  }, [runtime]);
 
   const loadRooms = useCallback(async () => {
-    const r = await fetch(`/api/rooms`, { cache: "no-store" });
-    const j: any = await r.json().catch(() => null);
-    const list: any[] = Array.isArray(j?.rooms)
-      ? j.rooms
-      : Array.isArray(j?.data?.rooms)
-        ? j.data.rooms
-        : Array.isArray(j?.data)
-          ? j.data
-          : [];
-    const out: RoomInfo[] = [];
-    for (const it of list) {
-      if (!it || typeof it !== "object") continue;
-      const roomId = normStr((it as any).roomId);
-      const roomName = normStr((it as any).roomName);
-      if (!roomId || !roomName) continue;
-      out.push({
-        roomId,
-        roomName,
-        activeMembersCount: (it as any).activeMembersCount ?? null,
-      });
-    }
-    out.sort((a, b) => a.roomName.localeCompare(b.roomName));
-    setRooms(out);
-  }, []);
-
-  const loadCourseRosterConfig = useCallback(async () => {
     try {
-      const r = await fetch(`/api/course-roster/config`, { cache: "no-store" });
+      setRoomsError(null);
+      const r = await fetch(`/api/rooms`, { cache: "no-store" });
       const j: any = await r.json().catch(() => null);
-      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
-
-      setCourseRosterConfigExists(!!j.exists);
-      setCourseRosterConfigPath(j.path ? String(j.path) : null);
-      setCourseRosterServiceAccount(j.serviceAccount && typeof j.serviceAccount === "object" ? j.serviceAccount : { exists: false });
-
-      const cfg: CourseRosterConfig = (j.config && typeof j.config === "object")
-        ? (j.config as CourseRosterConfig)
-        : ({ version: 1, rooms: {} } as CourseRosterConfig);
-      setCourseRosterConfig(cfg);
-      setCourseRosterConfigError(null);
+      if (!r.ok) throw new Error(String(j?.detail || j?.error || `HTTP ${r.status}`));
+      if (!Array.isArray(j)) throw new Error("rooms_bad_shape");
+      setRooms(j as RoomInfo[]);
     } catch (e: any) {
-      setCourseRosterConfigError(String(e?.message || e));
-      setCourseRosterConfig((prev) => prev || ({ version: 1, rooms: {} } as CourseRosterConfig));
+      setRoomsError(String(e?.message || e));
+      setRooms([]);
     }
   }, []);
 
-  useEffect(() => {
-    void loadRooms();
-    void loadCourseRosterConfig();
-  }, [loadRooms, loadCourseRosterConfig]);
-
-  const updateRoomCfg = useCallback((roomId: string, patch: Partial<CourseRosterRoomConfig>) => {
-    const rid = normStr(roomId);
-    if (!rid) return;
-    setCourseRosterConfig((prev) => {
-      const base: CourseRosterConfig = (prev && typeof prev === "object") ? prev : ({ version: 1, rooms: {} } as CourseRosterConfig);
-      const nextRooms: Record<string, any> = { ...(base.rooms || {}) };
-      const cur = (nextRooms[rid] && typeof nextRooms[rid] === "object") ? nextRooms[rid] : {};
-      const next: any = { ...cur, ...patch };
-      if (next.enabled === undefined) next.enabled = true;
-      nextRooms[rid] = next;
-      return { ...base, version: Number(base.version) || 1, rooms: nextRooms };
-    });
-    setCourseRosterConfigDirty(true);
-  }, []);
-
-  const updateCourseCfg = useCallback((course: CourseGroup, patch: Partial<CourseRosterRoomConfig>) => {
-    const roomIds: string[] = [];
-    for (const rt of ["chat", "notice", "premium"] as RoomType[]) {
-      const r = course.rooms[rt];
-      if (r?.roomId) roomIds.push(r.roomId);
-    }
-    for (const rid of roomIds) updateRoomCfg(rid, patch);
-  }, [updateRoomCfg]);
-
-  const saveCourseRosterConfig = useCallback(async (): Promise<boolean> => {
+  const loadRuntime = useCallback(async () => {
     try {
-      setCourseRosterConfigSaving("saving");
-      const cfg = courseRosterConfig && typeof courseRosterConfig === "object"
-        ? courseRosterConfig
-        : ({ version: 1, rooms: {} } as CourseRosterConfig);
+      setRuntimeError(null);
+      const r = await fetch(`/api/runtime`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setRuntime(j);
+    } catch (e: any) {
+      setRuntimeError(String(e?.message || e));
+      setRuntime(null);
+    }
+  }, []);
 
-      // normalize rosterSheetName: 빈칸이면 roomType별 기본값 적용
-      const inRooms = (cfg.rooms && typeof cfg.rooms === "object") ? cfg.rooms : {};
-      const outRooms: Record<string, any> = {};
-      for (const [rid, v] of Object.entries(inRooms || {})) {
-        const cur: any = (v && typeof v === "object") ? v : {};
-        const roomName = roomsById.get(String(rid))?.roomName || "";
-        const inf = inferRoomTypeAndCourseKey(roomName);
-        const defaultTab = inf ? inferRosterSheetName(inf.roomType) : "ROSTER_RAW";
-        const rosterSheetName = normStr(cur.rosterSheetName) || defaultTab;
-        outRooms[String(rid)] = { ...cur, rosterSheetName };
+  const loadAuditConfig = useCallback(async () => {
+    try {
+      setAuditError(null);
+      const r = await fetch(`/api/course-membership-audit/config`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setAuditExists(!!j.exists);
+      setAuditPath(String(j.path || ""));
+      setAuditServiceAccount({
+        exists: !!j?.serviceAccount?.exists,
+        path: String(j?.serviceAccount?.path || ""),
+        clientEmail: j?.serviceAccount?.clientEmail ?? null,
+        error: j?.serviceAccount?.error ?? null,
+      });
+      const loadedCfg = (j?.config || null) as CourseMembershipAuditConfig | null;
+      setAuditConfig(loadedCfg);
+      setGradeTextByCourse(() => {
+        const next: Record<string, { premiumText: string; staffText: string }> = {};
+        for (const [courseKey, courseRaw] of Object.entries((loadedCfg?.courses || {}) as any)) {
+          const c: any = courseRaw as any;
+          next[String(courseKey)] = {
+            premiumText: Array.isArray(c?.gradeRules?.premiumGrades) ? c.gradeRules.premiumGrades.join(", ") : "",
+            staffText: Array.isArray(c?.gradeRules?.staffGrades) ? c.gradeRules.staffGrades.join(", ") : "",
+          };
+        }
+        return next;
+      });
+      setAuditDirty(false);
+    } catch (e: any) {
+      setAuditError(String(e?.message || e));
+      setAuditConfig(null);
+      setGradeTextByCourse({});
+    }
+  }, []);
+
+  const loadAuditWorkerStatus = useCallback(async () => {
+    try {
+      setAuditWorkerStatusError(null);
+      const r = await fetch(`/api/course-membership-audit/status`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setAuditWorkerStatus(j);
+    } catch (e: any) {
+      setAuditWorkerStatusError(String(e?.message || e));
+      setAuditWorkerStatus(null);
+    }
+  }, []);
+
+  const saveAuditConfig = useCallback(async () => {
+    try {
+      const cfgBase = auditConfig && typeof auditConfig === "object" ? auditConfig : null;
+      if (!cfgBase) return false;
+
+      const cfg: CourseMembershipAuditConfig = {
+        ...cfgBase,
+        courses: { ...(cfgBase.courses || {}) },
+      };
+
+      // 등급 규칙 textarea는 입력 중에 콤마가 사라지지 않도록 원문을 별도로 유지한다.
+      // 저장 시점에만 split하여 config에 반영한다.
+      for (const [courseKey, text] of Object.entries(gradeTextByCourse || {})) {
+        const cur = (cfg.courses || {})[courseKey];
+        if (!cur) continue;
+        (cfg.courses as any)[courseKey] = {
+          ...cur,
+          gradeRules: {
+            ...(cur.gradeRules || {}),
+            premiumGrades: splitList((text as any)?.premiumText),
+            staffGrades: splitList((text as any)?.staffText),
+          },
+        };
       }
 
-      const normalized: CourseRosterConfig = { ...cfg, version: Number(cfg.version) || 1, rooms: outRooms };
-      const r = await fetch(`/api/course-roster/config`, {
+      // enabled=true 코스는 필수값이 빠지면 워커가 실패할 수 있으니 UI에서 선제 검증한다.
+      const bad: string[] = [];
+      for (const [courseKey, courseRaw] of Object.entries(cfg.courses || {})) {
+        const c: any = courseRaw as any;
+        if (c?.enabled === false) continue;
+        const clubId = String(c?.clubId || "").trim();
+        const spreadsheetId = String(c?.spreadsheetId || "").trim();
+        if (!clubId || !/^\d+$/.test(clubId)) bad.push(`${courseKey}: clubId(숫자)`);
+        if (!spreadsheetId) bad.push(`${courseKey}: spreadsheetId`);
+      }
+      if (bad.length) {
+        throw new Error(`v2 설정 누락/오류: ${bad.join(", ")}`);
+      }
+
+      setAuditSaving("saving");
+      setAuditError(null);
+      const r = await fetch(`/api/course-membership-audit/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: normalized }),
+        body: JSON.stringify({ config: cfg }),
       });
       const j: any = await r.json().catch(() => null);
       if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
-
-      setCourseRosterConfigDirty(false);
-      setCourseRosterConfigSaving("saved");
-      setTimeout(() => setCourseRosterConfigSaving((s) => (s === "saved" ? "idle" : s)), 2000);
-      await loadCourseRosterConfig();
+      setAuditDirty(false);
+      setAuditSaving("saved");
+      setTimeout(() => setAuditSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      await loadAuditConfig();
       return true;
     } catch (e: any) {
-      setCourseRosterConfigSaving("error");
-      setCourseRosterConfigError(String(e?.message || e));
+      setAuditSaving("error");
+      setAuditError(String(e?.message || e));
       return false;
     }
-  }, [courseRosterConfig, loadCourseRosterConfig, roomsById]);
-
-  const restartRosterWorker = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/course-roster/restart`, { method: "POST" });
-      const j: any = await r.json().catch(() => null);
-      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
-    } catch (e: any) {
-      setCourseRosterConfigError(String(e?.message || e));
-    }
-  }, []);
+  }, [auditConfig, gradeTextByCourse, loadAuditConfig]);
 
   const uploadServiceAccount = useCallback(async (file: File): Promise<boolean> => {
     try {
@@ -229,203 +284,678 @@ export default function CourseOpsPage() {
       const r = await fetch(`/api/course-roster/service-account`, { method: "POST", body: fd });
       const j: any = await r.json().catch(() => null);
       if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
-      await loadCourseRosterConfig();
+      await loadAuditConfig();
       return true;
     } catch (e: any) {
-      setCourseRosterConfigError(String(e?.message || e));
+      setAuditError(String(e?.message || e));
       return false;
     }
-  }, [loadCourseRosterConfig]);
+  }, [loadAuditConfig]);
+
+  const restartAuditWorker = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/course-membership-audit/restart`, { method: "POST" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
+    } catch (e: any) {
+      setAuditWorkerStatusError(String(e?.message || e));
+    }
+  }, []);
+
+  const setCourseOpsSendEnabled = useCallback(async (enabled: boolean) => {
+    try {
+      setRuntimeSaving("saving");
+      setRuntimeError(null);
+      const r = await fetch(`/api/runtime`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ courseOps: { sendEnabled: enabled } }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(String(j?.detail || j?.error || `HTTP ${r.status}`));
+      await loadRuntime();
+      setRuntimeSaving("saved");
+      setTimeout(() => setRuntimeSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      return true;
+    } catch (e: any) {
+      setRuntimeSaving("error");
+      setRuntimeError(String(e?.message || e));
+      return false;
+    }
+  }, [loadRuntime]);
+
+  const updateRuntime = useCallback(async (nextFeatures: Record<string, any>) => {
+    if (!runtime) return false;
+    try {
+      setRuntimeSaving("saving");
+      setRuntimeError(null);
+      const excludedRoomIds: string[] = Array.isArray(runtime?.excludedRoomIds) ? runtime.excludedRoomIds : [];
+      const allowedRoomIds = Object.keys(nextFeatures || {}).filter((rid) => {
+        if (excludedRoomIds.includes(rid)) return false;
+        const f = nextFeatures[rid] || {};
+        return !!(f.welcome || f.broadcast || f.schedules || f.ai || f.chatSummary || f.commands || f.autoFaq || f.courseRoster || f.nicknameReminder || f.imageGen || f.videoGen);
+      });
+
+      const r = await fetch(`/api/runtime`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          features: nextFeatures,
+          excludedRoomIds,
+          allowedRoomIds,
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      await loadRuntime();
+      setRuntimeSaving("saved");
+      setTimeout(() => setRuntimeSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      return true;
+    } catch (e: any) {
+      setRuntimeSaving("error");
+      setRuntimeError(String(e?.message || e));
+      return false;
+    }
+  }, [runtime, loadRuntime]);
+
+  const setCourseRosterEnabledForCourse = useCallback(async (courseKey: string, enabled: boolean) => {
+    const base = runtime && typeof runtime === "object" ? runtime : null;
+    if (!base) return;
+    const features: Record<string, any> = (base.features && typeof base.features === "object") ? base.features : {};
+
+    const inferred = inferredCourses.find((c) => c.courseKey === courseKey);
+    if (!inferred) return;
+
+    const pickOne = (rt: RoomType): string | null => {
+      const arr = inferred.rooms[rt] || [];
+      if (arr.length !== 1) return null;
+      return normStr(arr[0]?.roomId) || null;
+    };
+    const targets = [pickOne("chat"), pickOne("notice"), pickOne("premium")].filter(Boolean) as string[];
+    if (!targets.length) return;
+
+    const next: Record<string, any> = { ...features };
+    for (const rid of targets) {
+      next[rid] = { ...(next[rid] || {}), courseRoster: enabled };
+    }
+    setRuntime((prev: any) => ({ ...(prev || {}), features: next }));
+    await updateRuntime(next);
+  }, [runtime, inferredCourses, updateRuntime]);
+
+  const addAllDetectedCourses = useCallback(() => {
+    setAuditConfig((prev) => {
+      const base = ensureAuditConfigBase(prev);
+      const nextCourses: Record<string, CourseMembershipAuditCourse> = { ...(base.courses || {}) };
+      for (const c of inferredCourses) {
+        if (nextCourses[c.courseKey]) continue;
+        const cc = ensureAuditCourseBase(null);
+        cc.enabled = false;
+        const pick = (rt: RoomType): string => {
+          const arr = c.rooms[rt] || [];
+          if (arr.length !== 1) return "";
+          return normStr(arr[0]?.roomId);
+        };
+        cc.rooms = { chat: pick("chat"), notice: pick("notice"), premium: pick("premium") };
+        nextCourses[c.courseKey] = cc;
+      }
+      return { ...base, courses: nextCourses };
+    });
+    setAuditDirty(true);
+  }, [inferredCourses]);
+
+  const ensureCourseEntry = useCallback((courseKey: string) => {
+    setAuditConfig((prev) => {
+      const base = ensureAuditConfigBase(prev);
+      const cur = (base.courses || {})[courseKey];
+      if (cur) return base;
+
+      const inferred = inferredCourses.find((c) => c.courseKey === courseKey);
+      const cc = ensureAuditCourseBase(null);
+      cc.enabled = false;
+      const pick = (rt: RoomType): string => {
+        const arr = inferred?.rooms?.[rt] || [];
+        if (arr.length !== 1) return "";
+        return normStr(arr[0]?.roomId);
+      };
+      cc.rooms = { chat: pick("chat"), notice: pick("notice"), premium: pick("premium") };
+      return { ...base, courses: { ...(base.courses || {}), [courseKey]: cc } };
+    });
+    setAuditDirty(true);
+  }, [inferredCourses]);
+
+  const applyInferredRooms = useCallback((courseKey: string) => {
+    const inferred = inferredCourses.find((c) => c.courseKey === courseKey);
+    if (!inferred) return;
+    setAuditConfig((prev) => {
+      const base = ensureAuditConfigBase(prev);
+      const cur = ensureAuditCourseBase((base.courses || {})[courseKey]);
+      const pick = (rt: RoomType): string => {
+        const arr = inferred.rooms[rt] || [];
+        if (arr.length !== 1) return (cur.rooms as any)?.[rt] || "";
+        return normStr(arr[0]?.roomId);
+      };
+      const nextCourse: CourseMembershipAuditCourse = { ...cur, rooms: { chat: pick("chat"), notice: pick("notice"), premium: pick("premium") } };
+      return { ...base, courses: { ...(base.courses || {}), [courseKey]: nextCourse } };
+    });
+    setAuditDirty(true);
+  }, [inferredCourses]);
+
+  const updateCourseField = useCallback((courseKey: string, patch: Partial<CourseMembershipAuditCourse>) => {
+    setAuditConfig((prev) => {
+      const base = ensureAuditConfigBase(prev);
+      const cur = ensureAuditCourseBase((base.courses || {})[courseKey]);
+      const nextCourse: CourseMembershipAuditCourse = {
+        ...cur,
+        ...patch,
+        tabs: { ...(cur.tabs || {}), ...(patch.tabs || {}) },
+        gradeRules: { ...(cur.gradeRules || {}), ...(patch.gradeRules || {}) },
+        rooms: { ...(cur.rooms || {}), ...(patch.rooms || {}) },
+      };
+      return { ...base, courses: { ...(base.courses || {}), [courseKey]: nextCourse } };
+    });
+    setAuditDirty(true);
+  }, []);
+
+  useEffect(() => {
+    void loadRooms();
+    void loadRuntime();
+    void loadAuditConfig();
+    void loadAuditWorkerStatus();
+    const t = setInterval(() => void loadAuditWorkerStatus(), 5000);
+    return () => clearInterval(t);
+  }, [loadRooms, loadRuntime, loadAuditConfig, loadAuditWorkerStatus]);
 
   return (
-    <main className="dashboard-main">
-      <div className="dashboard-container">
-        <div className="pipeline-card" style={{ marginTop: 12 }}>
-          <div className="pipeline-header" style={{ marginBottom: 10 }}>
-            <div className="pipeline-title">강의 운영</div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <span className="tag tag-excluded" title={courseRosterConfigPath || ""}>
-                설정파일 {courseRosterConfigExists ? "OK" : "없음"}
-              </span>
-              <span className={`tag ${courseRosterServiceAccount.exists ? "tag-active" : "tag-excluded"}`} title={courseRosterServiceAccount.path || ""}>
-                서비스계정 {courseRosterServiceAccount.exists ? "OK" : "없음"}
-              </span>
-              {courseRosterServiceAccount.clientEmail && (
-                <span className="tag tag-excluded" title="서비스계정 이메일">{courseRosterServiceAccount.clientEmail}</span>
-              )}
-            </div>
-          </div>
-
-          <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            - roster-worker의 “15분/24시간 안내”는 신규 입장자 기준으로, 입장 후 약 15분/24시간 시점에 최대 2회 안내(Reply/멘션)를 보내는 정책이다.
-            (SAFE_MODE=true면 발신은 스킵된다)
-          </div>
+    <div className="dashboard-container">
+      <div className="header-section">
+        <div style={{ minWidth: 0 }}>
+          <h1 className="main-title">강의 운영</h1>
+          <p className="sub-title" style={{ marginBottom: 0 }}>
+            코스(강의) 단위로 카페 + 오픈채팅 3방 데이터를 취합해서 Google Sheets에 upsert 합니다.
+          </p>
         </div>
-
-        <div className="pipeline-card" style={{ marginTop: 12 }}>
-          <div className="pipeline-header" style={{ marginBottom: 10 }}>
-            <div className="pipeline-title">강의톡방 v1 (roster-worker) 설정</div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <span className={`tag ${courseRosterConfigDirty ? "tag-inactive" : "tag-active"}`}>
-                저장 {courseRosterConfigDirty ? "미완료" : "OK"}
-              </span>
-              <input
-                className="filter-input"
-                style={{ width: 220, height: 34, marginBottom: 0 }}
-                placeholder="강의명 필터(코스키)"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
-              <button
-                className="btn-outline"
-                style={{ padding: "6px 10px", fontSize: 12 }}
-                disabled={courseRosterConfigSaving === "saving" || !courseRosterConfigDirty}
-                onClick={() => void saveCourseRosterConfig()}
-                title="data/course_roster_worker.json 저장"
-              >
-                {courseRosterConfigSaving === "saving" ? "저장중" : "설정 저장"}
-              </button>
-              <button
-                className="btn-outline"
-                style={{ padding: "6px 10px", fontSize: 12 }}
-                onClick={() => void restartRosterWorker()}
-                title="roster-worker 재기동"
-              >
-                워커 재시작
-              </button>
-              <label className="btn-outline" style={{ padding: "6px 10px", fontSize: 12, cursor: "pointer" }} title="data/gcp_service_account.json 업로드">
-                서비스계정 업로드
-                <input
-                  type="file"
-                  accept="application/json"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) void uploadServiceAccount(f);
-                  }}
-                />
-              </label>
-            </div>
-          </div>
-
-          {(courseRosterConfigError || courseRosterServiceAccount.error) && (
-            <div style={{ fontSize: 12, color: "var(--error)", lineHeight: 1.5, marginBottom: 10 }}>
-              {courseRosterConfigError && (<div>설정 로드/저장 오류: <code>{courseRosterConfigError}</code></div>)}
-              {courseRosterServiceAccount.error && (<div>서비스계정 읽기 오류: <code>{courseRosterServiceAccount.error}</code></div>)}
-            </div>
-          )}
-
-          <div style={{ display: "grid", gap: 12 }}>
-            {courses.map((course) => {
-              const roomIds: string[] = [];
-              for (const rt of ["chat", "notice", "premium"] as RoomType[]) {
-                const r = course.rooms[rt];
-                if (r?.roomId) roomIds.push(r.roomId);
-              }
-
-              const roomCfg = (courseRosterConfig?.rooms && typeof courseRosterConfig.rooms === "object")
-                ? (courseRosterConfig.rooms as any)
-                : {};
-
-              const spreadsheetAgg = pickUniformValue(roomIds.map((rid) => normStr(roomCfg?.[rid]?.spreadsheetId)));
-              const cafeUrlAgg = pickUniformValue(roomIds.map((rid) => normStr(roomCfg?.[rid]?.cafeUrl)));
-              const joinUrlAgg = pickUniformValue(roomIds.map((rid) => normStr(roomCfg?.[rid]?.joinUrl)));
-
-              const spreadsheetId = spreadsheetAgg.value;
-              const cafeUrl = cafeUrlAgg.value;
-              const joinUrl = joinUrlAgg.value;
-
-              return (
-                <div key={course.courseKey} style={{ border: "1px solid var(--border-color)", borderRadius: 12, padding: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <span className="tag tag-course" title="courseKey">{course.courseKey}</span>
-                      {spreadsheetAgg.mixed && <span className="tag tag-inactive" title="방별 SpreadsheetId 값이 다름">시트 혼합</span>}
-                      {cafeUrlAgg.mixed && <span className="tag tag-inactive" title="방별 카페 URL 값이 다름">카페URL 혼합</span>}
-                      {joinUrlAgg.mixed && <span className="tag tag-inactive" title="방별 가입 URL 값이 다름">가입URL 혼합</span>}
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <span className="tag tag-excluded" title="방 3종 자동 추론 기준">(사담방)/(공지방)/(프리미엄방) 접두어</span>
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                    <input
-                      className="filter-input"
-                      value={spreadsheetId}
-                      placeholder="스프레드시트 URL 또는 ID (코스 공통)"
-                      onChange={(e) => updateCourseCfg(course, { spreadsheetId: e.target.value })}
-                    />
-                    <input
-                      className="filter-input"
-                      value={cafeUrl}
-                      placeholder="카페 멤버 URL (코스 공통, clubid 포함)"
-                      onChange={(e) => {
-                        const url = e.target.value;
-                        const clubId = extractNaverCafeClubId(url);
-                        const patch: Partial<CourseRosterRoomConfig> = { cafeSource: "crawler", cafeUrl: url };
-                        if (clubId) patch.cafeClubId = clubId;
-                        updateCourseCfg(course, patch);
-                      }}
-                    />
-                    <input
-                      className="filter-input"
-                      value={joinUrl}
-                      placeholder="카페 가입 URL (코스 공통, 선택)"
-                      onChange={(e) => updateCourseCfg(course, { joinUrl: e.target.value })}
-                    />
-                  </div>
-
-                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
-                    {(["chat", "notice", "premium"] as RoomType[]).map((rt) => {
-                      const r = course.rooms[rt];
-                      const roomId = r?.roomId || "";
-                      const roomName = r?.roomName || "";
-                      const cfg: any = roomId ? (roomCfg?.[roomId] || {}) : {};
-                      const enabled = roomId ? (cfg.enabled !== false) : false;
-                      const rosterSheetName = normStr(cfg.rosterSheetName) || inferRosterSheetName(rt);
-
-                      return (
-                        <div key={rt} style={{ border: "1px solid var(--border-color)", borderRadius: 10, padding: 10, opacity: roomId ? 1 : 0.6 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                              <span className="tag tag-excluded" title={roomId || ""}>
-                                {rt === "chat" ? "사담방" : (rt === "notice" ? "공지방" : "프리미엄방")}
-                              </span>
-                              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{roomName || "방 없음"}</span>
-                            </div>
-                            {roomId && (
-                              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)" }}>
-                                <input
-                                  type="checkbox"
-                                  checked={enabled}
-                                  onChange={(e) => updateRoomCfg(roomId, { enabled: e.target.checked })}
-                                />
-                                사용
-                              </label>
-                            )}
-                          </div>
-
-                          {roomId && (
-                            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-                              <input
-                                className="filter-input"
-                                value={rosterSheetName}
-                                placeholder={`시트 탭 이름 (기본: ${inferRosterSheetName(rt)})`}
-                                onChange={(e) => updateRoomCfg(roomId, { rosterSheetName: e.target.value })}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button className="btn-outline" onClick={() => { void loadRooms(); void loadRuntime(); void loadAuditConfig(); void loadAuditWorkerStatus(); }}>
+            새로고침
+          </button>
+          <button className="btn-save" disabled={!auditDirty || auditSaving === "saving"} onClick={() => void saveAuditConfig()}>
+            {auditSaving === "saving" ? "저장 중…" : "v2 설정 저장"}
+          </button>
         </div>
       </div>
-    </main>
+
+      {(roomsError || runtimeError || auditError || auditWorkerStatusError || auditServiceAccount.error) && (
+        <div
+          className="pipeline-card"
+          style={{
+            marginTop: 12,
+            background: "rgba(239,68,68,0.08)",
+            border: "1px solid var(--border-color)",
+          }}
+        >
+          <div style={{ fontWeight: 800, marginBottom: 6, color: "var(--error)" }}>로드/상태 오류</div>
+          {roomsError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- rooms: <code>{roomsError}</code></div>)}
+          {runtimeError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- runtime: <code>{runtimeError}</code></div>)}
+          {auditError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- v2 config: <code>{auditError}</code></div>)}
+          {auditServiceAccount.error && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- service account: <code>{String(auditServiceAccount.error)}</code></div>)}
+          {auditWorkerStatusError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- v2 worker status: <code>{auditWorkerStatusError}</code></div>)}
+        </div>
+      )}
+
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>강의톡방 자동 감지</h3>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          - 방 이름 접두어 규칙: <code>(사담방)</code> / <code>(공지방)</code> / <code>(프리미엄방)</code>
+          <br />
+          - 접두어 뒤 나머지 이름이 같으면 같은 코스로 묶습니다.
+        </div>
+        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="tag tag-excluded">감지 코스 {inferredCourses.length}개</span>
+          <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={addAllDetectedCourses}>
+            감지 코스 전체를 v2 설정에 추가
+          </button>
+          <span className={`tag ${auditDirty ? "tag-inactive" : "tag-active"}`}>v2 설정 {auditDirty ? "저장 필요" : "OK"}</span>
+          <span className="tag tag-excluded" title={auditPath || ""}>설정파일 {auditExists ? "OK" : "없음"}</span>
+          <span className="tag tag-excluded" title={auditServiceAccount.path || ""}>서비스계정 {auditServiceAccount.exists ? "OK" : "없음"}</span>
+          {auditServiceAccount.clientEmail && (
+            <span className="tag tag-excluded" title="서비스계정 이메일">{auditServiceAccount.clientEmail}</span>
+          )}
+          <span className="tag tag-excluded" title="course-membership-audit-worker status">
+            워커 {auditWorkerStatus?.status?.pid ? `RUN(pid=${auditWorkerStatus.status.pid})` : "N/A"}
+          </span>
+          <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => void restartAuditWorker()}>
+            워커 재시작
+          </button>
+          <button
+            className="btn-save"
+            style={{ padding: "6px 10px", fontSize: 12 }}
+            disabled={!auditDirty || auditSaving === "saving"}
+            onClick={() => void saveAuditConfig()}
+            title="data/course_membership_audit.json 저장"
+          >
+            {auditSaving === "saving" ? "저장 중…" : "v2 설정 저장"}
+          </button>
+          <label className="btn-outline" style={{ padding: "6px 10px", fontSize: 12, cursor: "pointer" }} title="data/gcp_service_account.json 업로드">
+            서비스계정 업로드
+            <input
+              type="file"
+              accept="application/json"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void uploadServiceAccount(f);
+              }}
+            />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+            강의 메시지 발송
+            <input
+              type="checkbox"
+              checked={courseOpsSendEnabled}
+              onChange={(e) => void setCourseOpsSendEnabled(e.target.checked)}
+              disabled={runtimeSaving === "saving"}
+            />
+          </label>
+          <span className={`tag ${courseOpsSendEnabled ? "tag-active" : "tag-inactive"}`} title="OFF이면 courseRoster가 켜져도 발송하지 않습니다">
+            발송 {courseOpsSendEnabled ? "ON" : "OFF"}
+          </span>
+          <span className={`tag ${runtimeSaving === "error" ? "tag-excluded" : runtimeSaving === "saving" ? "tag-inactive" : "tag-active"}`}>
+            런타임 {runtimeSaving === "saving" ? "저장 중" : runtimeSaving === "error" ? "오류" : "OK"}
+          </span>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          - Sheets upsert 권한은 <b>Chrome 로그인</b>이 아니라 <b>서비스계정(Editor 공유)</b> 기준입니다.
+          <br />
+          - 등급 규칙: <b>프리미엄 등급 목록</b>에 포함되면 프리미엄, 그 외(새싹/일반 포함)는 일반으로 취급합니다. 운영진은 <b>운영진 등급 목록</b>으로 별도 분리합니다.
+          <br />
+          - <code>courseRoster</code> 토글은 v1(레거시: 입장자 안내/닉네임 검증)용 런타임 플래그입니다.
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div className="section-title">
+          <span>코스 목록</span>
+          <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-muted)" }}>({courseKeys.length}개)</span>
+        </div>
+
+        {courseKeys.length === 0 && (
+          <div className="pipeline-card" style={{ marginTop: 12 }}>
+            <div style={{ color: "var(--text-secondary)" }}>
+              감지된 코스가 없습니다. 방 이름 접두어가 <code>(사담방)</code>/<code>(공지방)</code>/<code>(프리미엄방)</code> 형식인지 확인해주세요.
+            </div>
+          </div>
+        )}
+
+        {courseKeys.map((courseKey) => {
+          const inferred = inferredCourses.find((c) => c.courseKey === courseKey);
+          const cur = ensureAuditCourseBase((auditConfig?.courses || {})[courseKey]);
+
+          const resolveOne = (rt: RoomType): RoomInfo | null => {
+            const arr = inferred?.rooms?.[rt] || [];
+            return arr.length === 1 ? arr[0] : null;
+          };
+
+          const rChat = resolveOne("chat");
+          const rNotice = resolveOne("notice");
+          const rPremium = resolveOne("premium");
+          const inferredOk = !!(rChat && rNotice && rPremium);
+          const hasConfig = !!(auditConfig?.courses && (auditConfig.courses as any)[courseKey]);
+
+          const clubIdInput = String(cur.clubId || "").trim();
+          const spreadsheetInput = String(cur.spreadsheetId || "").trim();
+          const premiumGradeText = gradeTextByCourse[courseKey]?.premiumText ?? (cur.gradeRules?.premiumGrades || []).join(", ");
+          const staffGradeText = gradeTextByCourse[courseKey]?.staffText ?? (cur.gradeRules?.staffGrades || []).join(", ");
+
+          return (
+            <div key={courseKey} className="pipeline-card" style={{ marginTop: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 800, color: "var(--text-primary)", fontSize: 16, wordBreak: "break-word" }}>
+                    {courseKey}
+                  </div>
+                  <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span className={`tag ${inferredOk ? "tag-active" : "tag-inactive"}`}>
+                      방 감지 {inferredOk ? "OK" : "미완성"}
+                    </span>
+                    <span className={`tag ${hasConfig ? "tag-active" : "tag-excluded"}`}>
+                      v2 설정 {hasConfig ? "등록됨" : "없음"}
+                    </span>
+                    <span className={`tag ${cur.enabled !== false ? "tag-active" : "tag-inactive"}`}>
+                      {cur.enabled !== false ? "ENABLED" : "DISABLED"}
+                    </span>
+                    <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => ensureCourseEntry(courseKey)}>
+                      v2 설정 추가/복구
+                    </button>
+                    <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => applyInferredRooms(courseKey)} disabled={!inferred}>
+                      방 매핑 자동 적용
+                    </button>
+                    <button
+                      className="btn-outline"
+                      style={{ padding: "6px 10px", fontSize: 12 }}
+                      onClick={() => void setCourseRosterEnabledForCourse(courseKey, true)}
+                      title="runtime.features[*].courseRoster=true (v1 레거시용)"
+                      disabled={!inferredOk || runtimeSaving === "saving"}
+                    >
+                      (레거시) courseRoster ON
+                    </button>
+                    <button
+                      className="btn-outline"
+                      style={{ padding: "6px 10px", fontSize: 12 }}
+                      onClick={() => void setCourseRosterEnabledForCourse(courseKey, false)}
+                      title="runtime.features[*].courseRoster=false (v1 레거시용)"
+                      disabled={!inferredOk || runtimeSaving === "saving"}
+                    >
+                      (레거시) courseRoster OFF
+                    </button>
+                  </div>
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)" }}>
+                  사용
+                  <input
+                    type="checkbox"
+                    checked={cur.enabled !== false}
+                    onChange={(e) => updateCourseField(courseKey, { enabled: e.target.checked })}
+                    style={{ width: 18, height: 18, accentColor: "var(--accent-primary)" }}
+                  />
+                </label>
+              </div>
+
+              <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "start" }}>
+                <div>
+                  <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>기본 설정</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      스프레드시트 URL 또는 ID
+                      <input
+                        className="filter-input"
+                        style={{ width: "100%", height: 38, marginTop: 6 }}
+                        value={spreadsheetInput}
+                        onChange={(e) => updateCourseField(courseKey, { spreadsheetId: e.target.value })}
+                        placeholder="https://docs.google.com/spreadsheets/d/... 또는 시트 ID"
+                      />
+                    </label>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      카페 URL 또는 clubId
+                      <input
+                        className="filter-input"
+                        style={{ width: "100%", height: 38, marginTop: 6 }}
+                        value={clubIdInput}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const extracted = extractNaverCafeClubId(v);
+                          updateCourseField(courseKey, { clubId: extracted || v });
+                        }}
+                        placeholder="...clubid=123 또는 /cafes/123 또는 123"
+                      />
+                      {extractNaverCafeClubId(clubIdInput) && (
+                        <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-muted)" }}>
+                          clubId 추출: <code>{extractNaverCafeClubId(clubIdInput)}</code>
+                        </div>
+                      )}
+                    </label>
+                  </div>
+
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>등급 규칙</div>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      프리미엄 등급(콤마/줄바꿈)
+                      <textarea
+                        className="filter-input"
+                        style={{ width: "100%", height: 76, marginTop: 6, paddingTop: 8 }}
+                        value={premiumGradeText}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setGradeTextByCourse((prev) => ({ ...(prev || {}), [courseKey]: { premiumText: v, staffText: staffGradeText } }));
+                          setAuditDirty(true);
+                        }}
+                        placeholder="예: 프리미엄반, 2단계"
+                      />
+                    </label>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10 }}>
+                      운영진 등급(콤마/줄바꿈)
+                      <textarea
+                        className="filter-input"
+                        style={{ width: "100%", height: 66, marginTop: 6, paddingTop: 8 }}
+                        value={staffGradeText}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setGradeTextByCourse((prev) => ({ ...(prev || {}), [courseKey]: { premiumText: premiumGradeText, staffText: v } }));
+                          setAuditDirty(true);
+                        }}
+                        placeholder="예: 운영진, 스태프"
+                      />
+                    </label>
+                    <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                      - 위 목록에 없는 등급은 자동으로 일반(새싹 포함) 취급합니다.
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>방 매핑</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: "var(--text-secondary)" }}>
+                    <div>
+                      - 사담방:{" "}
+                      {rChat ? (
+                        <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{rChat.roomName}</span>
+                      ) : (
+                        <span style={{ color: "var(--error)" }}>미감지/중복</span>
+                      )}
+                    </div>
+                    <div>
+                      - 공지방:{" "}
+                      {rNotice ? (
+                        <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{rNotice.roomName}</span>
+                      ) : (
+                        <span style={{ color: "var(--error)" }}>미감지/중복</span>
+                      )}
+                    </div>
+                    <div>
+                      - 프리미엄방:{" "}
+                      {rPremium ? (
+                        <span style={{ color: "var(--text-primary)", fontWeight: 700 }}>{rPremium.roomName}</span>
+                      ) : (
+                        <span style={{ color: "var(--error)" }}>미감지/중복</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>탭 이름(기본값)</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                        CAFE_RAW
+                        <input
+                          className="filter-input"
+                          style={{ width: "100%", height: 36, marginTop: 6 }}
+                          value={normStr(cur.tabs?.cafeRaw || "CAFE_RAW")}
+                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), cafeRaw: e.target.value } })}
+                        />
+                      </label>
+                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                        OPENCHAT_RAW
+                        <input
+                          className="filter-input"
+                          style={{ width: "100%", height: 36, marginTop: 6 }}
+                          value={normStr(cur.tabs?.openchatRaw || "OPENCHAT_RAW")}
+                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), openchatRaw: e.target.value } })}
+                        />
+                      </label>
+                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                        RULES_RAW
+                        <input
+                          className="filter-input"
+                          style={{ width: "100%", height: 36, marginTop: 6 }}
+                          value={normStr(cur.tabs?.rulesRaw || "RULES_RAW")}
+                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), rulesRaw: e.target.value } })}
+                        />
+                      </label>
+                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                        AUDIT_VIEW
+                        <input
+                          className="filter-input"
+                          style={{ width: "100%", height: 36, marginTop: 6 }}
+                          value={normStr(cur.tabs?.audit || "AUDIT_VIEW")}
+                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), audit: e.target.value } })}
+                        />
+                      </label>
+                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                        AUDIT_LOG
+                        <input
+                          className="filter-input"
+                          style={{ width: "100%", height: 36, marginTop: 6 }}
+                          value={normStr(cur.tabs?.auditLog || "AUDIT_LOG")}
+                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), auditLog: e.target.value } })}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                      - 입력을 바꾸면 <b>v2 설정 저장</b>을 눌러야 적용됩니다.
+                      <br />
+                      - 코스당 스프레드시트는 1개를 권장합니다. (3방 + 카페 RAW + AUDIT_VIEW + AUDIT_LOG)
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="pipeline-card" style={{ marginTop: 16 }}>
+        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>v2 워커 설정(전역)</h3>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <label className="tag tag-excluded" style={{ display: "flex", alignItems: "center", gap: 6 }} title="enabled=true면 워커가 주기적으로 실행됩니다.">
+            <input
+              type="checkbox"
+              checked={!!auditConfig?.worker?.enabled}
+              onChange={(e) => {
+                setAuditConfig((prev) => {
+                  const base = ensureAuditConfigBase(prev);
+                  return { ...base, worker: { ...(base.worker || {}), enabled: e.target.checked } };
+                });
+                setAuditDirty(true);
+              }}
+            />
+            자동 실행
+          </label>
+          <span className="tag tag-excluded">hotIntervalSec</span>
+          <input
+            type="number"
+            min={30}
+            className="filter-input"
+            style={{ width: 140, height: 34, marginBottom: 0 }}
+            value={String(auditConfig?.worker?.hotIntervalSec ?? 600)}
+            onChange={(e) => {
+              const v = Math.max(30, parseInt(e.target.value || "600", 10) || 600);
+              setAuditConfig((prev) => {
+                const base = ensureAuditConfigBase(prev);
+                return { ...base, worker: { ...(base.worker || {}), hotIntervalSec: v } };
+              });
+              setAuditDirty(true);
+            }}
+          />
+          <span className="tag tag-excluded">hotDays</span>
+          <input
+            type="number"
+            min={0}
+            className="filter-input"
+            style={{ width: 120, height: 34, marginBottom: 0 }}
+            value={String(auditConfig?.worker?.hotDays ?? 14)}
+            onChange={(e) => {
+              const v = Math.max(0, parseInt(e.target.value || "14", 10) || 14);
+              setAuditConfig((prev) => {
+                const base = ensureAuditConfigBase(prev);
+                return { ...base, worker: { ...(base.worker || {}), hotDays: v } };
+              });
+              setAuditDirty(true);
+            }}
+          />
+          <span className="tag tag-excluded">steadyIntervalSec</span>
+          <input
+            type="number"
+            min={60}
+            className="filter-input"
+            style={{ width: 160, height: 34, marginBottom: 0 }}
+            value={String(auditConfig?.worker?.steadyIntervalSec ?? 10800)}
+            onChange={(e) => {
+              const v = Math.max(60, parseInt(e.target.value || "10800", 10) || 10800);
+              setAuditConfig((prev) => {
+                const base = ensureAuditConfigBase(prev);
+                return { ...base, worker: { ...(base.worker || {}), steadyIntervalSec: v } };
+              });
+              setAuditDirty(true);
+            }}
+          />
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            crawler.repoPath
+            <input
+              className="filter-input"
+              style={{ width: "100%", height: 36, marginTop: 6 }}
+              value={normStr(auditConfig?.worker?.crawler?.repoPath || "")}
+              onChange={(e) => {
+                const v = e.target.value;
+                setAuditConfig((prev) => {
+                  const base = ensureAuditConfigBase(prev);
+                  const w = base.worker || ({} as any);
+                  const c = { ...(w.crawler || {}), repoPath: v };
+                  return { ...base, worker: { ...w, crawler: c } };
+                });
+                setAuditDirty(true);
+              }}
+            />
+          </label>
+          <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            crawler.pythonExe
+            <input
+              className="filter-input"
+              style={{ width: "100%", height: 36, marginTop: 6 }}
+              value={normStr(auditConfig?.worker?.crawler?.pythonExe || "")}
+              onChange={(e) => {
+                const v = e.target.value;
+                setAuditConfig((prev) => {
+                  const base = ensureAuditConfigBase(prev);
+                  const w = base.worker || ({} as any);
+                  const c = { ...(w.crawler || {}), pythonExe: v };
+                  return { ...base, worker: { ...w, crawler: c } };
+                });
+                setAuditDirty(true);
+              }}
+            />
+          </label>
+          <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            crawler.settingsPath (선택)
+            <input
+              className="filter-input"
+              style={{ width: "100%", height: 36, marginTop: 6 }}
+              value={normStr(auditConfig?.worker?.crawler?.settingsPath || "")}
+              onChange={(e) => {
+                const v = e.target.value;
+                setAuditConfig((prev) => {
+                  const base = ensureAuditConfigBase(prev);
+                  const w = base.worker || ({} as any);
+                  const c = { ...(w.crawler || {}), settingsPath: v };
+                  return { ...base, worker: { ...w, crawler: c } };
+                });
+                setAuditDirty(true);
+              }}
+              placeholder="비공개 카페 로그인 정보는 settings.json에 저장"
+            />
+          </label>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          - 비공개 카페 접근은 <code>naver-cafe-member-crawler</code>의 <code>settings.json</code>(naver_id/naver_pw)로 로그인합니다.
+          <br />
+          - 초반(hot)에는 짧은 주기(예: 10분), 안정화 이후(steady)에는 긴 주기(예: 3시간)로 운영합니다.
+        </div>
+      </div>
+    </div>
   );
 }

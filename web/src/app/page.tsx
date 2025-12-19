@@ -1869,11 +1869,6 @@ export default function Home() {
               room={r}
               logs={roomLogs[r.roomId] || []}
               features={features[r.roomId] || {}}
-              courseRosterConfig={(courseRosterConfig?.rooms as any)?.[r.roomId] || null}
-              courseRosterConfigExists={courseRosterConfigExists}
-              courseRosterHasServiceAccount={courseRosterServiceAccount.exists}
-              courseRosterConfigDirty={courseRosterConfigDirty}
-              onUpdateCourseRosterConfig={onUpdateCourseRosterRoomConfig}
               openchatMembersSheetsConfig={(openchatMembersSheetsConfig?.rooms as any)?.[r.roomId] || null}
               openchatMembersSheetsConfigExists={openchatMembersSheetsConfigExists}
               openchatMembersSheetsHasServiceAccount={openchatMembersSheetsServiceAccount.exists}

@@ -381,6 +381,14 @@ def load_runtime() -> dict:
     if "welcome" not in tbf and isinstance(data.get("welcomeTemplateName"), str):
         tbf["welcome"] = data.get("welcomeTemplateName")
     data["templateByFeature"] = tbf
+
+    # course ops (legacy roster-worker send gate)
+    co = data.get("courseOps")
+    if not isinstance(co, dict):
+        co = {}
+    if not isinstance(co.get("sendEnabled"), bool):
+        co["sendEnabled"] = False
+    data["courseOps"] = co
     return data
 
 

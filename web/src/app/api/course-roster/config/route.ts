@@ -10,8 +10,10 @@ export const dynamic = "force-dynamic";
 function extractNaverCafeClubId(raw: string): string {
   const s = String(raw || "").trim();
   if (!s) return "";
-  const m = s.match(/(?:clubid|clubId|search\\.clubid|search\\.clubId)=(\d+)/i);
-  return m ? String(m[1] || "").trim() : "";
+  const m = s.match(/(?:clubid|clubId|search\.clubid|search\.clubId)=(\d+)/i);
+  if (m && m[1]) return String(m[1] || "").trim();
+  const m2 = s.match(/\/cafes\/(\d+)/i);
+  return m2 ? String(m2[1] || "").trim() : "";
 }
 
 function normalizeRoomConfig(v: any) {
