@@ -3,7 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "../dashboard.css";
-import { CourseMembershipAuditConfig, CourseMembershipAuditCourse, RoomInfo } from "../../types";
+import { CourseMembershipAuditConfig, CourseMembershipAuditCourse, CourseRosterConfig, RoomInfo } from "../../types";
 
 type RoomType = "chat" | "notice" | "premium";
 
@@ -106,6 +106,14 @@ export default function CourseOpsPage() {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [runtimeSaving, setRuntimeSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
+  const [courseRosterConfig, setCourseRosterConfig] = useState<CourseRosterConfig | null>(null);
+  const [courseRosterConfigExists, setCourseRosterConfigExists] = useState(false);
+  const [courseRosterConfigPath, setCourseRosterConfigPath] = useState<string | null>(null);
+  const [courseRosterConfigSaving, setCourseRosterConfigSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [courseRosterConfigError, setCourseRosterConfigError] = useState<string | null>(null);
+  const [rosterWorkerStatus, setRosterWorkerStatus] = useState<any | null>(null);
+  const [rosterWorkerStatusError, setRosterWorkerStatusError] = useState<string | null>(null);
+
   const [auditConfig, setAuditConfig] = useState<CourseMembershipAuditConfig | null>(null);
   const [auditExists, setAuditExists] = useState(false);
   const [auditPath, setAuditPath] = useState<string | null>(null);
@@ -168,6 +176,45 @@ export default function CourseOpsPage() {
       setRuntime(null);
     }
   }, []);
+
+  const loadCourseRosterConfig = useCallback(async () => {
+    try {
+      setCourseRosterConfigError(null);
+      const r = await fetch(`/api/course-roster/config`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setCourseRosterConfigExists(!!j.exists);
+      setCourseRosterConfigPath(String(j.path || ""));
+      setCourseRosterConfig(j?.config || null);
+    } catch (e: any) {
+      setCourseRosterConfigError(String(e?.message || e));
+      setCourseRosterConfig(null);
+    }
+  }, []);
+
+  const loadRosterWorkerStatus = useCallback(async () => {
+    try {
+      setRosterWorkerStatusError(null);
+      const r = await fetch(`/api/course-roster/status`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setRosterWorkerStatus(j);
+    } catch (e: any) {
+      setRosterWorkerStatusError(String(e?.message || e));
+      setRosterWorkerStatus(null);
+    }
+  }, []);
+
+  const restartRosterWorker = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/course-roster/restart`, { method: "POST" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      await loadRosterWorkerStatus();
+    } catch (e: any) {
+      setRosterWorkerStatusError(String(e?.message || e));
+    }
+  }, [loadRosterWorkerStatus]);
 
   const loadAuditConfig = useCallback(async () => {
     try {
@@ -276,6 +323,104 @@ export default function CourseOpsPage() {
       return false;
     }
   }, [auditConfig, gradeTextByCourse, loadAuditConfig]);
+
+  const syncV1CourseRosterConfigFromV2 = useCallback(async () => {
+    try {
+      const cfg = auditConfig && typeof auditConfig === "object" ? auditConfig : null;
+      if (!cfg) return false;
+
+      const courses = (cfg.courses && typeof cfg.courses === "object") ? cfg.courses : {};
+      const curRooms: Record<string, any> = (courseRosterConfig?.rooms && typeof courseRosterConfig.rooms === "object") ? (courseRosterConfig.rooms as any) : {};
+      const nextRooms: Record<string, any> = { ...curRooms };
+
+      const bad: string[] = [];
+      const workerCrawler: any = (cfg.worker && typeof cfg.worker === "object") ? (cfg.worker as any).crawler : null;
+      const crawlerRepoPath = normStr(workerCrawler?.repoPath);
+      const crawlerPythonExe = normStr(workerCrawler?.pythonExe);
+      const crawlerSettingsPath = normStr(workerCrawler?.settingsPath);
+
+      for (const [courseKey, courseRaw] of Object.entries(courses || {})) {
+        const c: any = courseRaw as any;
+        if (c?.enabled === false) continue;
+
+        const clubId = String(c?.clubId || "").trim();
+        const spreadsheetId = String(c?.spreadsheetId || "").trim();
+        const joinUrl = String(c?.joinUrl || "").trim();
+        const rooms = c?.rooms && typeof c.rooms === "object" ? c.rooms : {};
+        const ridChat = normStr((rooms as any).chat);
+        const ridNotice = normStr((rooms as any).notice);
+        const ridPremium = normStr((rooms as any).premium);
+
+        if (!clubId || !/^\d+$/.test(clubId)) {
+          bad.push(`${courseKey}: clubId`);
+          continue;
+        }
+        if (!spreadsheetId) {
+          bad.push(`${courseKey}: spreadsheetId`);
+          continue;
+        }
+        if (!ridChat || !ridNotice || !ridPremium) {
+          bad.push(`${courseKey}: rooms(chat/notice/premium)`);
+          continue;
+        }
+        if (new Set([ridChat, ridNotice, ridPremium]).size !== 3) {
+          bad.push(`${courseKey}: rooms(duplicate)`);
+          continue;
+        }
+
+        const apply = (rid: string, rosterSheetName: string) => {
+          nextRooms[rid] = {
+            ...(nextRooms[rid] || {}),
+            enabled: true,
+            spreadsheetId,
+            rosterSheetName,
+            cafeSource: "crawler",
+            cafeClubId: clubId,
+            cafeUrl: "",
+            crawlerRepoPath,
+            crawlerPythonExe,
+            crawlerSettingsPath,
+            cafeCsvPath: "",
+            joinUrl,
+          };
+        };
+
+        apply(ridChat, "ROSTER_CHAT");
+        apply(ridNotice, "ROSTER_NOTICE");
+        apply(ridPremium, "ROSTER_PREMIUM");
+      }
+
+      if (bad.length) {
+        throw new Error(`v1 동기화 불가(코스 설정 누락): ${bad.join(", ")}`);
+      }
+
+      if (Object.keys(nextRooms).length === 0) {
+        throw new Error("v1 동기화 대상(room)이 없습니다. 코스 enabled/방매핑/시트/clubId를 먼저 설정하세요.");
+      }
+
+      setCourseRosterConfigSaving("saving");
+      setCourseRosterConfigError(null);
+      const out: any = {
+        version: Number((courseRosterConfig as any)?.version) || 1,
+        rooms: nextRooms,
+      };
+      const r = await fetch(`/api/course-roster/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: out }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setCourseRosterConfigSaving("saved");
+      setTimeout(() => setCourseRosterConfigSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      await loadCourseRosterConfig();
+      return true;
+    } catch (e: any) {
+      setCourseRosterConfigSaving("error");
+      setCourseRosterConfigError(String(e?.message || e));
+      return false;
+    }
+  }, [auditConfig, courseRosterConfig, courseRosterConfig?.rooms, loadCourseRosterConfig]);
 
   const uploadServiceAccount = useCallback(async (file: File): Promise<boolean> => {
     try {
@@ -483,7 +628,7 @@ export default function CourseOpsPage() {
         </div>
       </div>
 
-      {(roomsError || runtimeError || auditError || auditWorkerStatusError || auditServiceAccount.error) && (
+      {(roomsError || runtimeError || auditError || courseRosterConfigError || rosterWorkerStatusError || auditWorkerStatusError || auditServiceAccount.error) && (
         <div
           className="pipeline-card"
           style={{
@@ -603,6 +748,7 @@ export default function CourseOpsPage() {
 
           const clubIdInput = String(cur.clubId || "").trim();
           const spreadsheetInput = String(cur.spreadsheetId || "").trim();
+          const joinUrlInput = String((cur as any).joinUrl || "").trim();
           const premiumGradeText = gradeTextByCourse[courseKey]?.premiumText ?? (cur.gradeRules?.premiumGrades || []).join(", ");
           const staffGradeText = gradeTextByCourse[courseKey]?.staffText ?? (cur.gradeRules?.staffGrades || []).join(", ");
 
@@ -694,6 +840,17 @@ export default function CourseOpsPage() {
                       )}
                     </label>
                   </div>
+
+                  <label style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10 }}>
+                    카페 가입신청/가입요청 URL (선택)
+                    <input
+                      className="filter-input"
+                      style={{ width: "100%", height: 38, marginTop: 6 }}
+                      value={joinUrlInput}
+                      onChange={(e) => updateCourseField(courseKey, { joinUrl: e.target.value })}
+                      placeholder="https://cafe.naver.com/... (선택)"
+                    />
+                  </label>
 
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>등급 규칙</div>

@@ -47,6 +47,7 @@ function normalizeCourseConfig(v: any) {
   const enabled = v?.enabled === false ? false : true;
   const clubId = normStr(v?.clubId || v?.club_id || v?.cafe?.clubId || v?.cafe?.club_id);
   const spreadsheetId = normStr(v?.spreadsheetId || v?.spreadsheet_id || v?.sheetId);
+  const joinUrl = normStr(v?.joinUrl || v?.join_url || v?.joinUri || v?.join_uri);
   const parsedSpreadsheetId = parseSpreadsheetId(spreadsheetId);
   const tabs = normalizeTabs(v?.tabs || v?.sheets?.tabs || {});
   const gradeRules = {
@@ -58,7 +59,7 @@ function normalizeCourseConfig(v: any) {
     notice: normStr(v?.rooms?.notice),
     premium: normStr(v?.rooms?.premium),
   };
-  return { enabled, clubId, spreadsheetId, parsedSpreadsheetId, tabs, gradeRules, rooms };
+  return { enabled, clubId, spreadsheetId, joinUrl, parsedSpreadsheetId, tabs, gradeRules, rooms };
 }
 
 export async function GET() {
@@ -166,6 +167,7 @@ export async function POST(req: Request) {
       enabled: vv?.enabled === false ? false : true,
       clubId: normStr(vv?.clubId),
       spreadsheetId: normStr(vv?.spreadsheetId),
+      joinUrl: normStr(vv?.joinUrl),
       tabs: normalizeTabs(vv?.tabs || {}),
       gradeRules: {
         premiumGrades: normStrList(vv?.gradeRules?.premiumGrades),

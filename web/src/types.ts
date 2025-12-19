@@ -188,6 +188,7 @@ export type CourseMembershipAuditCourse = {
   enabled?: boolean;
   clubId?: string;
   spreadsheetId?: string;
+  joinUrl?: string;
   tabs?: CourseMembershipAuditTabs;
   gradeRules?: CourseMembershipAuditGradeRules;
   rooms?: {
