@@ -276,6 +276,8 @@
         `start_all.ps1`의 pre-clean이 watchdog를 죽여 “자가복구 루프가 중단”되는 문제가 있었다.
         현재는 `watchdog.ps1` → `start_all.ps1 -NoWatchdog -PreserveWatchdog`로 호출해
         watchdog 자기 자신을 종료시키지 않도록 고정했다.
+      - (2025-12-19) watchdog는 `start_all.ps1`을 **동기 호출하지 않고** 별도 PowerShell 프로세스로 spawn해(로그: `windows/logs/start_all.from_watchdog.*`) watchdog 루프 블록을 방지한다.
+      - (2025-12-19) `windows/ensure_watchdog.ps1`는 watchdog 프로세스가 살아있어도 `windows/watchdog.log` 갱신이 오래 멈추면(hung) 자동 재기동한다(`-MaxLogAgeSec`, 기본 900s). UI(3100) 홈 `Watchdog` 카드의 **Watchdog 재시작** 버튼으로도 동일 동작 수행 가능.
       - **watchdog 자동 기동(중요)**: watchdog가 꺼져 있으면 자동 복구는 절대 동작하지 않는다.
         - **운영 원칙(중요)**: 운영 중 장애 감지/복구는 watchdog(+ Task Scheduler ensure)가 자동으로 수행한다. 운영자가 매번 수동 명령을 치는 운영은 금지한다(예외: 초기 설치/개발 디버깅).
         - Task Scheduler 등록(권장): `windows/register_watchdog_task.ps1` (기본 **1분 주기 + 로그인(ONLOGON)**, watchdog 미실행 시 자동 기동)

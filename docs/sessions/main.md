@@ -265,3 +265,10 @@
     - 설정: `runtime.json.welcome.nicknameChangeReminder` (`delayMs=300000`)
     - 동작: 신규 입장자가 기본닉인 경우 5분 후 닉네임 재확인 → 여전히 기본닉이면 1회 안내
   - 결정 문서: `docs/adr/ADR-0043-welcome-open-profile-guide-and-5m-nickname-reminder.md`
+
+- 운영 장애(워커 미실행) 복구/재발 방지:
+  - 원인(대표): watchdog가 `start_all.ps1`을 동일 프로세스에서 동기 호출 → start_all이 장시간 블록되면 watchdog 루프가 멈춰 자동 복구 중단 가능.
+  - 조치:
+    - `windows/watchdog.ps1`: `start_all.ps1`을 `Start-Process`로 별도 프로세스 spawn(로그 리다이렉션)해 watchdog 루프 블록 방지.
+    - `windows/ensure_watchdog.ps1`: 프로세스는 살아있어도 `windows/watchdog.log`가 오래 멈추면(hung) 자동 재기동(`-MaxLogAgeSec`, 기본 900s).
+    - UI(3100): `Watchdog 재시작` 버튼(`/api/watchdog` POST) + `봇/워커 프로세스` 카드에서 워커 재시작 버튼(`/api/bot/workers/restart`) 추가.

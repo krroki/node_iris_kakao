@@ -1,6 +1,9 @@
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { spawn } from "child_process";
 
 export const dynamic = "force-dynamic";
 
@@ -28,5 +31,28 @@ export async function GET() {
       },
       { status: 200 },
     );
+  }
+}
+
+export async function POST() {
+  try {
+    const repoRoot = path.resolve(process.cwd(), "..");
+    const script = path.join(repoRoot, "windows", "ensure_watchdog.ps1");
+
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Restart"],
+      {
+        cwd: repoRoot,
+        detached: true,
+        stdio: "ignore",
+        shell: true,
+      },
+    );
+    child.unref();
+
+    return NextResponse.json({ ok: true, pid: child.pid }, { status: 200 });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }

@@ -1076,6 +1076,27 @@ export default function Home() {
         <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 8 }}>
           최근 업데이트: {watchdogSummary.ts} | 상태: {watchdog.ok ? 'OK' : 'FAIL/미동작'}
         </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+          <button
+            className="btn-outline"
+            onClick={async () => {
+              if (!confirm('Watchdog를 재시작할까요? (자동 복구 루프 재개)')) return;
+              try {
+                const r = await fetch('/api/watchdog', { method: 'POST' });
+                const j: any = await r.json().catch(() => null);
+                if (!r.ok || !j || j.ok !== true) {
+                  throw new Error(String(j?.error || `HTTP ${r.status}`));
+                }
+                alert(`재시작 요청 완료 (pid=${j.pid ?? '?'})`);
+              } catch (e: any) {
+                alert(`Watchdog 재시작 실패: ${e?.message || e}`);
+              }
+            }}
+            title="windows/ensure_watchdog.ps1 -Restart"
+          >
+            Watchdog 재시작
+          </button>
+        </div>
         <pre style={{ background: 'var(--bg-main)', border: '1px solid var(--border-color)', borderRadius: 8, padding: 10, maxHeight: 140, overflow: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
           {watchdog.lines?.slice(-10).join('\n') || '로그 없음'}
         </pre>

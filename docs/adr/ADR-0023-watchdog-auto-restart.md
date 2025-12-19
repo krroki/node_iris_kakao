@@ -105,3 +105,15 @@ cooldown으로 인해 조치를 “스킵”하는 경우에도 **스킵 사유�
 - `windows/ensure_watchdog.ps1`는 `ensure_watchdog.ps1` 자체가 `watchdog.ps1` 서브스트링에 매칭되는 오탐을 피하기 위해,
   “watchdog.ps1” 단독 문자열 매칭이 아니라 **watchdog 스크립트의 전체 경로**로 프로세스를 판별한다.
 
+---
+
+## Update (2025-12-19) — start_all 비동기 실행 + hung 감지 재기동 + UI 재시작 버튼
+
+- watchdog가 `start_all.ps1`을 **동일 프로세스에서 동기 호출**하면, start_all이 장시간 블록될 때 watchdog 루프가 멈춰 자동 복구가 중단될 수 있다.
+  - 해결: `start_all.ps1`은 `Start-Process`로 **별도 PowerShell 프로세스로 spawn**하고, watchdog는 루프를 계속 돌도록 한다.
+- `windows/ensure_watchdog.ps1`는 watchdog 프로세스가 살아있더라도 `windows/watchdog.log` 갱신이 오래 멈추면(hung) **자동 재기동**한다.
+  - 기준: `-MaxLogAgeSec` (기본 900초)
+- Web UI(3100):
+  - `Watchdog 재시작` 버튼(`/api/watchdog` POST)으로 `ensure_watchdog.ps1 -Restart`를 실행해 자동 복구 루프를 즉시 재개한다.
+  - `봇/워커 프로세스` 카드에서 미실행/하트비트 경고 워커를 `-Restart`로 재기동 요청할 수 있다(`/api/bot/workers/restart`).
+

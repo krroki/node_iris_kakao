@@ -52,6 +52,7 @@ const KIND_LABEL: Record<string, string> = {
   'ai-worker': 'AI 워커',
   'broadcast-worker': '공지 워커',
   'command-worker': '명령어 워커',
+  'nickname-reminder-worker': '기본닉 멘션 워커',
   'image-worker': '이미지 워커',
   'video-worker': '영상 워커',
   'auto-faq-worker': '자동 FAQ 워커',
@@ -86,6 +87,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [killing, setKilling] = useState<number | null>(null);
+  const [restarting, setRestarting] = useState<string | null>(null);
 
   const fetchProcesses = useCallback(async () => {
     try {
@@ -162,6 +164,64 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
       await fetch(`/api/bot/processes?pid=${proc.pid}`, { method: 'DELETE' });
     }
     await fetchProcesses();
+  };
+
+  const restartWorkerKinds = async (kindsToRestart: string[]) => {
+    const list = Array.from(
+      new Set((kindsToRestart || []).map((k) => String(k || '').trim()).filter(Boolean)),
+    ).filter((k) => k !== 'bot');
+
+    if (list.length === 0) return;
+    if (!confirm(`아래 워커를 재시작할까요?\n- ${list.join(', ')}`)) return;
+
+    setRestarting('bulk');
+    try {
+      const res = await fetch('/api/bot/workers/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kinds: list }),
+      });
+      const data: any = await res.json().catch(() => null);
+      if (!res.ok || !data || data.ok !== true) {
+        throw new Error(String(data?.error || `HTTP ${res.status}`));
+      }
+      alert(`재시작 요청 완료: ${list.join(', ')}`);
+    } catch (e: any) {
+      alert(`재시작 실패: ${e?.message || e}`);
+    } finally {
+      setRestarting(null);
+    }
+  };
+
+  const restartKind = async (kind: string) => {
+    const k = String(kind || '').trim();
+    if (!k) return;
+    if (!confirm(`[${k}] 재시작할까요?`)) return;
+
+    setRestarting(k);
+    try {
+      if (k === 'bot') {
+        const res = await fetch('/api/bot/restart', { method: 'POST' });
+        const data: any = await res.json().catch(() => null);
+        if (!res.ok || !data || data.ok !== true) {
+          throw new Error(String(data?.error || `HTTP ${res.status}`));
+        }
+      } else {
+        const res = await fetch('/api/bot/workers/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: k }),
+        });
+        const data: any = await res.json().catch(() => null);
+        if (!res.ok || !data || data.ok !== true) {
+          throw new Error(String(data?.error || `HTTP ${res.status}`));
+        }
+      }
+    } catch (e: any) {
+      alert(`재시작 실패: ${e?.message || e}`);
+    } finally {
+      setRestarting(null);
+    }
   };
 
   const hasDuplicate = useMemo(() => {
@@ -302,6 +362,16 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
           </span>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          {(missingKinds.length > 0 || staleKinds.length > 0) && (
+            <button
+              onClick={() => restartWorkerKinds([...missingKinds, ...staleKinds])}
+              className="btn-outline"
+              disabled={loading || restarting !== null}
+              title="미실행/하트비트 경고 kind를 -Restart로 재기동 요청합니다."
+            >
+              {restarting ? '재시작 요청 중…' : '미실행/하트비트 재시작'}
+            </button>
+          )}
           {hasDuplicate && (
             <button onClick={cleanupAllDuplicates} className="btn-outline" disabled={loading}>
               중복 일괄 정리(최신 유지)
@@ -314,7 +384,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
       </div>
 
       <div className="process-note">
-        정상 기준: <span className="process-mono">bot + welcome-worker + ai-worker + broadcast-worker + command-worker + image-worker + video-worker + auto-faq-worker</span>가 각각 1개씩(총 8개)
+        정상 기준: <span className="process-mono">bot + welcome-worker + ai-worker + broadcast-worker + command-worker + nickname-reminder-worker + image-worker + video-worker + auto-faq-worker</span>가 각각 1개씩(총 9개)
         떠 있는 것이 정상입니다. 이 카드의 종료 버튼은 <span className="process-mono">node-iris-app</span>만 안전 종료합니다(전체 <span className="process-mono">node.exe</span> 종료 금지).
       </div>
 
@@ -488,6 +558,14 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
               </div>
 
               <div className="process-actions">
+                <button
+                  className="btn-outline"
+                  onClick={() => restartKind(k.kind)}
+                  disabled={loading || restarting !== null}
+                  title="해당 kind의 start_* 스크립트(-Restart)로 재기동합니다."
+                >
+                  {restarting === k.kind ? '재시작 중…' : '재시작'}
+                </button>
                 {dup && (
                   <button className="btn-outline" onClick={() => killAllExceptNewest(k.kind)} disabled={loading}>
                     중복 정리(최신 유지)
