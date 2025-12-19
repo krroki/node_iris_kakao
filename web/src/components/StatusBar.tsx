@@ -33,6 +33,8 @@ export default function StatusBar() {
   const [log, setLog] = useState<string>("");
   const [countdown, setCountdown] = useState<number>(0);
   const [lastEventAge, setLastEventAge] = useState<number | null>(null);
+  const [heartbeatAge, setHeartbeatAge] = useState<number | null>(null);
+  const [logAge, setLogAge] = useState<number | null>(null);
   const [bridgeInfo, setBridgeInfo] = useState<{ pid?: number, irisUrl?: string } | null>(null);
   const [talkApi, setTalkApi] = useState<{ enabled: boolean, reachable: boolean, status?: number } | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -41,7 +43,13 @@ export default function StatusBar() {
     try {
       const r = await fetchWithTimeout(`/api/health`, 1500);
       const ok1 = r.ok;
-      try { const j = await r.clone().json(); setLastEventAge(typeof j?.bot?.lastEventAgeSec === 'number' ? j.bot.lastEventAgeSec : null); setBridgeInfo({ pid: j?.bot?.pid, irisUrl: j?.bot?.irisUrl }); } catch { }
+      try {
+        const j = await r.clone().json();
+        setLastEventAge(typeof j?.bot?.lastEventAgeSec === 'number' ? j.bot.lastEventAgeSec : null);
+        setHeartbeatAge(typeof j?.bot?.heartbeatAgeSec === 'number' ? j.bot.heartbeatAgeSec : null);
+        setLogAge(typeof j?.logStore?.logAgeSec === 'number' ? j.logStore.logAgeSec : null);
+        setBridgeInfo({ pid: j?.bot?.pid, irisUrl: j?.bot?.irisUrl });
+      } catch { }
       let ok2 = false;
       if (ok1) {
         try {
@@ -117,11 +125,29 @@ export default function StatusBar() {
   }, [ok, degraded]);
 
   const bridgeBadge = useMemo(() => {
-    if (lastEventAge == null) return null;
-    if (lastEventAge <= 10) return <span className="tag" style={{ background: "rgba(21,128,61,.15)", color: "#bbf7d0" }}>BRIDGE OK</span>;
-    if (lastEventAge <= 60) return <span className="tag" style={{ background: "rgba(180,83,9,.15)", color: "#fed7aa" }}>BRIDGE IDLE {lastEventAge}s</span>;
-    return <span className="tag" style={{ background: "rgba(185,28,28,.15)", color: "#fecaca" }}>BRIDGE DOWN {lastEventAge}s</span>;
-  }, [lastEventAge]);
+    const evt = lastEventAge;
+    const hb = heartbeatAge;
+    if (evt == null && hb == null) return null;
+
+    const eventHint = evt != null && evt > 10 ? ` (이벤트 ${evt}s 전)` : "";
+
+    // heartbeat가 있으면 liveness는 heartbeat 기준으로 표시한다.
+    if (hb != null) {
+      if (hb <= 120) {
+        return <span className="tag" style={{ background: "rgba(21,128,61,.15)", color: "#bbf7d0" }}>BRIDGE OK{eventHint}</span>;
+      }
+      if (hb <= 240) {
+        return <span className="tag" style={{ background: "rgba(180,83,9,.15)", color: "#fed7aa" }}>BRIDGE DEGRADED {hb}s{eventHint}</span>;
+      }
+      return <span className="tag" style={{ background: "rgba(185,28,28,.15)", color: "#fecaca" }}>BRIDGE DOWN {hb}s{eventHint}</span>;
+    }
+
+    // fallback: legacy(lastEventAge) 기준
+    if (evt == null) return null;
+    if (evt <= 10) return <span className="tag" style={{ background: "rgba(21,128,61,.15)", color: "#bbf7d0" }}>BRIDGE OK</span>;
+    if (evt <= 60) return <span className="tag" style={{ background: "rgba(180,83,9,.15)", color: "#fed7aa" }}>BRIDGE IDLE {evt}s</span>;
+    return <span className="tag" style={{ background: "rgba(185,28,28,.15)", color: "#fecaca" }}>BRIDGE DOWN {evt}s</span>;
+  }, [lastEventAge, heartbeatAge]);
 
   const talkApiBadge = useMemo(() => {
     const st = talkApi;
@@ -130,9 +156,23 @@ export default function StatusBar() {
     return <span className="tag" style={{ background: "rgba(185,28,28,.25)", color: "#fecaca" }}>Talk-API DOWN</span>;
   }, [talkApi]);
 
+  const logStoreBadge = useMemo(() => {
+    if (logAge == null) return null;
+    const evt = lastEventAge;
+    // 이벤트는 최근인데 로그가 오래되면 "진짜 장애"(로그 저장/스트림이 끊긴 상태)로 본다.
+    if (evt != null && evt <= 60 && logAge >= 120) {
+      return <span className="tag" style={{ background: "rgba(185,28,28,.15)", color: "#fecaca" }}>LOG LAG {logAge}s</span>;
+    }
+    if (logAge <= 30) {
+      return <span className="tag" style={{ background: "rgba(21,128,61,.15)", color: "#bbf7d0" }}>LOG OK</span>;
+    }
+    return <span className="tag" style={{ background: "rgba(37,99,235,.15)", color: "#bfdbfe" }}>LOG IDLE {logAge}s</span>;
+  }, [logAge, lastEventAge]);
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       {bridgeBadge}
+      {logStoreBadge}
       {sseBadge}
       {talkApiBadge}
       <button onClick={onRestart} disabled={busy} className="btn-outline" style={{ padding: '4px 10px', fontSize: 12 }}>

@@ -74,8 +74,13 @@ Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\welcome_worker_statu
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\ai_worker_status.json') 'ai-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\broadcast_worker_status.json') 'broadcast-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\command_worker_status.json') 'command-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\nickname_reminder_worker_status.json') 'nickname-reminder-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\image_worker_status.json') 'image-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\video_worker_status.json') 'video-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\auto_faq_worker_status.json') 'auto-faq-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\roster_worker_status.json') 'roster-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\openchat_members_sheets_worker_status.json') 'openchat-members-sheets-worker'
+Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\course_membership_audit_worker_status.json') 'course-membership-audit-worker'
 Stop-ProcsByPredicate { $_.CommandLine -match 'web\\node_modules\\next' -and $_.CommandLine -match $repoPath }
 Stop-ProcsByPredicate { $_.CommandLine -match 'web\\node_modules\\\.bin\\' -and $_.CommandLine -match 'next' -and $_.CommandLine -match $repoPath }
 Stop-ProcsByPredicate { $_.CommandLine -match 'next\\dist\\server\\lib\\start-server.js' -and $_.CommandLine -match $repoPath }
@@ -202,6 +207,61 @@ if ($env:COMMAND_WORKER_DISABLE -ne '1') {
   Write-Host ("[all] command-worker skipped (COMMAND_WORKER_DISABLE={0})" -f $env:COMMAND_WORKER_DISABLE) -ForegroundColor Yellow
 }
 
+if ($env:NICKNAME_REMINDER_WORKER_DISABLE -ne '1') {
+  Write-Host '[all] starting nickname-reminder-worker'
+  & (Join-Path $PSScriptRoot 'start_nickname_reminder_worker.ps1') -TimeoutSec 40 -IrisUrl "$IrisUrl"
+  Start-Sleep -Seconds 1
+} else {
+  Write-Host ("[all] nickname-reminder-worker skipped (NICKNAME_REMINDER_WORKER_DISABLE={0})" -f $env:NICKNAME_REMINDER_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
+if ($env:IMAGE_WORKER_DISABLE -ne '1') {
+  Write-Host '[all] starting image-worker'
+  & (Join-Path $PSScriptRoot 'start_image_worker.ps1') -TimeoutSec 60 -IrisUrl "$IrisUrl"
+  Start-Sleep -Seconds 1
+} else {
+  Write-Host ("[all] image-worker skipped (IMAGE_WORKER_DISABLE={0})" -f $env:IMAGE_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
+if ($env:VIDEO_WORKER_DISABLE -ne '1') {
+  $needVideoWorker = $true
+  try {
+    $runtimePath = Join-Path $root 'node-iris-app\config\runtime.json'
+    if (Test-Path $runtimePath) {
+      $needVideoWorker = $false
+      $rt = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $features = $rt.features
+      if ($features) {
+        foreach ($p in $features.PSObject.Properties) {
+          $f = $p.Value
+          if ($f -and $f.videoGen -eq $true) { $needVideoWorker = $true; break }
+        }
+      }
+    }
+  } catch {
+    # 보수적으로: runtime 파싱 실패 시에는 video-worker를 기동한다.
+    $needVideoWorker = $true
+  }
+
+  if (-not $needVideoWorker) {
+    Write-Host '[all] video-worker skipped (no videoGen-enabled rooms)' -ForegroundColor Yellow
+  } else {
+    Write-Host '[all] starting video-worker'
+    & (Join-Path $PSScriptRoot 'start_video_worker.ps1') -TimeoutSec 90 -IrisUrl "$IrisUrl"
+    Start-Sleep -Seconds 1
+  }
+} else {
+  Write-Host ("[all] video-worker skipped (VIDEO_WORKER_DISABLE={0})" -f $env:VIDEO_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
+if ($env:AUTO_FAQ_WORKER_DISABLE -ne '1') {
+  Write-Host '[all] starting auto-faq-worker'
+  & (Join-Path $PSScriptRoot 'start_auto_faq_worker.ps1') -TimeoutSec 40 -IrisUrl "$IrisUrl"
+  Start-Sleep -Seconds 1
+} else {
+  Write-Host ("[all] auto-faq-worker skipped (AUTO_FAQ_WORKER_DISABLE={0})" -f $env:AUTO_FAQ_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
 if ($env:ROSTER_WORKER_DISABLE -ne '1') {
   $rosterCfg = Join-Path $root 'data\course_roster_worker.json'
   if (-not (Test-Path $rosterCfg)) {
@@ -235,6 +295,28 @@ if ($env:OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE -ne '1') {
   }
 } else {
   Write-Host ("[all] openchat-members-sheets-worker skipped (OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE={0})" -f $env:OPENCHAT_MEMBERS_SHEETS_WORKER_DISABLE) -ForegroundColor Yellow
+}
+
+if ($env:COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE -ne '1') {
+  $cfgPath = Join-Path $root 'data\course_membership_audit.json'
+  if (-not (Test-Path $cfgPath)) {
+    Write-Host ("[all] course-membership-audit-worker skipped (config missing: {0})" -f $cfgPath) -ForegroundColor Yellow
+  } else {
+    $enabled = $false
+    try {
+      $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($j.worker -and $j.worker.enabled -eq $true) { $enabled = $true }
+    } catch { $enabled = $false }
+    if (-not $enabled) {
+      Write-Host ("[all] course-membership-audit-worker skipped (worker.enabled=false in {0})" -f $cfgPath) -ForegroundColor Yellow
+    } else {
+      Write-Host '[all] starting course-membership-audit-worker'
+      & (Join-Path $PSScriptRoot 'start_course_membership_audit_worker.ps1') -TimeoutSec 60
+      Start-Sleep -Seconds 1
+    }
+  }
+} else {
+  Write-Host ("[all] course-membership-audit-worker skipped (COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE={0})" -f $env:COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE) -ForegroundColor Yellow
 }
 
 Write-Host '[all] starting web'

@@ -17,6 +17,7 @@ import {
 } from "../utils/sender";
 import { resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
 import { messageStore, welcomeFollowUp } from "../services";
+import DedupCache from "../services/dedupCache";
 import { updateStatus } from "../utils/status";
 
 interface WelcomeTemplate {
@@ -25,6 +26,14 @@ interface WelcomeTemplate {
   sendDelayMs: number;
   logWelcome: boolean;
 }
+
+type OpenProfileCloseGuideMatch = "profileLinkIdNonZero" | "profileLinkIdZero";
+type OpenProfileCloseGuideConfig = {
+  enabled: boolean;
+  match: OpenProfileCloseGuideMatch;
+  text: string;
+  images: string[];
+};
 
 type WelcomeEntrant = { name: string; senderId: string; joinedAt: number };
 type WelcomeBatch = {
@@ -38,6 +47,8 @@ type WelcomeBatch = {
   extraDelayMs: number;
   timer: NodeJS.Timeout;
 };
+
+const OPEN_PROFILE_GUIDE_DEDUP = new DedupCache(24 * 60 * 60 * 1000); // 24시간
 
 @NewMemberController
 class CustomNewMemberController {
@@ -331,13 +342,13 @@ class CustomNewMemberController {
             ? kakaoDefaults[0]!
             : merged[0];
         if (merged.length) {
-          await this.sendWelcomeForEntrants(context, batch.roomName, merged, selectionHint || undefined);
+          await this.sendWelcomeForEntrants(context, batch.roomName, merged, selectionHint || undefined, w);
         }
         return;
       }
 
       // Legacy mode: single message, but still support multiple entrants within window
-      await this.sendWelcomeForEntrants(context, batch.roomName, batch.entrants);
+      await this.sendWelcomeForEntrants(context, batch.roomName, batch.entrants, undefined, w);
     } catch (e) {
       this.logger.error("[welcome] unexpected error while sending batch", { roomId, err: String(e) });
     }
@@ -425,6 +436,7 @@ class CustomNewMemberController {
     roomName: string,
     entrants: WelcomeEntrant[],
     selectionHint?: WelcomeEntrant,
+    welcomeConfig?: any,
   ): Promise<void> {
     const roomId = String(context.room.id);
 
@@ -488,6 +500,12 @@ class CustomNewMemberController {
         }
       }
 
+      try {
+        await this.maybeSendOpenProfileCloseGuide(context, roomName, entrants, welcomeConfig);
+      } catch (e) {
+        this.logger.warn("[welcome-open-profile] unexpected error; skip", { roomId, err: String(e) });
+      }
+
       this.logWelcome(context, entrants.map((e) => e.name).filter(Boolean).join(", "), {
         templateName,
         nicknameClass: selection.nicknameClass,
@@ -513,6 +531,161 @@ class CustomNewMemberController {
       }
     } catch (e) {
       this.logger.error("[welcome] send failed", { roomId, err: String(e) });
+    }
+  }
+
+  private parseOpenProfileCloseGuideConfig(welcomeConfig: any): OpenProfileCloseGuideConfig | null {
+    if (!welcomeConfig || typeof welcomeConfig !== "object") return null;
+    const raw = (welcomeConfig as any).openProfileCloseGuide;
+    if (!raw || typeof raw !== "object") return null;
+
+    const enabled = (raw as any).enabled;
+    if (typeof enabled !== "boolean") return null;
+
+    const matchRaw = String((raw as any).match ?? (raw as any).mode ?? "").trim();
+    let match: OpenProfileCloseGuideMatch | "" = "";
+    if (matchRaw === "profileLinkIdNonZero" || matchRaw === "profile_link_id_nonzero" || matchRaw === "nonzero" || matchRaw === "nonZero") {
+      match = "profileLinkIdNonZero";
+    } else if (matchRaw === "profileLinkIdZero" || matchRaw === "profile_link_id_zero" || matchRaw === "zero") {
+      match = "profileLinkIdZero";
+    }
+
+    const text = String((raw as any).text ?? (raw as any).message ?? "").trim();
+    const images = Array.isArray((raw as any).images)
+      ? (raw as any).images.map((x: any) => String(x ?? "").trim()).filter(Boolean)
+      : [];
+
+    if (enabled && !match) {
+      this.logger.warn("[welcome-open-profile] invalid config: match", { match: matchRaw || null });
+      return null;
+    }
+    if (enabled && !text) {
+      this.logger.warn("[welcome-open-profile] invalid config: empty text");
+      return null;
+    }
+    if (enabled && images.length === 0) {
+      this.logger.warn("[welcome-open-profile] invalid config: empty images");
+      return null;
+    }
+
+    return { enabled, match: match as OpenProfileCloseGuideMatch, text, images };
+  }
+
+  private async queryOpenChatMemberProfile(
+    roomIdRaw: string,
+    userIdRaw: string,
+    timeoutMs: number,
+  ): Promise<{ profileLinkId: string; profileType: string } | null> {
+    const roomId = String(roomIdRaw || "").trim();
+    const userId = String(userIdRaw || "").trim();
+    if (!roomId || !userId) return null;
+
+    const base = String(process.env.IRIS_QUERY_BASE || process.env.IRIS_URL || "http://127.0.0.1:5050").replace(/\/+$/, "");
+    const url = `${base}/query`;
+    const body = {
+      query:
+        "select profile_type, profile_link_id from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
+      bind: [roomId, userId],
+    };
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const tms = Math.min(25_000, Math.max(5000, Math.floor(timeoutMs) + (attempt - 1) * 3000));
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), tms);
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: ctrl.signal,
+        });
+        clearTimeout(t);
+
+        const j: any = await res.json().catch(() => null);
+        if (!res.ok) {
+          this.logger.warn("[welcome-open-profile] query non-OK", { roomId, httpStatus: res.status, attempt });
+          continue;
+        }
+
+        const row: any = j?.data?.[0] || null;
+        if (!row || typeof row !== "object") return null;
+
+        const profileLinkId = String(row?.profile_link_id ?? row?.profileLinkId ?? "").trim();
+        const profileType = String(row?.profile_type ?? row?.profileType ?? "").trim();
+        return { profileLinkId, profileType };
+      } catch (e) {
+        this.logger.warn("[welcome-open-profile] query failed", { roomId, err: String(e), attempt, timeoutMs: tms });
+      }
+
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+
+    return null;
+  }
+
+  private async maybeSendOpenProfileCloseGuide(
+    context: ChatContext,
+    roomName: string,
+    entrants: WelcomeEntrant[],
+    welcomeConfig?: any,
+  ): Promise<void> {
+    const cfg = this.parseOpenProfileCloseGuideConfig(welcomeConfig);
+    if (!cfg || !cfg.enabled) return;
+
+    const roomId = String((context.room as any)?.id ?? (context.room as any)?.roomId ?? "").trim();
+    if (!roomId) return;
+
+    const targets: WelcomeEntrant[] = [];
+    for (const e of entrants) {
+      const uid = String(e?.senderId || "").trim();
+      if (!uid) continue;
+      const dedupKey = `${roomId}:${uid}`;
+      if (OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) continue;
+
+      const prof = await this.queryOpenChatMemberProfile(roomId, uid, 8000);
+      if (!prof) continue;
+
+      const profileLinkId = String(prof.profileLinkId || "").trim();
+      if (!profileLinkId) continue; // unknown
+
+      const nonZero = profileLinkId !== "0";
+      const match = cfg.match === "profileLinkIdNonZero" ? nonZero : !nonZero;
+      if (match) targets.push(e);
+    }
+
+    if (!targets.length) return;
+
+    const { text: message, hasMention } = this.renderWelcomeText(cfg.text, targets, roomName);
+    const mentionees = targets
+      .map((e) => ({ name: String(e?.name || "").trim() || "Guest", userId: String(e?.senderId || "").trim() }))
+      .filter((m) => m.userId && m.name && message.includes("@" + m.name));
+    const mentioneesCapped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+
+    try {
+      if (hasMention && mentioneesCapped.length) {
+        await safeReplyWithMentions(this.logger, context, message, mentioneesCapped, 8000);
+      } else {
+        await safeReply(this.logger, context, message, 8000);
+      }
+    } catch (e) {
+      this.logger.warn("[welcome-open-profile] text send failed", { roomId, err: String(e) });
+    }
+
+    const imageUrls = resolveTemplateImageUrls(cfg.images || []);
+    if (imageUrls.length) {
+      try {
+        await safeReplyImageUrls(this.logger, context, imageUrls, 10000);
+      } catch (e) {
+        this.logger.warn("[welcome-open-profile] image send failed", { roomId, err: String(e), count: imageUrls.length });
+      }
+    }
+
+    for (const e of targets) {
+      const uid = String(e?.senderId || "").trim();
+      if (!uid) continue;
+      OPEN_PROFILE_GUIDE_DEDUP.mark(`${roomId}:${uid}`);
     }
   }
 

@@ -23,7 +23,7 @@ type StatusFileResult = {
   error?: string;
 };
 
-const EXPECTED_KINDS = ['bot', 'welcome-worker', 'ai-worker', 'broadcast-worker', 'command-worker'] as const;
+const EXPECTED_KINDS = ['bot', 'welcome-worker', 'ai-worker', 'broadcast-worker', 'command-worker', 'nickname-reminder-worker', 'image-worker', 'video-worker', 'auto-faq-worker'] as const;
 type ExpectedKind = (typeof EXPECTED_KINDS)[number];
 
 const STATUS_PATH_BY_KIND: Record<ExpectedKind, string> = {
@@ -32,6 +32,10 @@ const STATUS_PATH_BY_KIND: Record<ExpectedKind, string> = {
   'ai-worker': path.join(ROOT, 'node-iris-app', 'data', 'ai_worker_status.json'),
   'broadcast-worker': path.join(ROOT, 'node-iris-app', 'data', 'broadcast_worker_status.json'),
   'command-worker': path.join(ROOT, 'node-iris-app', 'data', 'command_worker_status.json'),
+  'nickname-reminder-worker': path.join(ROOT, 'node-iris-app', 'data', 'nickname_reminder_worker_status.json'),
+  'image-worker': path.join(ROOT, 'node-iris-app', 'data', 'image_worker_status.json'),
+  'video-worker': path.join(ROOT, 'node-iris-app', 'data', 'video_worker_status.json'),
+  'auto-faq-worker': path.join(ROOT, 'node-iris-app', 'data', 'auto_faq_worker_status.json'),
 };
 
 const TALKAPI_STATUS_PATH = path.join(ROOT, 'node-iris-app', 'data', 'talkapi_status.json');

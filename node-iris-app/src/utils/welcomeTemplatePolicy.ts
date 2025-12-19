@@ -29,51 +29,48 @@ interface RuntimeWelcomeConfig {
   welcomeTemplateName?: unknown;
 }
 
-// IRIS 기본 제공(또는 레거시) 템플릿 이름 차단 정책
-// - 숫자만으로 된 이름(예: "1", "2")은 과거 기본 템플릿에서 자주 사용되어
-//   운영자가 의도하지 않은 welcome 멘트가 나가는 원인이 된다.
-// - welcome_default_* 역시 "기본 문구"로 오인/혼동을 유발할 수 있어 기본 차단한다.
 const DISALLOWED_WELCOME_TEMPLATE_NAME_RE = /^(\d+|welcome_default_.*)$/;
 
+// NOTE: Use \u escapes to stay ASCII-safe in encoding-mixed environments.
 const DEFAULT_KAKAO_FRIENDS_NAMES_KO = [
-  "라이언",
-  "어피치",
-  "무지",
-  "콘",
-  "튜브",
-  "프로도",
-  "네오",
-  "제이지",
-  "춘식이",
-  "프렌즈",
-  "니니즈",
-  "죠르디",
-  "앙몬드",
-  "스카피",
-  "팬더주니어",
-  "팬더 주니어",
-  "팬다",
-  "케로",
-  "베로니",
-  "케로&베로니",
-  "케로 & 베로니",
-  "콥",
-  "빠냐",
-  "콥&빠냐",
-  "콥 & 빠냐",
+  "\uB77C\uC774\uC5B8", // 라이언
+  "\uC5B4\uD53C\uCE58", // 어피치
+  "\uBB34\uC9C0", // 무지
+  "\uCF58", // 콘
+  "\uD2DC\uBE0C", // 튜브
+  "\uD504\uB85C\uB3C4", // 프로도
+  "\uB124\uC624", // 네오
+  "\uC81C\uC774\uC9C0", // 제이지
+  "\uCD98\uC2DD\uC774", // 춘식이
+  "\uC559\uBAAC\uB4DC", // 앙몬드
+  "\uC8E0\uB974\uB514", // 죠르디
+  "\uC2A4\uCE74\uD53C", // 스카피
+  "\uCF00\uB85C", // 케로
+  "\uBCA0\uB85C", // 베로
+  "\uCF00\uB85C\uBCA0\uB85C", // 케로베로
+  "\uCF00\uB85C&\uBCA0\uB85C", // 케로&베로
+  "\uCF00\uB85C & \uBCA0\uB85C", // 케로 & 베로
+  "\uBE54\uBC24", // 빔밤
+  "\uCF58\uBE54\uBC24", // 콘빔밤
+  "\uCF58&\uBE54\uBC24", // 콘&빔밤
+  "\uCF58 & \uBE54\uBC24", // 콘 & 빔밤
+  "\uD504\uB80C\uC988", // 프렌즈
 ] as const;
 
-const DEFAULT_KAKAO_DEFAULT_NICKNAME_REGEXES: RegExp[] = [
+export const DEFAULT_KAKAO_DEFAULT_NICKNAME_REGEXES: RegExp[] = [
+  // 1) "<word>하는 <name>"
   new RegExp(
-    `^[가-힣0-9]{1,12}하는\\s+(?:${DEFAULT_KAKAO_FRIENDS_NAMES_KO.join("|")})$`,
+    `^[\\p{Script=Hangul}0-9]{1,12}하는\\s+(?:${DEFAULT_KAKAO_FRIENDS_NAMES_KO.join("|")})$`,
     "u",
   ),
+  // 2) "<word> <name>" (e.g. "우는 춘식이")
   new RegExp(
-    `^[가-힣0-9]{1,12}\\s+(?:${DEFAULT_KAKAO_FRIENDS_NAMES_KO.join("|")})$`,
+    `^[\\p{Script=Hangul}0-9]{1,12}\\s+(?:${DEFAULT_KAKAO_FRIENDS_NAMES_KO.join("|")})$`,
     "u",
   ),
+  // 3) "<word> <word> ... <name>" (2~4 words)
   new RegExp(
-    `^[가-힣0-9]{1,12}(?:\\s+[가-힣0-9]{1,12}){1,3}\\s+(?:${DEFAULT_KAKAO_FRIENDS_NAMES_KO.join("|")})$`,
+    `^[\\p{Script=Hangul}0-9]{1,12}(?:\\s+[\\p{Script=Hangul}0-9]{1,12}){1,3}\\s+(?:${DEFAULT_KAKAO_FRIENDS_NAMES_KO.join("|")})$`,
     "u",
   ),
 ];
@@ -130,7 +127,7 @@ function normalizeTemplatePick(value: unknown): WelcomeTemplatePick {
 
 function compileRegexes(value: unknown): RegExp[] {
   if (value === undefined || value === null) {
-    throw new Error("welcome.kakaoDefaultNicknameRegexes is required when welcome.templateSets is enabled");
+    throw new Error("welcome.kakaoDefaultNicknameRegexes is required (when welcome.templateSets is set)");
   }
   if (!Array.isArray(value)) {
     throw new Error("welcome.kakaoDefaultNicknameRegexes must be an array of regex strings");
@@ -157,10 +154,43 @@ function compileRegexes(value: unknown): RegExp[] {
   }
 }
 
-function isKakaoDefaultNickname(userNameRaw: string, regexes: RegExp[]): boolean {
+export function isKakaoDefaultNickname(userNameRaw: string, regexes: RegExp[]): boolean {
   const userName = String(userNameRaw || "").trim();
-  if (!userName) return true; // 이름이 비어 있으면 "기본닉/미설정"으로 취급해 닉네임 변경 안내 세트를 적용
+  if (!userName) return true;
   return regexes.some((re) => re.test(userName));
+}
+
+let warnedInvalidRuntimeRegexes = false;
+
+export function resolveKakaoDefaultNicknameRegexesFromRuntime(runtime: unknown): RegExp[] {
+  // Prefer runtime.json.welcome.kakaoDefaultNicknameRegexes when it looks sane; otherwise use defaults.
+  try {
+    if (runtime && typeof runtime === "object") {
+      const w = (runtime as any).welcome;
+      const raw = w && typeof w === "object" ? (w as any).kakaoDefaultNicknameRegexes : undefined;
+      if (Array.isArray(raw)) {
+        const joined = raw.map((v: any) => String(v ?? "")).join("\n");
+        const looksOk =
+          joined.includes("\\p{Script=Hangul}") ||
+          joined.includes("\\uAC00-\\uD7A3") ||
+          joined.includes("가-힣");
+        if (!looksOk && !warnedInvalidRuntimeRegexes) {
+          warnedInvalidRuntimeRegexes = true;
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[welcome] runtime.welcome.kakaoDefaultNicknameRegexes looks invalid (encoding/mojibake?). Using defaults.",
+          );
+        }
+        if (looksOk) {
+          const compiled = compileRegexes(raw);
+          if (compiled && compiled.length > 0) return compiled;
+        }
+      }
+    }
+  } catch {
+    // ignore; fall back to defaults
+  }
+  return DEFAULT_KAKAO_DEFAULT_NICKNAME_REGEXES;
 }
 
 function fnv1a32(input: string): number {
@@ -216,6 +246,8 @@ export async function resolveWelcomeTemplateSelection(params: {
   const welcomeCfg = cfg.welcome;
   const sets = welcomeCfg?.templateSets;
   if (sets) {
+    // In template-set mode, never "guess" defaults:
+    // kakaoDefaultNicknameRegexes must be explicitly provided and valid.
     const regexes = compileRegexes(welcomeCfg?.kakaoDefaultNicknameRegexes);
     const nicknameClass: WelcomeNicknameClass = isKakaoDefaultNickname(userName, regexes)
       ? "kakao_default_nickname"
@@ -239,10 +271,7 @@ export async function resolveWelcomeTemplateSelection(params: {
     if (pick === "random") {
       templateName = pickRandom(candidates);
     } else {
-      const hashKey =
-        pick === "hash_sender_id"
-          ? (senderId || userName)
-          : userName;
+      const hashKey = pick === "hash_sender_id" ? (senderId || userName) : userName;
       if (!hashKey) {
         throw new Error("cannot pick welcome template: both senderId and userName are empty");
       }
@@ -263,6 +292,7 @@ export async function resolveWelcomeTemplateSelection(params: {
       source: "single_template",
     };
   }
+
   if (cfg.welcomeTemplateName && typeof cfg.welcomeTemplateName === "string" && cfg.welcomeTemplateName.trim()) {
     return {
       templateName: assertAllowedTemplateName(cfg.welcomeTemplateName.trim(), "welcomeTemplateName"),

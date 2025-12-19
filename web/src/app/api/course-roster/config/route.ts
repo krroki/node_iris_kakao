@@ -7,20 +7,51 @@ import { parseSpreadsheetId, readJsonIfExists, repoRoot, writeJsonAtomic } from 
 
 export const dynamic = "force-dynamic";
 
+function extractNaverCafeClubId(raw: string): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const m = s.match(/(?:clubid|clubId|search\\.clubid|search\\.clubId)=(\d+)/i);
+  return m ? String(m[1] || "").trim() : "";
+}
+
 function normalizeRoomConfig(v: any) {
   const enabled = v?.enabled === undefined ? true : Boolean(v?.enabled);
   const spreadsheetId = String(v?.spreadsheetId || v?.sheetId || "").trim();
   const rosterSheetName = String(v?.rosterSheetName || v?.rosterSheet || "ROSTER_RAW").trim() || "ROSTER_RAW";
+  const cafeSourceRaw = String(v?.cafeSource || "").trim().toLowerCase();
   const cafeCsvPath = String(v?.cafeCsvPath || "").trim();
+  const cafeUrl = String(v?.cafeUrl || "").trim();
+  let cafeClubId = String(v?.cafeClubId || v?.clubId || "").trim();
+  if (!cafeClubId && cafeUrl) {
+    cafeClubId = extractNaverCafeClubId(cafeUrl);
+  }
+  const crawlerRepoPath = String(v?.crawlerRepoPath || process.env.NAVER_CAFE_CRAWLER_REPO || "C:\\dev\\naver-cafe-member-crawler").trim();
+  const crawlerPythonExeRaw = String(v?.crawlerPythonExe || process.env.NAVER_CAFE_CRAWLER_PYTHON || "").trim();
+  const crawlerPythonExe = crawlerPythonExeRaw
+    ? crawlerPythonExeRaw
+    : (crawlerRepoPath ? path.join(crawlerRepoPath, "venv", "Scripts", "python.exe") : "");
+  const crawlerSettingsPath = String(v?.crawlerSettingsPath || process.env.NAVER_CAFE_CRAWLER_SETTINGS || "").trim();
+  const cafeSource = (cafeSourceRaw === "crawler" || cafeSourceRaw === "csv")
+    ? cafeSourceRaw
+    : (cafeClubId ? "crawler" : (cafeCsvPath ? "csv" : "crawler"));
   const joinUrl = String(v?.joinUrl || "").trim();
   return {
     enabled,
     spreadsheetId,
     rosterSheetName,
+    cafeSource,
+    cafeUrl,
+    cafeClubId,
+    crawlerRepoPath,
+    crawlerPythonExe,
+    crawlerSettingsPath,
     cafeCsvPath,
     joinUrl,
     parsedSpreadsheetId: parseSpreadsheetId(spreadsheetId),
     cafeCsvExists: cafeCsvPath ? fs.existsSync(cafeCsvPath) : false,
+    crawlerRepoExists: crawlerRepoPath ? fs.existsSync(crawlerRepoPath) : false,
+    crawlerPythonExists: crawlerPythonExe ? fs.existsSync(crawlerPythonExe) : false,
+    crawlerSettingsExists: crawlerSettingsPath ? fs.existsSync(crawlerSettingsPath) : true,
   };
 }
 
@@ -105,7 +136,13 @@ export async function POST(req: Request) {
       enabled: vv?.enabled === undefined ? true : Boolean(vv?.enabled),
       spreadsheetId: String(vv?.spreadsheetId || "").trim(),
       rosterSheetName: String(vv?.rosterSheetName || "ROSTER_RAW").trim() || "ROSTER_RAW",
-      cafeCsvPath: String(vv?.cafeCsvPath || "").trim(),
+      cafeSource: (String(vv?.cafeSource || "").trim().toLowerCase() === "csv") ? "csv" : "crawler",
+      cafeUrl: String(vv?.cafeUrl || "").trim(),
+      cafeClubId: String(vv?.cafeClubId || "").trim(),
+      crawlerRepoPath: String(vv?.crawlerRepoPath || "").trim(),
+      crawlerPythonExe: String(vv?.crawlerPythonExe || "").trim(),
+      crawlerSettingsPath: String(vv?.crawlerSettingsPath || "").trim(),
+      cafeCsvPath: String(vv?.cafeCsvPath || "").trim(), // legacy
       joinUrl: String(vv?.joinUrl || "").trim(),
     };
   }

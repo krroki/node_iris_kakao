@@ -88,11 +88,13 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 - 시나리오:
   1. 신규 입장자가 들어오고 welcome 텍스트가 정상 발신되는지 확인
   1-1. (템플릿 이미지) welcome 템플릿에 `images`가 설정되어 있다면 이미지도 별도 메시지로 발신되는지 확인(ADR-0030)
-  2. 해당 신규 입장자가 **입장 후 5분 이내**에 **첫 이미지**를 전송
+  2. 해당 신규 입장자가 **입장 후 15분 이내**에 **첫 이미지**를 전송
   3. 봇이 그 이미지 메시지에 **답장(Reply)** 으로 랜덤 문구(예: “감사합니다~ 이제 편하게 소통해주시면 됩니다!”)를 1회 발신
 - 체크:
   - 같은 사용자가 추가 이미지를 보내도 **추가 답장은 없어야 함**(1회 트리거)
-  - 5분이 지난 뒤 첫 이미지를 보내면 **답장이 없어야 함**
+  - 15분이 지난 뒤 첫 이미지를 보내면 **답장이 없어야 함**
+  - 15분이 지났는데도 첫 이미지가 없으면 1회 추가 멘션 경고가 발신됨:
+    - `@{entrance} 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
 
 ### 공지(Announcement) 미러링 스모크 (소스 → 다중 타겟 복제)
 
@@ -149,15 +151,20 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 |------|-------------------------|------|
 | 전체 스택 기동(API+KB+Bot+Web) | `windows/start_all.cmd` | 사용자 실행 권장 엔트리포인트(cmd 래퍼, 내부적으로 `windows/start_all.ps1` 호출). 기본 포트: API 8650, Web 3100. 실행 후 watchdog가 **자동으로 백그라운드 기동**되며(`windows/watchdog.log` 기록), 필요 시 `windows/start_all.ps1 -NoWatchdog`로 비활성화 |
 | 부팅 자동 기동 등록(Task Scheduler) | `windows/register_start_all_task.ps1` | Windows 작업 스케줄러에 로그인/부팅 트리거로 `start_all.cmd` 자동 실행 작업을 등록. 삭제는 `windows/register_start_all_task.ps1 -Delete` |
-| Watchdog 자동 유지 등록(Task Scheduler) | `windows/register_watchdog_task.ps1` | watchdog가 죽어 있으면 자동 복구가 동작하지 않으므로, 1분 주기로 watchdog 실행 여부를 확인해 자동 기동하는 작업을 등록한다. 삭제는 `windows/register_watchdog_task.ps1 -Delete` |
+| Watchdog 자동 유지 등록(Task Scheduler) | `windows/register_watchdog_task.ps1` | watchdog가 죽어 있으면 자동 복구가 동작하지 않으므로 **ensure_watchdog를 ① 1분 주기 + ② 로그인(ONLOGON) 트리거**로 등록해 watchdog를 자동 보장한다(창 플래시 방지: `windows/run_ensure_watchdog.vbs`). 삭제는 `windows/register_watchdog_task.ps1 -Delete` |
 | Bot 단독 재기동(빌드 포함) | `windows/start_bot.ps1 -Restart` | `node-iris-app/dist`가 최신이 아니면 자동으로 `npm run build` 후 기동. 운영 중 “코드 변경이 반영되지 않음”이 의심되면 이 명령으로 확인 |
 | Bot 단독 재기동(빌드 생략) | `windows/start_bot.ps1 -Restart -SkipBuild` | 빠른 재기동(이미 빌드가 최신이라는 확신이 있을 때만) |
 | Welcome-worker 단독 재기동 | `windows/start_welcome_worker.ps1 -Restart` | Welcome/후속 Reply 기능 워커(ADR-0027). 중복 실행은 락 파일(`node-iris-app/data/locks/welcome_worker.lock`)로 자동 차단된다. 기본값은 `WELCOME_DISPATCHER=worker`이며, 레거시(`WELCOME_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장. 설정 변경 반영을 위해 SSE 재연결 TTL(기본 60초, `WELCOME_WORKER_STREAM_TTL_MS`)이 적용된다 |
 | AI-worker 단독 재기동 | `windows/start_ai_worker.ps1 -Restart` | `?디하클` AI 응답 워커(ADR-0028). 중복 실행은 락 파일(`node-iris-app/data/locks/ai_worker.lock`)로 자동 차단된다. 기본값은 `AI_DISPATCHER=worker`이며, 레거시(`AI_DISPATCHER=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
 | Broadcast-worker 단독 재기동 | `windows/start_broadcast_worker.ps1 -Restart` | 공지/브로드캐스트 워커(ADR-0029). 중복 실행은 락 파일(`node-iris-app/data/locks/broadcast_worker.lock`)로 자동 차단된다. 기본값은 `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker`이며, 둘 다 레거시(`...=bot`)로 롤백한 경우에는 worker를 끄는 것을 권장 |
 | Command-worker 단독 재기동 | `windows/start_command_worker.ps1 -Restart` | 방별 명령어(FAQ) 워커(ADR-0035). `runtime.features[roomId].commands=true`인 방에서 `!등록/!삭제/!명령어/!키`를 처리한다. 중복 실행은 락 파일(`node-iris-app/data/locks/command_worker.lock`)로 자동 차단된다 |
+| 기본닉 멘션 워커 단독 재기동 | `windows/start_nickname_reminder_worker.ps1 -Restart` | 카카오 기본 닉네임 사용자에게 닉네임 변경을 “멘션”으로 안내(ADR-0041). `runtime.features[roomId].nicknameReminder=true`인 방에서만 동작하며, 발신 전 Redroid 멤버 목록 스크롤 로딩으로 `open_chat_member` 완전성을 확인한다 |
+| Image-worker 단독 재기동 | `windows/start_image_worker.ps1 -Restart` | 이미지 생성/수정 워커. `runtime.features[roomId].imageGen=true`인 방에서 `!사진`/`!사진수정`(Reply) 명령을 처리한다 |
+| Video-worker 단독 재기동 | `windows/start_video_worker.ps1 -Restart` | 영상 생성 워커. `runtime.features[roomId].videoGen=true`인 방에서 `!영상` 명령을 처리한다 |
+| Auto-faq-worker 단독 재기동 | `windows/start_auto_faq_worker.ps1 -Restart` | 무명령어 자동 FAQ 워커(ADR-0037). `runtime.features[roomId].autoFaq=true`인 방에서 질문 트리거를 Reply로 자동응답한다. 이미지가 설정된 트리거는 Reply 후 별도 메시지로 이미지 묶음을 1회 발신한다 |
 | Roster-worker 단독 재기동 | `windows/start_roster_worker.ps1 -Restart` | 강의 운영 워커(선택 기능). 설정 파일 `data/course_roster_worker.json`이 없으면 `start_all`/watchdog에서 자동으로 스킵된다 |
 | Openchat-members-sheets-worker 단독 재기동 | `windows/start_openchat_members_sheets_worker.ps1 -Restart` | 오픈채팅 전체 멤버 Sheets 동기화 워커(선택 기능). `data/openchat_members_sheets.json`이 없거나 `worker.enabled=false`면 `start_all`/watchdog에서 자동으로 스킵된다 |
+| Course-membership-audit-worker 단독 재기동 | `windows/start_course_membership_audit_worker.ps1 -Restart` | 강의 운영 v2(카페 등급 기반 톡방 참여 점검 + 통합 시트) 워커. 설정 파일 `data/course_membership_audit.json`이 필요하며, `worker.enabled=false`면 즉시 종료한다 |
 | Web 단독 기동(prod) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort` | 운영 모드(`next start`, distDir `.next-prod`). READY는 `/api/ping`(200) + `/`에서 참조하는 `/_next/static` 자산 1개(200)로 판정(“남색 배경만” 빈 화면 방지) |
 | Web 단독 기동(prod, CleanBuild) | `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild` | `.next-prod` 삭제 후 재빌드(Next chunk 깨짐/MODULE_NOT_FOUND 복구용) |
 | Web 개발 서버(dev) | `windows/start_web.ps1 -Mode dev -Port 3100 -ForceKillPort` | 개발용(`next dev`, distDir `.next`). 시작 전 `.next` 삭제 실패 시 즉시 실패(폴백 금지) |
@@ -177,6 +184,12 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
   - `extra.emfile=true` 또는 `node-iris-app/data/bot_health.json` 존재 시: MessageStore가 `EMFILE(too many open files)`로 로그 기록을 중단한 상태일 수 있음.
     - 우선 복구: `windows/start_bot.ps1 -Restart` (또는 콜드 부팅은 `windows/start_all.cmd`)
     - 운영에서는 watchdog가 자동 재시작하지만, watchdog가 죽어있으면 수동 복구가 필요.
+    - (추가) 재기동 직후에도 EMFILE가 빠르게 재발하거나, 프로세스 HandleCount가 수천 단위로 치솟으면 **node-iris Logger 파일 핸들 누수**(ADR-0042)를 의심한다.
+      - 확인(간단): `powershell -NoProfile -Command "Get-Process -Id <PID> | Select-Object Id,HandleCount"`
+      - 패치/버전 점검:
+        - `node-iris-app/package.json`에서 `@tsuki-chat/node-iris`가 `1.6.41`로 고정되어 있는지 확인
+        - (강제) `cd node-iris-app && npx patch-package --error-on-fail`
+      - 원인/조치(SSOT): `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md`
 
 모든 스크립트는 관리자 권한 PowerShell에서 실행해야 하며, 실행 전 `Set-ExecutionPolicy RemoteSigned` 상태를 확인한다.
 
@@ -189,7 +202,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 
 | 목적 | 명령 | 설명 |
 |------|------|------|
-| 멤버 DB 강제 로딩(단말 UI 스크롤) | `pwsh scripts/openchat_load_members.ps1 -RoomId <ROOM_ID>` | 오픈채팅 URL로 진입 → 멤버 화면 스크롤로 `db2.open_chat_member`를 채움(송신 없음) |
+| 멤버 DB 강제 로딩(단말 UI 스크롤) | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/openchat_load_members.ps1 -RoomId <ROOM_ID> -Serial <ADB_SERIAL> -Scrolls 650` | 오픈채팅 URL로 진입 → 멤버 화면 스크롤로 `db2.open_chat_member`를 채움(송신 없음) |
+| 기본닉 후보 리포트(증명 포함) | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/report_default_nickname_candidates.ps1 -RoomId <ROOM_ID> -Serial <ADB_SERIAL> -Scrolls 650` | 멤버 로딩을 선행한 뒤, DB 기준 “카카오 기본 닉네임” 후보를 중복 제거해 출력 + JSON 저장(`node-iris-app/data/reports/default_nickname_candidates/`) |
 | 멤버 스냅샷(JSON) 저장 | `python scripts/iris_members_snapshot.py --rooms <ROOM_ID> --output logs/analysis/iris_members_snapshot.json` | `db2.open_chat_member`를 roomId로 필터해 userId/nickname 목록을 저장 |
 | 대시보드에서 멤버 보기 | `http://127.0.0.1:3100` | 방 카드의 “멤버 보기”에서 닉네임 검색/페이지 이동(userId 클릭 시 복사) |
 | Google Sheets 업서트 | `python scripts/sync_openchat_members_to_sheets.py --room-id <ROOM_ID>` | `db2.open_chat_member`를 Google Sheets에 upsert(서비스 계정 OAuth 필요). 기본은 loaded<active면 실패. 1회 등록(`--init-config`)을 안 했으면 `--spreadsheet-id`가 필요 |
@@ -199,7 +213,11 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 - 설정(로컬, gitignore):
   - `data/course_roster_worker.json` (예시: `config/course_roster_worker.example.json`)
   - `data/gcp_service_account.json` (서비스 계정)
-  - 카페 멤버 CSV: `C:\dev\naver-cafe-member-crawler\data\<카페이름>_<clubid>.csv`
+  - 카페(권장, 크롤러): `cafeSource=crawler` + `cafeClubId=<NAVER_CAFE_CLUB_ID>`
+    - (선택) `crawlerRepoPath`, `crawlerPythonExe`, `crawlerSettingsPath`
+    - 크롤러 레포(기본): `C:\dev\naver-cafe-member-crawler`
+    - 계정/비번은 크롤러 설정 파일에 저장됨(예: `%LOCALAPPDATA%\NaverCafeMemberCrawler\config\settings.json`)
+  - 카페(레거시): `cafeSource=csv` + `cafeCsvPath`
 - 기동:
   - `pwsh windows/start_roster_worker.ps1`
   - 재시작: `pwsh windows/start_roster_worker.ps1 -Restart`
@@ -209,6 +227,31 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 - 로그/상태:
   - `windows/logs/roster_worker.out.log`
   - `node-iris-app/data/roster_worker_status.json`
+
+### 강의 운영 v2: 카페 등급 기반 참여 점검 워커(course-membership-audit-worker)
+
+- 설정(로컬, gitignore):
+  - `data/course_membership_audit.json` (예시: `config/course_membership_audit.example.json`)
+  - `data/gcp_service_account.json` (서비스 계정)
+  - 카페 크롤러 레포: `C:\dev\naver-cafe-member-crawler`
+    - 계정/비번은 크롤러 설정 파일에 저장됨(예: `%LOCALAPPDATA%\NaverCafeMemberCrawler\config\settings.json`)
+- 기동:
+  - `pwsh windows/start_course_membership_audit_worker.ps1`
+  - 재시작: `pwsh windows/start_course_membership_audit_worker.ps1 -Restart`
+- 권한:
+  - Sheets 업서트는 **Chrome 로그인**이 아니라 **서비스 계정 권한**이 필요
+  - 스프레드시트 문서에 서비스 계정 이메일을 **Editor**로 공유(이메일은 UI의 “강의 운영 v2” 카드에 표시)
+- 비활성화:
+  - 전체 비활성화(운영): `setx COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE 1`
+- 점검 전제:
+  - 방 이름 규칙: `(사담방) <코스키>` / `(공지방) <코스키>` / `(프리미엄방) <코스키>`
+  - 등급 매핑: `staffGrades` → staff, `premiumGrades` → premium, 그 외 → normal(새싹 포함)
+  - `loadedMembersCount < activeMembersCount`면 AUDIT_VIEW는 `INCOMPLETE`로 표시됨(확정 금지)
+  - `data/course_membership_audit.json`이 있고 `worker.enabled=true`면 `start_all`/watchdog가 자동 기동/복구 대상
+- 로그/상태:
+  - `windows/logs/course_membership_audit_worker.out.log`
+  - `node-iris-app/data/course_membership_audit_worker_status.json`
+  - `node-iris-app/data/course_membership_audit_worker_state.json`
 
 ---
 

@@ -12,6 +12,7 @@ import {
   safeReplyImageUrls,
 } from "../utils/sender";
 import { tryServerTalkApiDispatchRaw } from "../utils/talkapi";
+import { tryServerIrisReplyText } from "../utils/iris";
 import { Logger } from "@tsuki-chat/node-iris";
 import { isRoomAllowed, isSafeMode, isFeatureEnabledForContext } from "../utils/guard";
 import { APP_ROOT } from "../utils/paths";
@@ -22,6 +23,54 @@ import { messageStore } from "../services";
 
 // 운영 안전: 테스트 커맨드(!welcome:test / !reply:test)는 테스트 전용 오픈채팅방에서만 수행한다.
 const TEST_COMMAND_ROOM_ID = "18462226881291012";
+const OPS_LOG_ROOM_ID = TEST_COMMAND_ROOM_ID;
+
+// 기능 장애 시 사용자에게는 "원인/디버깅" 없이 아래 문구로만 응답한다.
+const FEATURE_DOWN_REPLY = [
+  "앗, 지금 기능이 잠깐 멈췄어요 😅",
+  "관리자님께 바로 전달했으니 금방 복구될 거예요!",
+  "조금만 기다려주세요 🙏",
+].join("\n");
+
+let lastOpsKey = "";
+let lastOpsAt = 0;
+
+function humanizeKbFailure(input: { status?: number; body?: any; err?: unknown }): string {
+  const status = typeof input?.status === "number" ? input.status : undefined;
+  const errText = input?.err ? String((input.err as any)?.message || input.err) : "";
+  const detail = String(input?.body?.detail || input?.body?.code || "").trim();
+
+  if (errText) {
+    if (/abort|timeout|timed\s*out/i.test(errText)) return "응답이 너무 늦어서 잠깐 실패했어요.";
+    return "지식베이스 서버에 잠깐 연결이 안 돼요.";
+  }
+  if (status != null) {
+    if (status >= 500) {
+      if (/chat_qa_call_failed|chat_summary_call_failed/i.test(detail)) return "답변을 만드는 과정이 잠깐 막혔어요.";
+      return "지식베이스에서 오류가 나고 있어요.";
+    }
+    if (status === 400 || status === 422) return "요약 요청 처리 중 문제가 생겼어요.";
+  }
+  return "지식베이스가 잠깐 응답을 못 하고 있어요.";
+}
+
+async function sendOpsAlert(logger: Logger, roomName: string, featureLabel: string, reason: string): Promise<void> {
+  if (!OPS_LOG_ROOM_ID) return;
+  if (await isSafeMode()) return;
+
+  const rn = String(roomName || "").trim() || "(이름 미확인)";
+  const feat = String(featureLabel || "").trim() || "기능";
+  const why = String(reason || "").trim() || "원인 확인 필요";
+
+  const key = `${rn}|${feat}|${why}`;
+  const now = Date.now();
+  if (key === lastOpsKey && now - lastOpsAt < 60_000) return; // 60초 내 동일 알림 중복 방지
+  lastOpsKey = key;
+  lastOpsAt = now;
+
+  const msg = [`[운영 알림] "${rn}"에서 ${feat} 기능이 지금 안 돼요`, `- 이유: ${why}`].join("\n");
+  await tryServerIrisReplyText(logger, OPS_LOG_ROOM_ID, msg, 12000);
+}
 
 function sanitizeChatAnswer(raw: string): string {
   let s = String(raw || "").replace(/\r\n/g, "\n");
@@ -60,8 +109,9 @@ function sanitizeChatAnswer(raw: string): string {
     cleaned = cleaned.replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g, "");
 
     // userId(숫자) 노출 방지(제한적으로 치환)
-    cleaned = cleaned.replace(/\b\d{6,}\b\s*님\b/g, "어떤 분");
-    cleaned = cleaned.replace(/\b\d{6,}\b(?=(이|가|은|는|을|를|에게|한테|에서|도|만|과|와|랑|으로|로|께|부터|까지)\b)/g, "어떤 분");
+    cleaned = cleaned.replace(/\b\d{6,}\b\s*님/g, "어떤 분");
+    cleaned = cleaned.replace(/\b\d{6,}\b(?=(이|가|은|는|을|를|에게|한테|에서|도|만|과|와|랑|으로|로|께|부터|까지))/g, "어떤 분");
+    cleaned = cleaned.replace(/\b\d{6,}\b(?=\s*[:：])/g, "어떤 분");
     cleaned = cleaned.replace(/@\s*\b\d{6,}\b/g, "@어떤 분");
 
     cleaned = cleaned.replace(/\s{2,}/g, " ").trim();
@@ -96,178 +146,6 @@ function sanitizeChatAnswer(raw: string): string {
   // 첫 줄 다음 빈 줄 1개(가독성) 보정
   s = s.replace(/^([^\n]+)\n(💡\s*요약\s*내용|🔗\s*관련\s*링크|---|\d+\.\s+|- )/m, "$1\n\n$2");
   return s.trim();
-}
-
-function buildLocalQaFallback(question: string, messages: Array<{ sender?: string; text: string }>): string {
-  const q = String(question || "").trim();
-  if (!q) return "";
-
-  const wantsLink = /(링크|url|URL|주소)/.test(q);
-  const wantsDate = /(언제|일정|날짜|몇\s*일|며칠|나와|나오|출간|업로드|오픈|발표)/.test(q);
-
-  const tokens = (q.match(/[0-9A-Za-z가-힣]{2,}/g) || []).map((t) => t.trim()).filter(Boolean);
-  const stop = new Set([
-    "링크",
-    "주소",
-    "알려줘",
-    "알려주세요",
-    "어떻게",
-    "어케",
-    "뭐야",
-    "무엇",
-    "언제",
-    "나와",
-    "나오",
-    "되나",
-    "되요",
-    "되나요",
-    "되면",
-    "안되면",
-    "안돼",
-    "안됨",
-    "안돼요",
-    "가능",
-    "가능해",
-    "가능한",
-    "확인",
-    "할수",
-    "할수있",
-    "할수있어",
-    "질문",
-    "요약",
-    "채팅요약",
-  ]);
-  const normalizeToken = (tok: string): string[] => {
-    const s = String(tok || "").trim();
-    if (!s) return [];
-    const out: string[] = [s];
-    const suffixes = [
-      "님",
-      "에서",
-      "에게",
-      "한테",
-      "으로",
-      "부터",
-      "까지",
-      "은",
-      "는",
-      "이",
-      "가",
-      "을",
-      "를",
-      "에",
-      "도",
-      "만",
-      "과",
-      "와",
-      "랑",
-      "로",
-      "께",
-    ];
-    for (const suf of suffixes) {
-      if (s.endsWith(suf) && s.length > suf.length + 1) {
-        out.push(s.slice(0, -suf.length));
-        break;
-      }
-    }
-    return out;
-  };
-
-  const keywords = Array.from(
-    new Set(tokens.flatMap((t) => normalizeToken(t)).filter((t) => t && !stop.has(t))),
-  ).slice(0, 10);
-  const hasAnyKeyword = (text: string) => {
-    const tl = String(text || "").toLowerCase();
-    return keywords.some((kw) => tl.includes(kw.toLowerCase()));
-  };
-
-  const extractUrls = (text: string): string[] => {
-    const out: string[] = [];
-    const re = /https?:\/\/\S+/g;
-    for (const m of String(text || "").match(re) || []) {
-      out.push(String(m).replace(/[).,]}>\"']+$/g, ""));
-    }
-    return out;
-  };
-
-  // 1) 링크 질문: URL만 모아서 푸터에 넣는다.
-  if (wantsLink) {
-    const urls: string[] = [];
-    for (const m of messages) {
-      const t = String(m?.text || "");
-      if (!t) continue;
-      if (keywords.length > 0 && !hasAnyKeyword(t)) continue;
-      urls.push(...extractUrls(t));
-    }
-    const uniq = Array.from(new Set(urls)).slice(0, 10);
-    if (uniq.length === 0) {
-      return [
-        "아쉽게도 대화에서 관련 링크는 아직 못 찾았어요 😥",
-        "",
-        "💡 요약 내용",
-        "- 공지/고정글에 있을 수도 있으니 한 번만 확인해 주세요.",
-        "- 링크가 들어간 메시지가 있었다면, 그 메시지 앞뒤 키워드로 다시 한 번 물어봐도 좋아요.",
-      ].join("\n").trim();
-    }
-    return [
-      "찾아봤는데, 대화에서 관련 링크가 있었어요 😊",
-      "",
-      "💡 요약 내용",
-      "- 대화에서 확인된 링크만 모아뒀어요.",
-      "",
-      "---",
-      "🔗 관련 링크",
-      ...uniq,
-    ].join("\n").trim();
-  }
-
-  // 2) 날짜/일정 질문: 날짜 표현만 뽑아서 안내한다.
-  if (wantsDate && keywords.length > 0) {
-    const dateRe =
-      /(?:(20\d{2})[./-]([01]?\d)[./-]([0-3]?\d))|(?:(\d{1,2})\s*월\s*(\d{1,2})\s*일)|(?:(\d{1,2})\s*일)/;
-    const dates: string[] = [];
-    for (const m of messages) {
-      const t = String(m?.text || "");
-      if (!t) continue;
-      if (!hasAnyKeyword(t)) continue;
-      const mm = t.match(dateRe);
-      if (!mm) continue;
-      dates.push(String(mm[0]).trim());
-    }
-    const uniq = Array.from(new Set(dates)).slice(0, 5);
-    if (uniq.length > 0) {
-      return [
-        "찾아봤어요! 대화에서 일정/날짜 언급이 이렇게 있었어요 😊",
-        "",
-        "💡 요약 내용",
-        ...uniq.map((d) => `- ${d}`),
-        "",
-        "📌 표현이 '28일'처럼 월/연도가 빠져 있을 수도 있어서, 딱 떨어지는 날짜로는 못 박기 어렵네요 😥",
-      ].join("\n").trim();
-    }
-  }
-
-  // 3) 일반 질문: 키워드가 걸리는 라인이 있으면 그 존재만 요약한다(원문 인용은 피함).
-  const matched = messages.filter((m) => hasAnyKeyword(String(m?.text || "")));
-  if (matched.length > 0) {
-    const ks = keywords.slice(0, 3).join(", ");
-    return [
-      "결론부터 말하면, 대화에서 딱 떨어지는 답은 아직 못 찾았어요 😥",
-      "",
-      "💡 요약 내용",
-      `- 대신 **${ks || "질문 관련"}** 얘기는 대화에 언급이 있었어요.`,
-      "- 정확한 답이 필요하면 공지/운영진 확인이 제일 빠를 것 같아요.",
-    ].join("\n").trim();
-  }
-
-  // 4) 아무 것도 못 찾음
-  return [
-    "아쉽게도 대화에서 질문하신 내용은 아직 못 찾았어요 😥",
-    "",
-    "💡 요약 내용",
-    "- 공지/고정글에 있을 수도 있으니 한 번만 확인해 주세요.",
-    "- 키워드를 조금 더 구체적으로 바꿔서 다시 물어봐도 좋아요.",
-  ].join("\n").trim();
 }
 
 // "!" 접두사 전용(운영 커맨드와 분리)
@@ -305,6 +183,11 @@ class CustomMessageControllerBang {
     const allowed = await isRoomAllowed(context);
     if (!allowed) {
       this.logger.warn("Command ignored: room not allowed (!)", { roomId: String(context.room.id) });
+      return false;
+    }
+    const commandsOn = await isFeatureEnabledForContext(context, "commands");
+    if (!commandsOn) {
+      this.logger.warn("Command ignored: commands feature off (!)", { roomId: String(context.room.id) });
       return false;
     }
     return true;
@@ -510,20 +393,26 @@ class CustomMessageControllerBang {
           status: res.status,
           body,
         });
-        if (question) {
-          const fallback = buildLocalQaFallback(question, messages);
-          if (fallback) {
-            await safeReply(this.logger, context, sanitizeChatAnswer(fallback) || fallback, 15000);
-            return;
-          }
-        }
-        await safeReply(this.logger, context, question ? "채팅 질문 답변 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." : "채팅 요약 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", 6000);
+        const featureLabel = question ? "!요약(질문)" : "!요약(요약)";
+        const reason = humanizeKbFailure({ status: res.status, body });
+        try {
+          await safeReply(this.logger, context, FEATURE_DOWN_REPLY, 6000);
+        } catch {}
+        try {
+          await sendOpsAlert(this.logger, roomName, featureLabel, reason);
+        } catch {}
         return;
       }
 
       const answer: string = String(body.answer || "").trim();
       if (!answer) {
-        await safeReply(this.logger, context, question ? "채팅 질문 답변 결과가 비어 있습니다." : "채팅 요약 결과가 비어 있습니다.", 6000);
+        const featureLabel = question ? "!요약(질문)" : "!요약(요약)";
+        try {
+          await safeReply(this.logger, context, FEATURE_DOWN_REPLY, 6000);
+        } catch {}
+        try {
+          await sendOpsAlert(this.logger, roomName, featureLabel, "답변을 만들지 못했어요.");
+        } catch {}
         return;
       }
 
@@ -531,13 +420,13 @@ class CustomMessageControllerBang {
       await safeReply(this.logger, context, sanitized || answer, 15000);
     } catch (e) {
       this.logger.error(chatQaQuestion ? "[chat-qa] unexpected error" : "[chat-summary] unexpected error", e as any);
+      const featureLabel = chatQaQuestion ? "!요약(질문)" : "!요약(요약)";
+      const reason = humanizeKbFailure({ err: e });
       try {
-        await safeReply(
-          this.logger,
-          context,
-          chatQaQuestion ? "채팅 질문 답변 처리 중 예기치 못한 오류가 발생했습니다." : "채팅 요약 처리 중 예기치 못한 오류가 발생했습니다.",
-          6000,
-        );
+        await safeReply(this.logger, context, FEATURE_DOWN_REPLY, 6000);
+      } catch {}
+      try {
+        await sendOpsAlert(this.logger, roomName, featureLabel, reason);
       } catch {}
     }
   }
@@ -545,6 +434,8 @@ class CustomMessageControllerBang {
   @BotCommand("ping")
   async ping(context: ChatContext) {
     if (!(await this.shouldHandle(context))) return;
+    const rid = String((context as any)?.room?.id ?? "");
+    if (rid && rid !== TEST_COMMAND_ROOM_ID) return;
     await context.reply("Pong!");
   }
 
@@ -552,6 +443,7 @@ class CustomMessageControllerBang {
   async room(context: ChatContext) {
     if (!(await this.shouldHandle(context))) return;
     const rid = String((context as any)?.room?.id ?? "");
+    if (rid && rid !== TEST_COMMAND_ROOM_ID) return;
     await safeReply(this.logger, context, `roomId: ${rid}`, 5000);
   }
 

@@ -19,6 +19,7 @@ param(
   [string]$Name = 'IRIS_12KAKAO_EnsureWatchdog',
   [string]$User = $env:USERNAME,
   [int]$EveryMinutes = 1,
+  [bool]$AlsoOnLogon = $true,
   [switch]$Delete
 )
 
@@ -35,7 +36,10 @@ function Invoke-Schtasks {
 
 if ($Delete) {
   Invoke-Schtasks -Cmd ("schtasks /Delete /TN `"$Name`" /F")
-  Write-Host "Deleted task: $Name" -ForegroundColor Green
+  if ($AlsoOnLogon) {
+    try { Invoke-Schtasks -Cmd ("schtasks /Delete /TN `"$Name`_OnLogon`" /F") } catch { }
+  }
+  Write-Host "Deleted task(s): $Name" -ForegroundColor Green
   exit 0
 }
 
@@ -54,3 +58,9 @@ $action = "wscript.exe `"$vbs`""
 $cmd = "schtasks /Create /TN `"$Name`" /TR `"$action`" /SC MINUTE /MO $mins /F /RL HIGHEST /RU `"$User`""
 Invoke-Schtasks -Cmd $cmd
 Write-Host ("Created task: {0} (every {1} minute(s), RU={2})" -f $Name, $mins, $User) -ForegroundColor Green
+
+if ($AlsoOnLogon) {
+  $cmd2 = "schtasks /Create /TN `"$Name`_OnLogon`" /TR `"$action`" /SC ONLOGON /F /RL HIGHEST /RU `"$User`""
+  Invoke-Schtasks -Cmd $cmd2
+  Write-Host ("Created task: {0}_OnLogon (SC=ONLOGON, RU={1})" -f $Name, $User) -ForegroundColor Green
+}

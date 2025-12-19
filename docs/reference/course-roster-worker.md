@@ -2,6 +2,9 @@
 
 > **목적**: 강의용 오픈채팅방 입장자에 대해 “카페 가입 + 닉네임 규칙”을 자동 검증하고, 미확인 시 안내(멘션)를 발송하며, 결과를 Google Sheets에 업서트한다.
 
+> **참고(v2)**: “카페 등급(grade) 기반 톡방 참여 점검 + 통합 스프레드시트”는 별도 문서로 확장한다.  
+> `docs/reference/course-roster-v2-membership-audit.md`
+
 ---
 
 ## 1) 데이터 흐름(SSOT)
@@ -34,7 +37,7 @@
 본 프로젝트의 자동화 포커스(현재 범위):
 
 - 톡방 “입장자” 기준으로,
-  - 카페 데이터(멤버 CSV)에서 **가입 여부/닉네임 일치 여부**를 자동 판별하고
+  - 카페 데이터(멤버 스냅샷)에서 **가입 여부/닉네임 일치 여부**를 자동 판별하고
   - 정책(15분 유예, 24시간 추가 1회)대로 **멘션 안내를 자동 발신**
   - 결과를 강의별 시트에 **upsert**해 “수작업 대조량”을 크게 줄인다.
 
@@ -63,7 +66,8 @@ UI(대시보드)에서의 위치:
 - `localhost:3100` → 방 카드(RoomCard) → **강의 운영** 섹션
   - `강의톡방` 배지/토글: 방 이름 접두어로 자동 추론(예: `(사담방)`, `(공지방)`, `(프리미엄방)`) + 수동 override 가능
   - `카페/닉네임 검증` 토글: `runtime.features[roomId].courseRoster`를 제어(켜면 워커가 멘션 안내/시트 업서트를 수행)
-  - roomId별 `spreadsheetId/rosterSheetName/cafeCsvPath/joinUrl` 설정은 **UI에서 직접 입력 후 저장**한다(파일: `data/course_roster_worker.json`).
+  - roomId별 `spreadsheetId/rosterSheetName/cafeSource/cafeUrl/cafeClubId/joinUrl` 설정은 **UI에서 직접 입력 후 저장**한다(파일: `data/course_roster_worker.json`).
+    - CSV(`cafeCsvPath`)는 레거시 옵션이며, 기본/권장은 크롤러(`cafeSource=crawler`)다.
   - 서비스 계정 JSON도 **UI에서 업로드** 가능하다(파일: `data/gcp_service_account.json`).
 
 ---
@@ -93,18 +97,23 @@ UI(대시보드)에서의 위치:
 
 ## 5) 카페 데이터 소스(현재)
 
-- **네이버 카페 멤버 CSV**를 사용한다.
-  - `C:\dev\naver-cafe-member-crawler\data\<카페이름>_<clubid>.csv`
-  - 최소 컬럼 요구: `user_id`, `nickname`
-  - roster-worker는 CSV `mtime`/TTL 캐시로 재로딩을 최소화한다.
+- 기본/권장: **naver-cafe-member-crawler 기반 크롤링(JSON 스냅샷)**
+  - UI에서 roomId별로 아래를 입력:
+    - `cafeSource=crawler`
+    - `cafeUrl`(선택): `clubid=<숫자>` 또는 `search.clubid=<숫자>`가 포함된 URL이면 clubId를 자동 추출할 수 있다.
+    - `cafeClubId=<NAVER_CAFE_CLUB_ID>` (또는 위 `cafeUrl`로 자동 추출)
+    - (선택) `crawlerRepoPath`, `crawlerPythonExe`, `crawlerSettingsPath`
+  - 워커는 로컬에 스냅샷을 저장해 캐시하며, `--cafe-cache-sec`(기본 300초)보다 자주 크롤링하지 않는다.
+- 레거시(비권장): **CSV 스냅샷**
+  - `cafeSource=csv` + `cafeCsvPath`
 
 카페 데이터 갱신 시차(운영 현실):
 
-- 카페 가입/닉네임 변경이 즉시 CSV로 반영되지 않을 수 있다.
+- 카페 가입/닉네임 변경이 즉시 스냅샷에 반영되지 않을 수 있다.
 - 그래서 roster-worker는 “즉시 재시도”를 하지 않고,
   - 15분 유예(조용히 대기)
   - 24시간 1회 추가 안내
-  - 다음 주기(예: CSV 재수집 후)에서 자연스럽게 VERIFIED로 전환되도록 설계한다.
+  - 다음 주기(예: 크롤링/스냅샷 갱신 후)에서 자연스럽게 VERIFIED로 전환되도록 설계한다.
 
 > 정책/시간 값은 강의 운영 경험에 따라 조정될 수 있으나,
 > “자료가 늦게 들어온다”는 이유로 즉시/무한 재시도를 추가하는 것은 운영 알림 폭주로 이어지므로 금지한다.
@@ -113,7 +122,9 @@ UI(대시보드)에서의 위치:
 
 ## 6) Google Sheets 업서트(강의별 시트)
 
-roster-worker는 강의별 스프레드시트 탭(기본 `ROSTER_RAW`)에 **key 기반 upsert**를 수행한다.
+roster-worker는 강의별 스프레드시트 탭에 **key 기반 upsert**를 수행한다.
+
+- 탭 기본값(UI): `(사담방)`→`ROSTER_CHAT`, `(공지방)`→`ROSTER_NOTICE`, `(프리미엄방)`→`ROSTER_PREMIUM` (미매칭이면 `ROSTER_RAW`)
 
 - key: `roomId:kakaoUserId`
 - 서비스 계정 JSON: `data/gcp_service_account.json` (gitignore)

@@ -43,7 +43,8 @@
 - 2025-12-13: KB 다운 자동 복구 — FastAPI `/status`에 KB stage(`kb`)를 추가하고, `windows/watchdog.ps1`가 KB가 꺼진 것을 감지하면 `windows/kb_service.ps1`로 **KB만 우선 재기동**(실패 시 전체 재기동).
 - 2025-12-14: 운영 안정화 보강 — `windows/start_all.ps1`가 bot 빌드 스킵을 “src 변경 없음”일 때만 허용(구버전 dist로 무응답되는 케이스 방지). 로컬 welcome 템플릿/`runtime.json`의 차단 이름(`"1"`, `"2"`, `welcome_default_*`)을 `welcome_kakao_default_*`로 마이그레이션해 ADR-0022 차단 정책을 유지하면서 템플릿 세트가 정상 동작하도록 정리. `windows/kb_task_runner.ps1`는 env 로딩을 dot-source로 단순화해 단독 실행 호환성 개선.
 - 2025-12-14: 오픈채팅 명령 안정화 — `?디하클` 접두어는 `? 디하클` 같은 공백 변형도 허용(문자열 맨 앞 조건은 유지), KB `/ask_llm` 호출은 일시 네트워크/5xx 실패 시 짧은 재시도, `!welcome:test`는 이미지 전송 실패가 있어도 텍스트 발송이 성공했으면 사용자에게 오류 메시지를 추가로 보내지 않음. 또한 `docs/kb_glossary.md`에 신청 게시판 SSOT(무료특강 23 / 정규강의 42)를 명시.
-- 2025-12-14: Welcome 후속 답장(첫 이미지) 도입 — welcome 텍스트 발신 성공 이후 입장자를 5분간 추적해 “첫 이미지”에 1회 reply(랜덤 문구)로 “감사/소통 안내”를 자동 발송. 방별로 `features[roomId].welcomeFollowUp=false`로 비활성 가능(기본 ON, ADR-0026).
+- 2025-12-14: Welcome 후속 답장(첫 이미지) 도입 — welcome 텍스트 발신 성공 이후 입장자를 windowMs(후속 추적 시간) 동안 추적해 “첫 이미지”에 1회 reply(랜덤 문구)로 “감사/소통 안내”를 자동 발송. 방별로 `features[roomId].welcomeFollowUp=false`로 비활성 가능(기본 ON, ADR-0026).
+- 2025-12-18: Welcome 후속(첫 이미지) 정책 조정 — windowMs 기본값을 15분(900000ms)으로 변경하고, 15분 내 첫 이미지 미업로드 시 1회 추가 멘션 경고를 발신(템플릿: `runtime.json.welcome.followUp.timeoutMention.text`, ADR-0026).
 - 2025-12-14: Talk-API Reply(type=26) 실패(-203) 해결 — Node는 64-bit userId(2^53 초과)를 안전하게 다루기 위해 reply attachment의 `src_userId/src_linkId/src_type`를 문자열로 전달하고, Realtime API(`server/app.py`)에서 `type=26`일 때 숫자형 문자열을 int로 강제 변환(coerce) 후 Talk-API로 전달한다(미변환 시 `INVALID_ARGUMENT(-203)` 가능, ADR-0026).
 - 2025-12-14: Welcome 배치 동작 정렬 — 딜레이 윈도우 내 연속 입장자는 set-mode(기본닉/커스텀닉 세트)에서도 welcome을 **한 번만** 발신하고, 멘션은 입장자 전원을 포함한다. 템플릿 선택은 가능하면 커스텀닉 기준으로 우선 선택해 “기본닉 변경 유도” 문구가 섞이지 않도록 한다(ADR-0022).
 - 2025-12-14: Welcome 템플릿 이미지 발신 복구 — welcome-worker가 템플릿 이미지(`/templates/assets/...`)를 base64로 변환해 Realtime API의 `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달하여 발신한다. SAFE_MODE=true면 서버가 403으로 최종 차단한다(ADR-0030).
@@ -67,10 +68,19 @@
 - 2025-12-14: RAG `price_policy` 결정적 답변은 근거로 사용하지 않은 게시글/링크를 응답에 섞지 않도록(`posts`, `selected_posts`, `link_hint` 비움) 처리(오답 링크/중복 링크 방지).
 - 2025-12-14: 일반 상식(웹 검색) 경로에서 유튜브 수익창출(YPP) 질문은 공식 도메인(support.google.com/youtube.com) 근거가 우선 노출되도록 프롬프트 규칙을 강화.
 - 2025-12-14: KB 스케줄러가 작업 lock의 PID 확인에 실패할 때(권한/일시 오류 등) “실행 중”으로 고정되어 재개가 막히지 않도록, 확인 실패 시 재개 우선(False)으로 처리.
+- 2025-12-19: EMFILE 재발 원인 확정 및 핫픽스 — `@tsuki-chat/node-iris` Logger가 인스턴스마다 winston File transport를 생성해 `logs/app.log`/`logs/error*.log` 핸들이 누수되었고, 공유 winstonLogger(transport 단일) 방식으로 핫픽스해 누수를 차단. 재설치 대비로 `patch-package`를 도입해 `postinstall`에서 자동 재적용, `@tsuki-chat/node-iris`는 `1.6.41`로 버전 고정. (ADR-0042)
 
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
 | --- | --- | --- |
+| 2025-12-18 | 강의 운영 v2(카페 자동 갱신 + 등급 기반 참여 점검 + 통합 시트) 워커 도입 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md` |
+| 2025-12-18 | roster-worker 카페 데이터 소스 전환: CSV(레거시) → 크롤러(JSON 스냅샷) | `docs/adr/ADR-0040-roster-worker-cafe-snapshot-crawler.md`, `docs/reference/course-roster-worker.md` |
+| 2025-12-18 | 운영 안정화: BRIDGE/LOG 상태 분리 + watchdog 보장(Task Scheduler) + Web 빈 화면 방지 | `docs/reference/bridge-status.md`, `docs/adr/ADR-0023-watchdog-auto-restart.md`, `docs/adr/ADR-0025-web-prod-mode-and-watchdog-web-health.md` |
+| 2025-12-18 | 카카오 기본 닉네임 변경 요청(멘션) 워커 도입 | `docs/adr/ADR-0041-default-nickname-reminder-mentions.md` |
+| 2025-12-19 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` |
+| 2025-12-15 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백(워커/명령) | `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md` |
+| 2025-12-15 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 추가 | `docs/adr/ADR-0033-openchat-members-sheets-worker.md` |
+| 2025-12-15 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | `docs/adr/ADR-0031-messagestore-emfile-mitigation.md` |
 | 2025-12-14 | Welcome 후속(첫 이미지) 자동 답장(Reply) 도입 | `docs/adr/ADR-0026-welcome-followup-first-image-reply.md` |
 | 2025-12-14 | Talk-API Reply(type=26) src_* 타입 강제 변환(-203 방지) | `docs/adr/ADR-0026-welcome-followup-first-image-reply.md`, `server/app.py` |
 | 2025-12-14 | Welcome 배치: 다중 입장자 1회 환영 + 멀티 멘션 | `docs/adr/ADR-0022-welcome-template-sets-and-kakao-default-nickname.md` |
@@ -79,9 +89,6 @@
 | 2025-12-14 | 공지/브로드캐스트 발신을 broadcast-worker로 분리 | `docs/adr/ADR-0029-broadcast-worker-from-logstream.md` |
 | 2025-12-14 | Welcome-worker 템플릿 이미지 발신 복구(IRIS /reply) | `docs/adr/ADR-0030-welcome-worker-image-send-via-iris-reply.md` |
 | 2025-12-14 | 강의 운영(카페/닉네임 검증) roster-worker 도입(15분/24시간 안내 + Sheets 업서트) | `docs/adr/ADR-0032-course-roster-worker.md` |
-| 2025-12-15 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | `docs/adr/ADR-0031-messagestore-emfile-mitigation.md` |
-| 2025-12-15 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 추가 | `docs/adr/ADR-0033-openchat-members-sheets-worker.md` |
-| 2025-12-15 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백(워커/명령) | `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md` |
 | 2025-12-13 | Welcome 템플릿 세트 + 기본닉 분기 정책 도입 | `docs/adr/ADR-0022-welcome-template-sets-and-kakao-default-nickname.md` |
 | 2025-12-13 | `/status` 기반 watchdog 자동 재시작 도입 | `docs/adr/ADR-0023-watchdog-auto-restart.md` |
 | 2025-12-13 | Talk-API authHeader 캡처(Frida) 및 저장/반영 가드레일 | `docs/adr/ADR-0024-talkapi-authheader-capture.md` |

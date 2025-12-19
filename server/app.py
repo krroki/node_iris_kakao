@@ -110,14 +110,78 @@ async def health():
             age_sec = max(0, int((time.time()*1000 - ts_to_ms(ts)) / 1000))
     except Exception:
         age_sec = None
+
+    # heartbeat age (bot liveness)
+    hb_age_sec = None
+    try:
+        from .log_utils import ts_to_ms
+        ts = status.get('heartbeatTs')
+        if ts:
+            import time
+            hb_age_sec = max(0, int((time.time()*1000 - ts_to_ms(ts)) / 1000))
+    except Exception:
+        hb_age_sec = None
+
+    # logStore age (최근 로그 파일 mtime 기준; 단순 room 이벤트 유무와 분리)
+    latest_ms = 0
+    latest_ts = None
+    log_age_sec = None
+    try:
+        logs_dir = get_logs_dir()
+        now_utc = datetime.now(timezone.utc)
+        day_keys = [(now_utc - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(0, 3)]
+        for d in logs_dir.iterdir():
+            if not d.is_dir():
+                continue
+            for day in day_keys:
+                f = d / f"{day}.log"
+                if not f.exists():
+                    continue
+                try:
+                    st = f.stat()
+                    ts_ms = int(st.st_mtime * 1000)
+                    if ts_ms > latest_ms:
+                        latest_ms = ts_ms
+                        latest_ts = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+                except Exception:
+                    continue
+        if latest_ms == 0:
+            for d in logs_dir.iterdir():
+                if not d.is_dir():
+                    continue
+                try:
+                    for f in d.glob("*.log"):
+                        if not f.exists():
+                            continue
+                        st = f.stat()
+                        ts_ms = int(st.st_mtime * 1000)
+                        if ts_ms > latest_ms:
+                            latest_ms = ts_ms
+                            latest_ts = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+                except Exception:
+                    continue
+        if latest_ms > 0:
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            log_age_sec = max(0, int((now_ms - latest_ms) / 1000))
+    except Exception:
+        latest_ms = 0
+        latest_ts = None
+        log_age_sec = None
     return {
         "ok": True,
         "rooms": len(rooms),
         "bot": {
             "pid": status.get('pid'),
+            "irisUrl": status.get('irisUrl'),
             "lastEventTs": status.get('lastEventTs'),
             "lastEventAgeSec": age_sec,
-        }
+            "heartbeatTs": status.get('heartbeatTs'),
+            "heartbeatAgeSec": hb_age_sec,
+        },
+        "logStore": {
+            "latestLogTs": latest_ts,
+            "logAgeSec": log_age_sec,
+        },
     }
 
 
@@ -186,6 +250,8 @@ async def status():
             # NOTE: lastEventTs가 존재하더라도 heartbeatTs가 더 최신일 수 있다.
             # (채팅이 한동안 없더라도 봇이 살아있음을 나타내는 heartbeat를 최신 활동으로 간주)
             candidates: list[tuple[str, datetime, str]] = []
+            dt_last: datetime | None = None
+            dt_hb: datetime | None = None
             if last_event_ts:
                 try:
                     dt_last = datetime.fromisoformat(last_event_ts.replace("Z", "+00:00"))
@@ -230,7 +296,10 @@ async def status():
                 stage["extra"] = {
                     "pid": data.get("pid"),
                     "lastEventText": None,
+                    "lastEventTs": last_event_ts,
                     "heartbeatTs": heartbeat_ts,
+                    "lastEventAgeSec": None,
+                    "heartbeatAgeSec": None,
                     "effectiveSource": None,
                     "effectiveTs": None,
                     "emfile": emfile_flag,
@@ -239,10 +308,24 @@ async def status():
                 return stage
             now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             age_ms = now_ms - int(dt_effective.timestamp() * 1000)
-            healthy = age_ms < 15 * 60 * 1000
+            # NOTE:
+            # - "브릿지 다운" 판단을 lastEvent(채팅 이벤트) 기준으로 하면, 채팅이 잠시 없는 방에서 오탐이 잦다.
+            # - heartbeat가 stale이면 이벤트 루프 hang/blocked 가능성이 높으므로 watchdog가 빠르게 재기동할 수 있어야 한다.
+            BOT_HEARTBEAT_OK_MS = 180 * 1000
+            BOT_LASTEVENT_FALLBACK_OK_MS = 15 * 60 * 1000
+
+            hb_age_ms = None
+            if dt_hb:
+                hb_age_ms = now_ms - int(dt_hb.timestamp() * 1000)
+            last_age_ms = None
+            if dt_last:
+                last_age_ms = now_ms - int(dt_last.timestamp() * 1000)
+
+            use_hb = (dt_hb is not None) and (hb_age_ms is not None)
+            healthy = (hb_age_ms < BOT_HEARTBEAT_OK_MS) if use_hb else (age_ms < BOT_LASTEVENT_FALLBACK_OK_MS)
             # EMFILE 상태에서는 ok=False로 내려 UI에서 즉시 알 수 있게 한다.
             stage["ok"] = healthy and not emfile_flag
-            stage["timestamp"] = dt_effective.isoformat()
+            stage["timestamp"] = (dt_hb.isoformat() if use_hb else dt_effective.isoformat())
             if emfile_flag:
                 stage["detail"] = "봇은 이벤트를 받고 있지만 파일 핸들 한도(EMFILE)로 로그 기록이 중단된 상태입니다."
             else:
@@ -256,7 +339,10 @@ async def status():
             stage["extra"] = {
                 "pid": data.get("pid"),
                 "lastEventText": data.get("lastEventText"),
+                "lastEventTs": last_event_ts,
                 "heartbeatTs": heartbeat_ts,
+                "lastEventAgeSec": (int(last_age_ms / 1000) if last_age_ms is not None else None),
+                "heartbeatAgeSec": (int(hb_age_ms / 1000) if hb_age_ms is not None else None),
                 "effectiveSource": effective_src,
                 "effectiveTs": effective_ts,
                 "emfile": emfile_flag,
@@ -428,6 +514,7 @@ async def status():
             "detail": "상태 확인 중...",
         }
         url = f"{KB_BASE}/health"
+        url_selfcheck = f"{KB_BASE}/health/selfcheck"
         try:
             with _urlreq.urlopen(url, timeout=2) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
@@ -435,16 +522,32 @@ async def status():
                     data = json.loads(raw or "{}")
                 except Exception:
                     data = {}
-                ok = (getattr(resp, "status", None) in (200, None)) and bool(data.get("ok"))
-                stage["ok"] = bool(ok)
-                stage["detail"] = "KB /health 200 OK" if stage["ok"] else f"KB /health 비정상 (body/ok=false)"
+                ok_health = (getattr(resp, "status", None) in (200, None)) and bool(data.get("ok"))
+            if not ok_health:
+                stage["ok"] = False
+                stage["detail"] = "KB /health 비정상 (body/ok=false)"
                 stage["timestamp"] = datetime.now(timezone.utc).isoformat()
-                stage["extra"] = {"url": url}
+                stage["extra"] = {"url": url, "selfcheck_url": url_selfcheck}
+                return stage
+
+            # /health는 OK여도, 특정 기능(/chat/qa 등)이 500을 내는 '부분 고장'이 있을 수 있어 selfcheck를 추가로 본다.
+            with _urlreq.urlopen(url_selfcheck, timeout=2) as resp2:
+                raw2 = resp2.read().decode("utf-8", errors="replace")
+                try:
+                    data2 = json.loads(raw2 or "{}")
+                except Exception:
+                    data2 = {}
+                ok_self = (getattr(resp2, "status", None) in (200, None)) and bool(data2.get("ok"))
+
+            stage["ok"] = bool(ok_health and ok_self)
+            stage["detail"] = "KB health/selfcheck OK" if stage["ok"] else "KB selfcheck 비정상"
+            stage["timestamp"] = datetime.now(timezone.utc).isoformat()
+            stage["extra"] = {"url": url, "selfcheck_url": url_selfcheck}
         except Exception as e:
             stage["ok"] = False
             stage["detail"] = f"KB 연결 실패: {e}"
             stage["timestamp"] = datetime.now(timezone.utc).isoformat()
-            stage["extra"] = {"url": url, "error": str(e)}
+            stage["extra"] = {"url": url, "selfcheck_url": url_selfcheck, "error": str(e)}
         return stage
 
     def _kb_postgres_stage():
@@ -893,6 +996,130 @@ async def update_runtime(request: Request):
     if isinstance(excluded, list):
         # normalize to strings
         cur["excludedRoomIds"] = [str(x) for x in excluded]
+
+    # nicknameReminder config (feature worker: nickname-reminder-worker)
+    # - allow updating only selected safe keys (UI에서 2/3차 안내 간격을 조정 가능하게 하기 위함)
+    if isinstance(body, dict) and "nicknameReminder" in body:
+        nickname_reminder = body.get("nicknameReminder")
+        if nickname_reminder is None:
+            cur.pop("nicknameReminder", None)
+        elif not isinstance(nickname_reminder, dict):
+            raise HTTPException(status_code=400, detail="nicknameReminder must be an object or null")
+        else:
+            cur_nr = cur.get("nicknameReminder")
+            if not isinstance(cur_nr, dict):
+                cur_nr = {}
+
+            allowed_nr_keys = {
+                "enabled",
+                "tickSec",
+                "perRoomMinSendIntervalSec",
+                "maxMentionsPerMessage",
+                "betweenMessagesDelayMs",
+                "memberLoadWaitMs",
+                "memberLoadScrolls",
+                "warningSchedule",
+                "warningMessageByLevel",
+            }
+            for k in nickname_reminder.keys():
+                if k not in allowed_nr_keys:
+                    raise HTTPException(status_code=400, detail=f"nicknameReminder.{k} is not allowed")
+
+            def _set_int_field(dst: dict, key: str, val, lo: int, hi: int, *, allow_null: bool = True):
+                if val is None and allow_null:
+                    dst.pop(key, None)
+                    return
+                if not isinstance(val, (int, float)):
+                    raise HTTPException(status_code=400, detail=f"nicknameReminder.{key} must be number")
+                n = int(val)
+                if n < lo or n > hi:
+                    raise HTTPException(status_code=400, detail=f"nicknameReminder.{key} out of range ({lo}..{hi})")
+                dst[key] = n
+
+            if "enabled" in nickname_reminder:
+                v = nickname_reminder.get("enabled")
+                if v is None:
+                    cur_nr.pop("enabled", None)
+                elif isinstance(v, bool):
+                    cur_nr["enabled"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="nicknameReminder.enabled must be boolean or null")
+
+            if "tickSec" in nickname_reminder:
+                _set_int_field(cur_nr, "tickSec", nickname_reminder.get("tickSec"), 10, 3600)
+            if "perRoomMinSendIntervalSec" in nickname_reminder:
+                _set_int_field(cur_nr, "perRoomMinSendIntervalSec", nickname_reminder.get("perRoomMinSendIntervalSec"), 0, 30 * 24 * 60 * 60)
+            if "maxMentionsPerMessage" in nickname_reminder:
+                _set_int_field(cur_nr, "maxMentionsPerMessage", nickname_reminder.get("maxMentionsPerMessage"), 1, 15)
+            if "betweenMessagesDelayMs" in nickname_reminder:
+                _set_int_field(cur_nr, "betweenMessagesDelayMs", nickname_reminder.get("betweenMessagesDelayMs"), 0, 10_000)
+            if "memberLoadWaitMs" in nickname_reminder:
+                _set_int_field(cur_nr, "memberLoadWaitMs", nickname_reminder.get("memberLoadWaitMs"), 0, 10 * 60 * 1000)
+            if "memberLoadScrolls" in nickname_reminder:
+                _set_int_field(cur_nr, "memberLoadScrolls", nickname_reminder.get("memberLoadScrolls"), 50, 1200)
+
+            if "warningMessageByLevel" in nickname_reminder:
+                wmb = nickname_reminder.get("warningMessageByLevel")
+                if wmb is None:
+                    cur_nr.pop("warningMessageByLevel", None)
+                elif not isinstance(wmb, dict):
+                    raise HTTPException(status_code=400, detail="nicknameReminder.warningMessageByLevel must be an object or null")
+                else:
+                    cur_nr["warningMessageByLevel"] = wmb
+
+            if "warningSchedule" in nickname_reminder:
+                ws = nickname_reminder.get("warningSchedule")
+                if ws is None:
+                    cur_nr.pop("warningSchedule", None)
+                elif not isinstance(ws, dict):
+                    raise HTTPException(status_code=400, detail="nicknameReminder.warningSchedule must be an object or null")
+                else:
+                    cur_ws = cur_nr.get("warningSchedule")
+                    if not isinstance(cur_ws, dict):
+                        cur_ws = {}
+
+                    allowed_levels = {"level1", "level2", "level3"}
+                    for lv_key in ws.keys():
+                        if lv_key not in allowed_levels:
+                            raise HTTPException(status_code=400, detail=f"nicknameReminder.warningSchedule.{lv_key} is not allowed")
+
+                    for lv_key, lv_val in ws.items():
+                        if lv_val is None:
+                            cur_ws.pop(lv_key, None)
+                            continue
+                        if not isinstance(lv_val, dict):
+                            raise HTTPException(status_code=400, detail=f"nicknameReminder.warningSchedule.{lv_key} must be an object or null")
+
+                        cur_lv = cur_ws.get(lv_key)
+                        if not isinstance(cur_lv, dict):
+                            cur_lv = {}
+
+                        if lv_key == "level1":
+                            allowed_lv_keys = {"afterFirstSeenSec"}
+                            for k2 in lv_val.keys():
+                                if k2 not in allowed_lv_keys:
+                                    raise HTTPException(status_code=400, detail=f"nicknameReminder.warningSchedule.{lv_key}.{k2} is not allowed")
+                            if "afterFirstSeenSec" in lv_val:
+                                _set_int_field(cur_lv, "afterFirstSeenSec", lv_val.get("afterFirstSeenSec"), 0, 30 * 24 * 60 * 60)
+                        else:
+                            allowed_lv_keys = {"afterLastWarnSec"}
+                            for k2 in lv_val.keys():
+                                if k2 not in allowed_lv_keys:
+                                    raise HTTPException(status_code=400, detail=f"nicknameReminder.warningSchedule.{lv_key}.{k2} is not allowed")
+                            if "afterLastWarnSec" in lv_val:
+                                _set_int_field(cur_lv, "afterLastWarnSec", lv_val.get("afterLastWarnSec"), 0, 30 * 24 * 60 * 60)
+
+                        if cur_lv:
+                            cur_ws[lv_key] = cur_lv
+                        else:
+                            cur_ws.pop(lv_key, None)
+
+                    if cur_ws:
+                        cur_nr["warningSchedule"] = cur_ws
+                    else:
+                        cur_nr.pop("warningSchedule", None)
+
+            cur["nicknameReminder"] = cur_nr
     # announcement config (source → targets mirror)
     announcement = body.get("announcement")
     if announcement is not None:
@@ -1551,6 +1778,10 @@ def _http_post_json(url: str, data: dict, headers: dict, timeout: float) -> tupl
         except Exception:
             return e.code, str(e)
     except URLError as e:
+        return 0, str(e)
+    except Exception as e:
+        # socket.timeout 등 urllib이 URLError로 감싸지 않는 예외가 있어,
+        # FastAPI 500으로 터지는 것을 방지한다.
         return 0, str(e)
 
 

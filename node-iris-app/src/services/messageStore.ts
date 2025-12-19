@@ -66,8 +66,10 @@ export class MessageStore {
       payload,
     };
 
-    await this.persist(snapshot.roomId, record);
+    // "바로 위 대화"를 즉시 조회해야 하는 기능(!요약 등)을 위해,
+    // 디스크 persist가 완료되기 전이라도 인메모리 버퍼에는 먼저 반영한다.
     this.pushToBuffer(snapshot.roomId, record);
+    await this.persist(snapshot.roomId, record);
     return record;
   }
 
@@ -98,8 +100,8 @@ export class MessageStore {
       payload,
     };
 
-    await this.persist(roomId, record);
     this.pushToBuffer(roomId, record);
+    await this.persist(roomId, record);
     return record;
   }
 
@@ -229,6 +231,7 @@ export class MessageStore {
     const filePath = path.join(roomDir, `${day}.log`);
     const lines = await this.readTailLines(filePath, 6000, 6_000_000);
     const parsed: ChatSummaryMessage[] = [];
+    const seen = new Set<string>();
     for (const line of lines) {
       try {
         const obj = JSON.parse(line) as RecordedEvent;
@@ -239,6 +242,9 @@ export class MessageStore {
         const text = (snap as any).messageText || "";
         if ((payload as any).type !== "message") continue;
         if (!text) continue;
+        const key = `${String(t || "")}|${String(text || "")}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         parsed.push({
           ts: String(t || ""),
           sender: sender ? String(sender) : undefined,
@@ -249,6 +255,28 @@ export class MessageStore {
         continue;
       }
     }
+
+    // 인메모리 버퍼 병합: 디스크 append 지연/경합 상황에서도 "바로 위" 메시지를 놓치지 않게 한다.
+    const buf = this.buffer.get(roomId) ?? [];
+    for (const rec of buf) {
+      try {
+        const t = String((rec as any)?.timestamp || "").trim();
+        if (!t || t.slice(0, 10) !== day) continue;
+        const payload = (rec as any)?.payload || {};
+        if ((payload as any).type !== "message") continue;
+        const snap = (rec as any)?.snapshot || {};
+        const text = String((snap as any).messageText || "");
+        if (!text) continue;
+        const key = `${t}|${text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const sender = this.normalizeSenderLabel((snap as any).senderName, (snap as any).senderId);
+        parsed.push({ ts: t, sender: sender ? String(sender) : undefined, text });
+      } catch {
+        continue;
+      }
+    }
+
     if (parsed.length <= limit) {
       return parsed;
     }
@@ -272,6 +300,7 @@ export class MessageStore {
     const roomDir = path.join(this.baseDir, roomId);
 
     const all: ChatSummaryMessage[] = [];
+    const seen = new Set<string>();
     for (let d = 0; d < daysNeeded; d += 1) {
       const day = new Date(Date.now() - d * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const filePath = path.join(roomDir, `${day}.log`);
@@ -289,6 +318,9 @@ export class MessageStore {
           if (!Number.isFinite(tsMs) || tsMs < sinceMs) continue;
           const text = String((snap as any).messageText || "");
           if (!text) continue;
+          const key = `${t}|${text}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
           const sender = this.normalizeSenderLabel((snap as any).senderName, (snap as any).senderId);
           all.push({
             ts: t,
@@ -298,6 +330,29 @@ export class MessageStore {
         } catch {
           continue;
         }
+      }
+    }
+
+    // 인메모리 버퍼 병합: 디스크 append 지연/경합 상황에서도 "바로 위" 메시지를 놓치지 않게 한다.
+    const buf = this.buffer.get(roomId) ?? [];
+    for (const rec of buf) {
+      try {
+        const payload = (rec as any)?.payload || {};
+        if ((payload as any).type !== "message") continue;
+        const snap = (rec as any)?.snapshot || {};
+        const t = String((rec as any)?.timestamp || "").trim();
+        if (!t) continue;
+        const tsMs = new Date(t).getTime();
+        if (!Number.isFinite(tsMs) || tsMs < sinceMs) continue;
+        const text = String((snap as any).messageText || "");
+        if (!text) continue;
+        const key = `${t}|${text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const sender = this.normalizeSenderLabel((snap as any).senderName, (snap as any).senderId);
+        all.push({ ts: t, sender: sender ? String(sender) : undefined, text });
+      } catch {
+        continue;
       }
     }
 

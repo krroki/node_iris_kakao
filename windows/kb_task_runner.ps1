@@ -104,9 +104,9 @@ function Ensure-PyModule {
   }
 }
 
-function Py { param([string[]]$Args)
+function Py { param([string[]]$PyArgs)
   $py = Resolve-PythonExe -PreferredVenv $Venv
-  & $py @Args
+  & $py @PyArgs
 }
 
 try {

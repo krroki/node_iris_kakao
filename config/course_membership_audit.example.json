@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "worker": {
+    "enabled": false,
+    "hotIntervalSec": 600,
+    "hotDays": 14,
+    "steadyIntervalSec": 10800,
+    "crawler": {
+      "repoPath": "C:\\\\dev\\\\naver-cafe-member-crawler",
+      "pythonExe": "C:\\\\dev\\\\naver-cafe-member-crawler\\\\venv\\\\Scripts\\\\python.exe",
+      "settingsPath": ""
+    }
+  },
+  "courses": {
+    "<COURSE_KEY>": {
+      "enabled": true,
+      "clubId": "<NAVER_CAFE_CLUB_ID>",
+      "spreadsheetId": "https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit",
+      "tabs": {
+        "cafeRaw": "CAFE_RAW",
+        "openchatRaw": "OPENCHAT_RAW",
+        "rulesRaw": "RULES_RAW",
+        "audit": "AUDIT_VIEW",
+        "auditLog": "AUDIT_LOG"
+      },
+      "gradeRules": {
+        "premiumGrades": ["프리미엄반"],
+        "staffGrades": ["운영진"]
+      }
+    }
+  }
+}

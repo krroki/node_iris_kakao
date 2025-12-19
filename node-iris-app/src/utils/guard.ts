@@ -5,7 +5,7 @@ import { APP_ROOT } from "./paths";
 
 // NOTE: (ADR-0012) "ai" feature 추가 - KB 질의 기능 활성화 플래그
 // chatSummary: 채팅 요약(!채팅요약) 기능 토글
-type FeatureName = "welcome" | "broadcast" | "schedules" | "ai" | "chatSummary";
+type FeatureName = "welcome" | "broadcast" | "schedules" | "ai" | "chatSummary" | "commands";
 
 // Announcement Route 타입 정의
 export interface AnnouncementRoute {

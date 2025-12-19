@@ -52,6 +52,9 @@ const KIND_LABEL: Record<string, string> = {
   'ai-worker': 'AI 워커',
   'broadcast-worker': '공지 워커',
   'command-worker': '명령어 워커',
+  'image-worker': '이미지 워커',
+  'video-worker': '영상 워커',
+  'auto-faq-worker': '자동 FAQ 워커',
 };
 
 const formatAge = (ageSec: number | null) => {
@@ -311,7 +314,7 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
       </div>
 
       <div className="process-note">
-        정상 기준: <span className="process-mono">bot + welcome-worker + ai-worker + broadcast-worker + command-worker</span>가 각각 1개씩(총 5개)
+        정상 기준: <span className="process-mono">bot + welcome-worker + ai-worker + broadcast-worker + command-worker + image-worker + video-worker + auto-faq-worker</span>가 각각 1개씩(총 8개)
         떠 있는 것이 정상입니다. 이 카드의 종료 버튼은 <span className="process-mono">node-iris-app</span>만 안전 종료합니다(전체 <span className="process-mono">node.exe</span> 종료 금지).
       </div>
 
@@ -374,6 +377,16 @@ export default function BotProcessManager({ refreshInterval = 5000 }: Props) {
           {missingKinds.includes('command-worker') && (
             <div className="process-hint">
               - 방별 명령어(FAQ)가 안 되면 <span className="process-mono">command-worker</span> 미실행일 수 있습니다. (<span className="process-mono">windows/start_command_worker.ps1</span> / <span className="process-mono">windows/start_all.cmd</span>)
+            </div>
+          )}
+          {missingKinds.includes('image-worker') && (
+            <div className="process-hint">
+              - 이미지 생성/수정이 안 되면 <span className="process-mono">image-worker</span> 미실행일 수 있습니다. (<span className="process-mono">windows/start_image_worker.ps1</span> / <span className="process-mono">windows/start_all.cmd</span>)
+            </div>
+          )}
+          {missingKinds.includes('video-worker') && (
+            <div className="process-hint">
+              - 영상 생성이 안 되면 <span className="process-mono">video-worker</span> 미실행일 수 있습니다. (<span className="process-mono">windows/start_video_worker.ps1</span> / <span className="process-mono">windows/start_all.cmd</span>)
             </div>
           )}
           {staleKinds.length > 0 && (

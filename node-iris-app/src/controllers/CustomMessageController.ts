@@ -33,6 +33,9 @@ const MIRROR_MARKER_REGEX = /\u200B\[MF:[^\]]+\]\u200B/g;
 // 접두어 미일치(rawDump) 디버그 파일 경로
 const PREFIX_SKIP_LOG = path.join(REPO_ROOT, "windows", "logs", "prefix_skip.raw.txt");
 
+// 운영 안전: ">>" 디버그 커맨드는 테스트 전용 오픈채팅방에서만 수행한다.
+const TEST_COMMAND_ROOM_ID = "18462226881291012";
+
 function decodeRawDump(rawDump: string): { decoded: string; msg?: string } {
   try {
     const decoded = Buffer.from(rawDump, "base64").toString("utf-8");
@@ -176,6 +179,11 @@ class CustomMessageController {
   private async shouldHandle(context: ChatContext): Promise<boolean> {
     if (await isSafeMode()) {
       this.logger.warn("SAFE_MODE on: ignore command", { roomId: String(context.room.id) });
+      return false;
+    }
+    const rid = String(context.room.id);
+    if (rid && rid !== TEST_COMMAND_ROOM_ID) {
+      this.logger.warn("Command ignored: test room only (>>)", { roomId: rid });
       return false;
     }
     const allowed = await isRoomAllowed(context);
@@ -387,7 +395,8 @@ class CustomMessageController {
     if (!(await this.shouldHandle(context))) return;
     const nameRaw = await context.sender.getName();
     const name = nameRaw ? String(nameRaw) : "User";
-    await context.reply(`user: ${name} (${context.sender.id})`);
+    // userId(숫자) 노출 금지: 닉네임만 보여준다.
+    await context.reply(`user: ${name}`);
   }
 
   @BotCommand("welcome:test", "멘션 송신 경로 점검")

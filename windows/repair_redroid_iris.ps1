@@ -188,7 +188,7 @@ function Is-AdbDeviceListed {
     $out = & $AdbPath devices 2>$null
     if (-not $out) { return $false }
     $needle = [Regex]::Escape([string]$DeviceId)
-    return ($out -match ("(?m)^" + $needle + "\\s+device\\s*$"))
+    return [bool]($out -match ("(?m)^" + $needle + "\s+device\s*$"))
   } catch {
     return $false
   }

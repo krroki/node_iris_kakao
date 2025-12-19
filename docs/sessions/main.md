@@ -100,7 +100,7 @@
   - 운영 진단/로그 발신은 테스트방(`18462226881291012`)으로만 라우팅한다(운영방 오염 금지).
   - Talk-API 실패 시 폴백은 “명시적”으로만 수행하며(IRIS `/reply_text`/`/reply_media`), 폴백 텍스트에서는 `@`를 제거해 가짜 멘션을 만들지 않는다.
   - 재기동은 “부분 재기동 우선”, `taskkill /im node.exe` 등 node 전체 종료는 금지(PID 기반 재기동만).
-- 주의: 현재 워킹트리 브랜치가 `main`이 아닌 `fix/chat-summary-24h`로 확인되며 로컬 변경 사항이 다수 존재한다. 공유 워킹트리 정책(브랜치 체크아웃/생성 금지)과 충돌 가능성이 있어, 브랜치 워크플로는 별도 clone/worktree에서만 수행한다.
+- 주의(공유 워킹트리 정책): 이 워킹트리는 `main` 고정이며 브랜치 생성/체크아웃은 금지. PR/브랜치 워크플로가 필요하면 별도 clone/worktree에서 수행한다.
 - 기동/복구:
   - `windows/start_all.ps1`로 전체 스택(API:8650 / KB:8610 / bot+workers / web:3100 / watchdog) 기동 완료.
   - 초기 증상: Realtime API는 떠있지만 `/health`/`/status` 및 web의 `/api/status`가 타임아웃(원인: IRIS 경로 드리프트).
@@ -112,3 +112,140 @@
     - ADB forward 설정: `adb forward tcp:5050 tcp:3000` 후 `http://127.0.0.1:5050/config` 200 확인
     - Realtime API 재기동: `windows/start_api.ps1 -Port 8650` 후 `http://127.0.0.1:8650/health` 200 및 `http://127.0.0.1:3100/api/status` 200 확인
 - 다음: 요청 대기(필요 시 “부분 재기동 우선” 원칙으로 대상 컴포넌트만 점검/재기동).
+- 강의 운영 v2(카페 등급 기반 톡방 참여 점검 + 통합 스프레드시트) 요구사항 문서화:
+  - ADR: `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`
+  - 레퍼런스: `docs/reference/course-roster-v2-membership-audit.md`
+  - 기존 v1 문서에 v2 링크 추가: `docs/reference/course-roster-worker.md`
+  - 레퍼런스 인덱스 갱신: `docs/reference/README.md`
+
+---
+
+## 2025-12-17 (추가) — `!요약` Q&A/장애 대응 개선
+
+- `!요약 <질문>`(chat/qa)에서 **바로 위 메시지(링크/키워드)**를 놓쳐 “확인 불가”가 나오는 케이스를 줄이기 위해, MessageStore가 **디스크 로그 + 인메모리 버퍼를 병합**하도록 개선함.
+- KB가 `/health`는 OK인데 `/chat/qa`만 500을 내는 **부분 고장**을 watchdog가 놓치지 않도록:
+  - KB에 `GET /health/selfcheck` 추가
+  - Realtime API `/status`의 KB stage가 `/health` + `/health/selfcheck`를 함께 검사하도록 강화
+- `!요약` 실패 시 사용자에게는 **고정 3줄 문구**로만 응답하고(원인/디버깅 금지), 테스트방으로만 **방이름+기능+사유** 운영 알림 발신하도록 변경.
+- KB 스케줄러(backfill) 작업이 PowerShell 자동변수 `$Args` 충돌로 **python을 인자 없이 실행**하던 근본 원인을 수정(→ pyrepl WinError 6 로그/작업 실패 제거).
+
+- `!요약`(chatSummary) 요약 품질 개선:
+  - 토픽 나열/메타 설명을 금지하고, **문제(Q) → 해결책(A)** 중심으로 상위 3~5개만 요약하도록 KB 프롬프트를 개편(`kb/service.py`).
+  - 문서/SSOT: `docs/reference/chat-summary.md`, `docs/adr/ADR-0038-chat-summary-solution-first.md`.
+
+---
+
+## 2025-12-17 (추가) — 무명령어 자동 FAQ(auto-faq-worker) 운영 연동
+
+- KB 최근 글 조회 경량 API 추가: `kb/service.py` `GET /posts/recent` (menu_ids/limit/keywords/include_norm_text)
+- auto-faq-worker 기동/감시 연동:
+  - `windows/start_auto_faq_worker.ps1` 추가
+  - `windows/start_all.ps1`, `windows/watchdog.ps1`, `windows/list_bots.ps1`에 `auto-faq-worker` 포함
+  - web 프로세스 UI(`/api/bot/processes`) expectedKinds에 `auto-faq-worker` 포함
+- UI 내비게이션에 “자동 FAQ” 페이지(`/auto-faq`) 링크 추가
+- 결정 문서: `docs/adr/ADR-0037-auto-faq-worker.md`
+
+---
+
+## 2025-12-17 (추가) — Welcome 환영/후속 답장 문구 고정
+
+- 환영 인사(Welcome):
+  - 닉네임 정상(커스텀 닉네임): `@{entrance} 어서오세요~ 하트스샷 부탁드립니닷`
+  - 기본 닉네임(카카오 기본닉): `@{entrance} 어서오세요~ 소통편한걸로 닉네임변경이랑 하트스샷 부탁드립니다!`
+  - 템플릿(세트 모드) 파일을 고정 문구로 통일:
+    - `node-iris-app/config/templates/welcome/welcome_custom_*.json`
+    - `node-iris-app/config/templates/welcome/welcome_kakao_default_*.json`
+- 하트스샷(첫 이미지) 확인 후 후속 답장(Reply) 문구 고정:
+  - `감사합니다~ 편하게 소통해주시면 됩니다!`
+  - `node-iris-app/config/runtime.json` `welcome.followUp.replies` 를 단일 문구로 설정
+
+---
+
+## 2025-12-17 (추가) — auto-faq(무명령어 자동 FAQ) 정밀도/운영성 개선
+
+- 매칭 정밀도:
+  - `exact_norm`은 **완전 일치**만 허용(부분일치 필요 시 `regex` 사용)
+  - `exact_norm` 정규화는 문장 끝의 `?`/`!`/`.` 구두점을 제거해, 사용자가 물음표를 붙여도 동일 문장으로 매칭되도록 개선
+  - 명령어(`!`) 및 AI 접두어(`?디하클`/`?사주랩`)는 auto-faq가 무시(기능 충돌 방지)
+- 우선순위 처리:
+  - 2개 이상 매칭 시 기본 무응답(ambiguous)
+  - 단, 스코프(방>강의ID>전역) 또는 같은 스코프 내 `priority`로 “명확한 1개”가 결정되면 발신
+- 이미지 안전장치:
+  - auto-faq 이미지 경로는 `assets/auto_faq/` 하위만 허용(외부 URL/경로 탈출 차단)
+  - 설정 저장(`/api/auto-faq/config`)에서도 동일 정책으로 정규화
+- 상태 가시화:
+  - `node-iris-app/data/auto_faq_worker_status.json`에 lastMatch/lastFire(성공/실패/사유) 기록
+  - ambiguous(모호 매치) / dedup(중복 발신 차단)도 SKIP 사유로 기록해 디버깅 비용을 줄임
+  - UI(`/auto-faq`)에서 워커 상태(heartbeat/마지막 매치/마지막 발신)를 바로 확인 가능
+  - 설정 저장 시 `regex` 패턴을 컴파일 검증하고, 유효하지 않으면 저장 자체를 실패 처리(조용한 무시 금지)
+  - UI(`/auto-faq`)에 “최근 이벤트(최대 80)” + “매칭 시뮬레이터(발신 없음)” 추가
+  - Talk-API 발신 실패 시 errMsg/talkStatus를 상태/이벤트에 함께 기록
+  - 트리거별 `cooldownSec`(기본 10분) 지원 + regex 매칭 입력 길이 제한(안정성)
+
+---
+
+## 2025-12-18
+
+- 강의 운영 v2(카페 등급 기반 톡방 참여 점검 + 통합 스프레드시트) 구현:
+  - 워커(파이썬): `scripts/course_membership_audit_worker.py`, `scripts/course_membership_audit/*`
+  - 기동 스크립트: `windows/start_course_membership_audit_worker.ps1`
+  - UI(3100): 상단 카드 “강의 운영 v2 (등급 기반 참여 점검)” + API(`/api/course-membership-audit/*`)로 설정/상태/재시작 연결
+  - 문서: `docs/reference/course-roster-v2-membership-audit.md` 스키마 확정, `docs/reference/verification-commands.md`에 커맨드 추가
+
+- BRIDGE DOWN(상태바) 오탐/자동 복구 보강:
+  - 원인: UI가 `lastEventAgeSec`만으로 BRIDGE DOWN을 표시하면 “채팅이 잠시 없는 방”에서도 DOWN으로 보이는 오탐이 발생.
+  - 조치:
+    - FastAPI `/health`에 `heartbeatTs/heartbeatAgeSec`를 추가하고, Next `/api/health`도 그대로 노출.
+    - FastAPI `/status`의 bot stage ok 판정을 `lastEventTs`가 아니라 **`heartbeatTs` freshness** 기반으로 변경(채팅이 없어도 살아있으면 ok).
+    - UI StatusBar는 heartbeatAgeSec 기준으로 BRIDGE OK/DEGRADED/DOWN을 표시하고, 참고로 이벤트 age를 함께 노출.
+
+- watchdog(web) 자동 재기동 실패 근본 원인 수정:
+  - 원인: `windows/watchdog.ps1`가 `windows/start_web.ps1` 호출 시 `"-Port" "3100"` 같은 **문자열 배열**로 인자를 전달 → PowerShell이 런타임 문자열을 파라미터 토큰으로 재해석하지 않아 `Port([int])`에 `"-Port"`가 바인딩되는 오류 발생.
+  - 조치: `start_web.ps1` 호출을 **명시적 파라미터 전달**로 변경해 재기동이 실제로 성공하도록 수정.
+
+- `windows/ensure_watchdog.ps1` 프로세스 오탐 수정:
+  - 원인: `ensure_watchdog.ps1` 파일명 자체가 `watchdog.ps1` 서브스트링을 포함해, 단순 `'watchdog\.ps1'` 매칭으로는 **자기 자신을 watchdog로 오탐**.
+  - 조치: watchdog 프로세스 판별을 “watchdog.ps1의 전체 경로 매칭”으로 강화.
+
+- LOG 누락(“이벤트는 있는데 로그가 안 쌓임”) 가시화:
+  - FastAPI `/health`에 `logStore.latestLogTs/logAgeSec`를 추가해, **BRIDGE OK인데 로그 저장이 멈춘 상태(LOG LAG)**를 UI에서 구분 가능하게 함.
+  - UI StatusBar에 LOG 배지(`LOG OK/IDLE/LAG`)를 추가했고, 판정 기준은 `docs/reference/bridge-status.md`에 정리.
+
+- 카카오 기본 닉네임 변경 요청(멘션) 워커(ADR-0041) 운영 편의(UI):
+  - 2차/3차 안내 간격(기본 24h/48h)을 **UI(3100) 홈 상단 카드에서 수정/저장** 가능하게 함(`runtime.nicknameReminder.warningSchedule`).
+
+- 수동 개입 최소화(“운영자는 명령을 안 친다”) 전제 보강:
+  - `windows/register_watchdog_task.ps1`가 **1분 주기 + 로그인(ONLOGON)** 트리거로 `ensure_watchdog`를 자동 실행해 watchdog를 보장하도록 강화.
+  - Task Scheduler는 `windows/run_ensure_watchdog.vbs`(`wscript.exe`)로 실행해 **PowerShell 창 플래시**를 방지.
+
+- 카카오 기본 닉네임 변경 요청(멘션) 워커 도입(최대 3회 안내 + 방별 로그 + 도배 방지):
+  - 워커: `node-iris-app/src/workers/nickname_reminder_worker.ts`
+  - 활성화: `runtime.features[roomId].nicknameReminder=true`
+  - 멤버 완전성 전제: `open_chat_member` 로딩이 `active_members_count`에 도달하기 전에는 발신 금지(+ `scripts/openchat_load_members.ps1` 자동 스크롤 로딩 트리거)
+  - 결정 문서: `docs/adr/ADR-0041-default-nickname-reminder-mentions.md`
+
+- Welcome 후속(첫 이미지) 정책 변경:
+  - `runtime.json.welcome.followUp.windowMs`: 5분(300000ms) → 15분(900000ms)
+  - 15분 내 첫 이미지(하트 인증샷) 미업로드 시 1회 추가 멘션 경고 발신:
+    - `@{entrance} 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
+
+- 에이전트 온보딩: `agents.md`/`docs/agents.md`/`docs/ssot.md`/`docs/prd.md`/`docs/roadmap.md`/주요 ADR/레퍼런스 숙지 완료(대기).
+
+---
+
+## 2025-12-19
+
+- 기본닉 예외값(카카오 기본 닉네임 후보) DB 리포트 보강:
+  - 스크롤 로딩 + UI Participants count 기반 “완전 로딩 증명”을 강제(`scripts/report_default_nickname_candidates.ps1`).
+  - node 리포트(JSON)에 `uiParticipantsCount/loadedDistinct`를 함께 기록(`node-iris-app/scripts/report_default_nickname_candidates.js`).
+  - 예시(숏천모 2번방 `18426993080683374`):
+    - UI Participants=2932 / DB distinctUsers=2932 / active_members_count=2933
+    - 기본닉 후보: 66명(닉네임 46종)
+
+- 운영 장애(EMFILE) 근본 원인 확정 및 핫픽스:
+  - 원인: `@tsuki-chat/node-iris` Logger가 인스턴스마다 `winston.createLogger()` + File transport를 생성해 `logs/app.log`/`logs/error*.log` 파일 핸들이 누수됨 → EMFILE로 MessageStore/status 기록까지 연쇄 실패.
+  - 조치: `node-iris-app/node_modules/@tsuki-chat/node-iris/dist/utils/logger.js`를 “공유 winstonLogger(transport 단일) + per-instance logLevel 필터링” 방식으로 핫픽스.
+  - 적용: bot/welcome-worker 재기동 후 HandleCount가 안정적으로 유지됨.
+  - 재설치 대비(워크플로우): `patch-package` 도입 + `postinstall`에서 패치 자동 재적용(`node-iris-app/patches/@tsuki-chat+node-iris+1.6.41.patch`).
+  - 버전 드리프트 방지: `node-iris-app/package.json`의 `@tsuki-chat/node-iris`를 `1.6.41`로 고정.
+  - 문서: `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` + `docs/ssot.md`/`AGENTS.md`/`docs/reference/verification-commands.md` 업데이트.

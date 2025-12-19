@@ -30,6 +30,22 @@
 - **금지**: `근거(Evidence)`, `다음 액션(Next Action)`, 타임스탬프/로그 원문 인용(예: `[2025-…]`)을 사용자에게 노출하지 않는다.
   - 관련 SSOT: `docs/reference/outbound-message-style.md`
   - 추가 금지: 캡처/첨부 메타 라인(예: `[2025-..png 352x476]`)
+- **채팅 요약(chatSummary) 내용 규칙(중요)**:
+  - 토픽 나열(“~에 대해 이야기했어요/조언이 오갔어요/논의했어요”) 금지
+  - **문제/질문(Q) → 해결책/결론(A)** 형태로, 구체적인 방법/단축키/메뉴/기간을 우선 요약
+  - 관련 문서: `docs/reference/chat-summary.md`, `docs/adr/ADR-0038-chat-summary-solution-first.md`
+- **장애/오류 시(필수)**:
+  - 기능이 안 되면 사용자에게는 아래 문구로만 답한다(원인/디버깅 금지):
+
+    ```
+    앗, 지금 기능이 잠깐 멈췄어요 😅
+    관리자님께 바로 전달했으니 금방 복구될 거예요!
+    조금만 기다려주세요 🙏
+    ```
+
+  - 동시에 **테스트용 오픈채팅방(18462226881291012)**에만 운영 알림을 보낸다.
+    - 운영 알림에는 **roomId/userId 금지**(방 이름 + 기능 + 사유만)
+    - “500/internal_error/req_id” 같은 **디버깅 용어 금지**
 
 핵심 문서 링크
 - `docs/ops/core-feature-split-plan.md` - 코어/기능 워커 분리 구현계획서(Welcome 1차)
@@ -40,10 +56,14 @@
 - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
 - `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
 - `docs/reference/kakao-room-command-triggers.md` – 방별 명령어(FAQ) `!등록/!삭제/!명령어/!키` 기능/권한/Reply payload 레퍼런스
+- `docs/adr/ADR-0041-default-nickname-reminder-mentions.md` – 카카오 기본 닉네임 변경 요청(멘션) 워커(멤버 완전성 확인 후 발신)
 - `docs/reference/auto-faq-worker.md` – 무명령어 자동 FAQ(질문 트리거) 설계/가드레일(후보 추출→승인→자동응답, 강의ID/글로벌 스코프, 링크/일정 “추측 금지”)
 - `docs/reference/outbound-message-style.md` – 발신 메시지 템플릿 지침(튜브렌즈 스타일, userId 금지, 푸터 링크)
+- `docs/adr/ADR-0037-auto-faq-worker.md` – 무명령어 자동 FAQ 워커(스코프/Reply/이미지/KB 최근글) 결정
 - `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
+- `docs/adr/ADR-0039-course-roster-v2-membership-audit.md` – 강의 운영 v2(카페 자동 갱신 + 등급 기반 참여 점검 + 통합 시트) 결정
+- `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2: 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear) 운영/설정
 
 ---
 
@@ -106,6 +126,7 @@
   - command-worker: `windows/start_command_worker.ps1 -Restart`
   - roster-worker(선택 기능): `windows/start_roster_worker.ps1 -Restart`
   - openchat-members-sheets-worker(선택 기능): `windows/start_openchat_members_sheets_worker.ps1 -Restart`
+  - course-membership-audit-worker(선택 기능): `windows/start_course_membership_audit_worker.ps1 -Restart`
   - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
 
 - **UI(3100) 남색 배경만 뜨는 증상(중요)**:
@@ -117,6 +138,7 @@
   - 예방:
     - 운영 중에는 `cd web && npm run build`를 **UI 실행과 동시에** 돌리지 않는다(필요 시 `start_web.ps1`로 “정지→빌드→기동” 절차로 수행)
     - `web`의 `npm run build`는 이제 **운영 UI(next start) 실행 중이면 사전 차단**된다(`web/scripts/prebuild_guard.ps1`). (정말 필요할 때만 `npm run build:unsafe`)
+    - BRIDGE/LOG 상태(상단 StatusBar) 기준: `docs/reference/bridge-status.md` (LOG LAG 포함)
     - watchdog는 이제 `/api/ping`뿐 아니라 **`/` + `/_next/static`**까지 체크해 빈 화면 상태를 자동 감지/복구한다.
     - `start_web.ps1`도 READY 전에 **정적 자산 1개를 추가로 검증**해(실패 시 CleanBuild로 1회 자가복구) 빈 화면 재발을 줄인다.
 
@@ -141,6 +163,11 @@
   - **중복 broadcast-worker 금지**: `broadcast-worker`는 1개만 떠 있어야 한다. (락 파일: `node-iris-app/data/locks/broadcast_worker.lock`)
   - `/status`에서 `bot.ok/logStore.ok`가 `false`이면 welcome-worker가 `/logs/stream` 트리거를 못 받아 “토글 ON인데 미발송”처럼 보일 수 있다.
     - 특히 `extra.emfile=true` 또는 `node-iris-app/data/bot_health.json`이 있으면 EMFILE로 파일 로그 기록이 중단된 상태일 수 있으니 우선 `windows/start_bot.ps1 -Restart`(또는 `windows/start_all.cmd`)로 복구한다. (watchdog가 살아있으면 대개 자동 복구)
+    - 재기동 후에도 EMFILE가 빠르게 재발하거나 `Get-Process -Id <PID> | Select HandleCount`가 수천 단위로 치솟으면 **node-iris Logger 파일 핸들 누수**(ADR-0042)를 의심한다.
+      - 조치: `windows/start_bot.ps1 -Restart`로 즉시 복구 후,
+        - `node-iris-app/package.json`에서 `@tsuki-chat/node-iris=1.6.41` 고정 여부 확인
+        - `cd node-iris-app && npx patch-package --error-on-fail`로 패치 강제 재적용
+        - SSOT: `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md`
   - `runtime.json.features[roomId].welcome === true`가 아니면 welcome은 발신되지 않는다(로그에 `reason=WELCOME_DISABLED`로 표시).
   - `windows/logs/welcome_worker.out.log`에서 `[welcome] 스킵` 사유(`ROOM_NOT_ALLOWED|WELCOME_DISABLED`)를 먼저 확인한다.
   - `allowedRoomIds`/토글 변경은 welcome-worker가 **최대 60초 내 재연결로 자동 반영**된다(환경변수 `WELCOME_WORKER_STREAM_TTL_MS`). 즉시 반영이 필요하면 `windows/start_welcome_worker.ps1 -Restart`.
@@ -161,6 +188,7 @@
 - **Python 봇 코어**: `src/`, `tests/`, `scripts/` – Redroid(Hyper‑V)/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
 - **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영 토글/강의톡방 배지**는 RoomCard의 **강의 운영** 섹션)  
+- **기본닉 멘션(ADR-0041)**: 방 카드의 `기본닉 멘션` 토글이 방별 스위치이며, 2차/3차 안내 간격(24h/48h 등)은 **3100 홈 상단 카드**에서 변경해 `runtime.nicknameReminder.warningSchedule`에 저장한다.
 - **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
 - **구(스트림릿) 대시보드**: `dashboard/` – 임시/레거시로 보관(운영 기본에서 제외).  
 - **IRIS 지원 리소스**: `iris_server/`, `infra/iris/`, `windows/` – IRIS DB, PowerShell 포트프록시, 운영 도구.  
@@ -249,7 +277,8 @@
         현재는 `watchdog.ps1` → `start_all.ps1 -NoWatchdog -PreserveWatchdog`로 호출해
         watchdog 자기 자신을 종료시키지 않도록 고정했다.
       - **watchdog 자동 기동(중요)**: watchdog가 꺼져 있으면 자동 복구는 절대 동작하지 않는다.
-        - Task Scheduler 등록(권장): `windows/register_watchdog_task.ps1` (기본 1분 주기, watchdog 미실행 시 자동 기동)
+        - **운영 원칙(중요)**: 운영 중 장애 감지/복구는 watchdog(+ Task Scheduler ensure)가 자동으로 수행한다. 운영자가 매번 수동 명령을 치는 운영은 금지한다(예외: 초기 설치/개발 디버깅).
+        - Task Scheduler 등록(권장): `windows/register_watchdog_task.ps1` (기본 **1분 주기 + 로그인(ONLOGON)**, watchdog 미실행 시 자동 기동)
           - 주기적으로 파란 PowerShell 창이 뜨면 스케줄러 작업이 콘솔로 실행 중인 것이므로,
             `windows/register_watchdog_task.ps1`로 다시 등록해 `wscript.exe` 래퍼(`windows/run_ensure_watchdog.vbs`)를 사용한다(창 플래시 방지).
         - 부팅/로그온 자동 기동(선택): `windows/register_start_all_task.ps1` (콜드 부팅 시 파이프라인 전체 기동)
@@ -350,7 +379,7 @@
 - **Web 운영 모드(중요)**:
   - 운영 상주(Web)는 `windows/start_web.ps1 -Mode prod`(=`next start`)를 기준으로 한다. `next dev`는 개발용이며 운영에서 사용하지 않는다.
   - prod 산출물은 `.next-prod`이며, 산출물 파손/모듈 누락이 의심되면 `windows/start_web.ps1 -CleanBuild` 또는 watchdog의 자동 복구를 사용한다.
-  - watchdog는 `http://127.0.0.1:3100/api/ping` 헬스체크 실패 시 web만 재시작하고, 반복 실패 시 CleanBuild로 단계적 복구를 시도한다.
+  - watchdog는 `http://127.0.0.1:3100/api/ping`뿐 아니라 **`/` + `/_next/static`**까지 헬스체크해(빈 화면/정적자산 404 포함) web만 재시작하고, 반복 실패 시 CleanBuild로 단계적 복구를 시도한다.
 
 ---
 

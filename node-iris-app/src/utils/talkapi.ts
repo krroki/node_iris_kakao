@@ -202,6 +202,26 @@ export async function tryServerTalkApiDispatchRaw(
   attachment: Record<string, unknown>,
   timeoutMs = 10000,
 ): Promise<boolean> {
+  const r = await tryServerTalkApiDispatchRawResult(logger, roomId, message, type, attachment, timeoutMs);
+  return r.ok;
+}
+
+export type TalkApiDispatchRawResult = {
+  ok: boolean;
+  realtimeHttpStatus?: number | null;
+  talkHttpStatus?: number | null;
+  talkStatus?: number | null;
+  errMsg?: string | null;
+};
+
+export async function tryServerTalkApiDispatchRawResult(
+  logger: Logger,
+  roomId: string,
+  message: string,
+  type: number,
+  attachment: Record<string, unknown>,
+  timeoutMs = 10000,
+): Promise<TalkApiDispatchRawResult> {
   try {
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");
     const url = `${base}/send/talkapi/dispatch_raw`;
@@ -216,7 +236,7 @@ export async function tryServerTalkApiDispatchRaw(
       throw e;
     });
     clearTimeout(t);
-    if (!res) return false;
+    if (!res) return { ok: false, errMsg: "no response" };
     const data: any = await res.json().catch(() => ({}));
     const errMsg = data?.talkApi?.errMsg || data?.detail || data?.error || null;
     if (!res.ok) {
@@ -236,7 +256,13 @@ export async function tryServerTalkApiDispatchRaw(
         talkStatus: data?.talkApi?.status ?? null,
         errMsg,
       });
-      return false;
+      return {
+        ok: false,
+        realtimeHttpStatus: res.status,
+        talkHttpStatus: data?.talkApi?.httpStatus ?? null,
+        talkStatus: data?.talkApi?.status ?? null,
+        errMsg,
+      };
     }
     if (!data?.ok) {
       logger.warn("[talkapi] dispatch_raw failed", {
@@ -254,7 +280,13 @@ export async function tryServerTalkApiDispatchRaw(
         talkStatus: data?.talkApi?.status ?? null,
         errMsg,
       });
-      return false;
+      return {
+        ok: false,
+        realtimeHttpStatus: res.status,
+        talkHttpStatus: data?.talkApi?.httpStatus ?? null,
+        talkStatus: data?.talkApi?.status ?? null,
+        errMsg,
+      };
     }
     logger.info("[talkapi] dispatch_raw ok", { roomId, talkStatus: data?.talkApi?.status });
     recordStatusFireAndForget({
@@ -266,10 +298,16 @@ export async function tryServerTalkApiDispatchRaw(
       talkStatus: data?.talkApi?.status ?? null,
       errMsg,
     });
-    return true;
+    return {
+      ok: true,
+      realtimeHttpStatus: res.status,
+      talkHttpStatus: data?.talkApi?.httpStatus ?? null,
+      talkStatus: data?.talkApi?.status ?? null,
+      errMsg,
+    };
   } catch (e) {
     logger.warn("[talkapi] dispatch_raw error", { roomId, err: String(e) });
     recordStatusFireAndForget({ ok: false, kind: "dispatch_raw", roomId, errMsg: String(e) });
-    return false;
+    return { ok: false, errMsg: String(e) };
   }
 }

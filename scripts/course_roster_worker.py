@@ -4,7 +4,7 @@
 
 역할
 - Realtime API(/logs/stream) 구독 → member_joined / message 이벤트 소비
-- 입장자 닉네임에서 "(카페닉)" 파싱 → 카페 멤버 스냅샷(CSV)과 매칭
+- 입장자 닉네임에서 "(카페닉)" 파싱 → 카페 멤버 스냅샷과 매칭(크롤러 JSON 또는 레거시 CSV)
 - 정책:
   - 입장 후 15분 유예(grace) 동안은 조용히 대기
   - 15분 이후에도 미확인이면 1회 안내(멘션)
@@ -34,6 +34,7 @@ import csv
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -141,6 +142,16 @@ def _parse_spreadsheet_id(raw: str) -> str:
     return s
 
 
+def _extract_naver_cafe_club_id(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"(?:clubid|clubId|search\.clubid|search\.clubId)=(\d+)", s, flags=re.IGNORECASE)
+    if m:
+        return str(m.group(1) or "").strip()
+    return ""
+
+
 def _col_letter(n: int) -> str:
     if n <= 0:
         raise ValueError("n must be >= 1")
@@ -229,7 +240,13 @@ class RoomConfig:
     enabled: bool
     spreadsheet_id: str
     roster_sheet: str
-    cafe_csv_path: str
+    cafe_source: str  # crawler | csv(레거시)
+    cafe_url: str
+    cafe_club_id: str
+    crawler_repo_path: str
+    crawler_python_exe: str
+    crawler_settings_path: str
+    cafe_csv_path: str  # 레거시
     join_url: str
 
 
@@ -246,7 +263,9 @@ class Policy:
 class CafeSnapshot:
     loaded_at_ms: int
     source_mtime_ms: int
+    snapshot_at_ms: int
     nickname_to_user_ids: Dict[str, List[str]]
+    error: str
 
 
 @dataclass
@@ -363,14 +382,38 @@ class CafeSnapshotLoader:
     def __init__(self, policy: Policy):
         self.policy = policy
         self.cache: Dict[str, CafeSnapshot] = {}
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.snap_dir = (self.repo_root / "data" / "course_roster_worker" / "cafe_snapshots").resolve()
+        self.bridge_script = (self.repo_root / "scripts" / "crawl_naver_cafe_members.py").resolve()
 
-    def load(self, csv_path: str) -> CafeSnapshot:
+    def load(self, rm: RoomConfig) -> CafeSnapshot:
+        src = str(rm.cafe_source or "").strip().lower()
+        if src == "crawler":
+            return self._load_from_crawler(
+                club_id=rm.cafe_club_id,
+                crawler_repo=rm.crawler_repo_path,
+                python_exe=rm.crawler_python_exe,
+                settings_path=rm.crawler_settings_path,
+                cafe_name=f"club_{rm.cafe_club_id}",
+            )
+        if src == "csv":
+            return self._load_from_csv(rm.cafe_csv_path)
+        return CafeSnapshot(
+            loaded_at_ms=_now_ms(),
+            source_mtime_ms=0,
+            snapshot_at_ms=0,
+            nickname_to_user_ids={},
+            error=f"지원하지 않는 cafe_source: {rm.cafe_source}",
+        )
+
+    def _load_from_csv(self, csv_path: str) -> CafeSnapshot:
         p = Path(csv_path)
         if not p.exists():
             raise FileNotFoundError(f"카페 CSV가 존재하지 않습니다: {csv_path}")
 
         mtime_ms = int(p.stat().st_mtime * 1000)
-        cached = self.cache.get(str(p))
+        key = f"csv:{str(p)}"
+        cached = self.cache.get(key)
         now = _now_ms()
         if cached:
             fresh_by_ttl = (now - cached.loaded_at_ms) < (self.policy.cafe_cache_sec * 1000)
@@ -395,8 +438,175 @@ class CafeSnapshotLoader:
                     continue
                 nickname_to_ids[nick].append(uid)
 
-        snap = CafeSnapshot(loaded_at_ms=now, source_mtime_ms=mtime_ms, nickname_to_user_ids=dict(nickname_to_ids))
-        self.cache[str(p)] = snap
+        snap = CafeSnapshot(
+            loaded_at_ms=now,
+            source_mtime_ms=mtime_ms,
+            snapshot_at_ms=mtime_ms,
+            nickname_to_user_ids=dict(nickname_to_ids),
+            error="",
+        )
+        self.cache[key] = snap
+        return snap
+
+    def _read_crawler_snapshot(self, path: Path, source_mtime_ms: int) -> CafeSnapshot:
+        now = _now_ms()
+        try:
+            raw = path.read_text(encoding="utf-8-sig")
+            obj = json.loads(raw or "{}")
+        except Exception as e:
+            return CafeSnapshot(
+                loaded_at_ms=now,
+                source_mtime_ms=source_mtime_ms,
+                snapshot_at_ms=source_mtime_ms,
+                nickname_to_user_ids={},
+                error=f"카페 스냅샷 JSON 파싱 실패: {e}",
+            )
+        if not isinstance(obj, dict):
+            return CafeSnapshot(
+                loaded_at_ms=now,
+                source_mtime_ms=source_mtime_ms,
+                snapshot_at_ms=source_mtime_ms,
+                nickname_to_user_ids={},
+                error="카페 스냅샷 JSON 형식 오류(object 필요)",
+            )
+
+        ok = bool(obj.get("ok"))
+        err = str(obj.get("error") or "").strip()
+        fetched_at_ms = _ts_to_ms(str(obj.get("fetchedAt") or "").strip()) or source_mtime_ms
+
+        members = obj.get("members") if isinstance(obj.get("members"), list) else []
+        nickname_to_ids: Dict[str, List[str]] = defaultdict(list)
+        for m in members:
+            if not isinstance(m, dict):
+                continue
+            nick = str(m.get("cafeNickname") or "").strip()
+            uid = str(m.get("cafeUserId") or "").strip()
+            if not nick or not uid:
+                continue
+            nickname_to_ids[nick].append(uid)
+
+        return CafeSnapshot(
+            loaded_at_ms=now,
+            source_mtime_ms=source_mtime_ms,
+            snapshot_at_ms=fetched_at_ms,
+            nickname_to_user_ids=dict(nickname_to_ids),
+            error=("" if ok else (err or "crawl_failed")),
+        )
+
+    def _load_from_crawler(
+        self,
+        *,
+        club_id: str,
+        crawler_repo: str,
+        python_exe: str,
+        settings_path: str,
+        cafe_name: str,
+    ) -> CafeSnapshot:
+        club = str(club_id or "").strip()
+        if not club:
+            return CafeSnapshot(
+                loaded_at_ms=_now_ms(),
+                source_mtime_ms=0,
+                snapshot_at_ms=0,
+                nickname_to_user_ids={},
+                error="cafeClubId가 비어 있습니다.",
+            )
+
+        refresh_ms = max(30, int(self.policy.cafe_cache_sec)) * 1000
+        key = f"crawler:{club}"
+        out_path = (self.snap_dir / f"club_{club}.json").resolve()
+
+        now = _now_ms()
+        file_mtime_ms = int(out_path.stat().st_mtime * 1000) if out_path.exists() else 0
+        cached = self.cache.get(key)
+        if cached and file_mtime_ms and cached.source_mtime_ms == file_mtime_ms:
+            if cached.snapshot_at_ms and (now - cached.snapshot_at_ms) < refresh_ms:
+                return cached
+
+        # 파일이 있고 충분히 최근이면(갱신 주기 내) 크롤링 없이 읽어서 사용
+        if out_path.exists() and file_mtime_ms:
+            snap = self._read_crawler_snapshot(out_path, file_mtime_ms)
+            if snap.snapshot_at_ms and (now - snap.snapshot_at_ms) < refresh_ms:
+                self.cache[key] = snap
+                return snap
+
+        # 크롤링 수행
+        if not python_exe or not Path(python_exe).exists():
+            snap = CafeSnapshot(
+                loaded_at_ms=_now_ms(),
+                source_mtime_ms=file_mtime_ms,
+                snapshot_at_ms=0,
+                nickname_to_user_ids={},
+                error=f"crawler pythonExe 경로가 없거나 존재하지 않습니다: {python_exe}",
+            )
+            self.cache[key] = snap
+            return snap
+        if not crawler_repo or not Path(crawler_repo).exists():
+            snap = CafeSnapshot(
+                loaded_at_ms=_now_ms(),
+                source_mtime_ms=file_mtime_ms,
+                snapshot_at_ms=0,
+                nickname_to_user_ids={},
+                error=f"crawler repoPath 경로가 없거나 존재하지 않습니다: {crawler_repo}",
+            )
+            self.cache[key] = snap
+            return snap
+        if settings_path and not Path(settings_path).exists():
+            snap = CafeSnapshot(
+                loaded_at_ms=_now_ms(),
+                source_mtime_ms=file_mtime_ms,
+                snapshot_at_ms=0,
+                nickname_to_user_ids={},
+                error=f"crawler settingsPath 경로가 존재하지 않습니다: {settings_path}",
+            )
+            self.cache[key] = snap
+            return snap
+        if not self.bridge_script.exists():
+            snap = CafeSnapshot(
+                loaded_at_ms=_now_ms(),
+                source_mtime_ms=file_mtime_ms,
+                snapshot_at_ms=0,
+                nickname_to_user_ids={},
+                error=f"bridge script가 없습니다: {self.bridge_script}",
+            )
+            self.cache[key] = snap
+            return snap
+
+        self.snap_dir.mkdir(parents=True, exist_ok=True)
+        args = [
+            str(python_exe),
+            str(self.bridge_script),
+            "--crawler-repo",
+            str(crawler_repo),
+            "--club-id",
+            club,
+            "--cafe-name",
+            str(cafe_name or f"club_{club}"),
+            "--output",
+            str(out_path),
+        ]
+        if str(settings_path or "").strip():
+            args.extend(["--settings", str(settings_path)])
+
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, timeout=900)
+        except Exception as e:
+            snap = CafeSnapshot(
+                loaded_at_ms=_now_ms(),
+                source_mtime_ms=file_mtime_ms,
+                snapshot_at_ms=0,
+                nickname_to_user_ids={},
+                error=f"카페 크롤링 실행 실패: {e}",
+            )
+            self.cache[key] = snap
+            return snap
+
+        file_mtime_ms = int(out_path.stat().st_mtime * 1000) if out_path.exists() else 0
+        snap = self._read_crawler_snapshot(out_path, file_mtime_ms)
+        if p.returncode != 0 and not snap.error:
+            hint = (p.stderr or p.stdout or "").strip()
+            snap.error = f"카페 크롤링 실패(code={p.returncode}): {hint[:200]}"
+        self.cache[key] = snap
         return snap
 
 
@@ -446,7 +656,7 @@ class CourseRosterWorker:
         if not isinstance(rooms_obj, dict) or not rooms_obj:
             raise SystemExit(
                 f"[오류] roster worker config가 비어있습니다: {self.config_path}\n"
-                f"- 예시 파일을 참고해 roomId별 시트/카페 CSV를 등록하세요: config/course_roster_worker.example.json"
+                f"- 예시 파일을 참고해 roomId별 시트/카페 설정을 등록하세요: config/course_roster_worker.example.json"
             )
 
         rooms: Dict[str, RoomConfig] = {}
@@ -458,17 +668,77 @@ class CourseRosterWorker:
             enabled = bool(v.get("enabled", True))
             sheet_id = _parse_spreadsheet_id(str(v.get("spreadsheetId") or v.get("sheetId") or "").strip())
             roster_sheet = str(v.get("rosterSheet") or v.get("rosterSheetName") or "ROSTER_RAW").strip() or "ROSTER_RAW"
+            cafe_source_raw = str(v.get("cafeSource") or "").strip().lower()
             cafe_csv = str(v.get("cafeCsvPath") or "").strip()
+            cafe_club_id = str(v.get("cafeClubId") or v.get("clubId") or "").strip()
+            crawler_repo = (
+                str(v.get("crawlerRepoPath") or "").strip()
+                or str(os.getenv("NAVER_CAFE_CRAWLER_REPO") or "").strip()
+                or "C:\\dev\\naver-cafe-member-crawler"
+            )
+            crawler_py = (
+                str(v.get("crawlerPythonExe") or "").strip()
+                or str(os.getenv("NAVER_CAFE_CRAWLER_PYTHON") or "").strip()
+            )
+            if not crawler_py and crawler_repo:
+                crawler_py = str((Path(crawler_repo) / "venv" / "Scripts" / "python.exe").resolve())
+            crawler_settings = (
+                str(v.get("crawlerSettingsPath") or "").strip()
+                or str(os.getenv("NAVER_CAFE_CRAWLER_SETTINGS") or "").strip()
+            )
             join_url = str(v.get("joinUrl") or "").strip()
+            cafe_url = str(v.get("cafeUrl") or "").strip()
 
-            if enabled and (not sheet_id or not cafe_csv):
+            if not cafe_club_id:
+                extracted = _extract_naver_cafe_club_id(cafe_url or join_url)
+                if extracted:
+                    cafe_club_id = extracted
+
+            cafe_source = cafe_source_raw
+            if cafe_source not in ("crawler", "csv"):
+                # 하위 호환(구 설정): clubId가 있으면 crawler, 아니면 csv를 사용한다.
+                if cafe_club_id and cafe_csv:
+                    cafe_source = "ambiguous"
+                elif cafe_club_id:
+                    cafe_source = "crawler"
+                elif cafe_csv:
+                    cafe_source = "csv"
+                else:
+                    cafe_source = ""
+
+            missing: list[str] = []
+            if not sheet_id:
+                missing.append("spreadsheetId")
+            if cafe_source == "crawler":
+                if not cafe_club_id:
+                    missing.append("cafeClubId")
+                if not crawler_repo or not Path(crawler_repo).exists():
+                    missing.append("crawlerRepoPath")
+                if not crawler_py or not Path(crawler_py).exists():
+                    missing.append("crawlerPythonExe")
+                if crawler_settings and not Path(crawler_settings).exists():
+                    missing.append("crawlerSettingsPath")
+            elif cafe_source == "csv":
+                if not cafe_csv:
+                    missing.append("cafeCsvPath")
+                elif not Path(cafe_csv).exists():
+                    missing.append("cafeCsvMissing")
+            elif cafe_source == "ambiguous":
+                missing.append("cafeSource(ambiguous: set cafeSource)")
+            else:
+                missing.append("cafeSource")
+
+            if enabled and missing:
                 self.log(
                     "WARN",
                     "room config incomplete; disabled",
                     roomId=rid2,
                     enabled=enabled,
                     spreadsheetId=sheet_id,
+                    cafeSource=(cafe_source or "[missing]"),
+                    cafeClubId=("[missing]" if not cafe_club_id else cafe_club_id),
                     cafeCsvPath=("[missing]" if not cafe_csv else cafe_csv),
+                    missing=",".join(missing),
                 )
                 enabled = False
 
@@ -477,6 +747,12 @@ class CourseRosterWorker:
                 enabled=enabled,
                 spreadsheet_id=sheet_id,
                 roster_sheet=roster_sheet,
+                cafe_source=cafe_source or "crawler",
+                cafe_url=cafe_url,
+                cafe_club_id=cafe_club_id,
+                crawler_repo_path=crawler_repo,
+                crawler_python_exe=crawler_py,
+                crawler_settings_path=crawler_settings,
                 cafe_csv_path=cafe_csv,
                 join_url=join_url,
             )
@@ -587,15 +863,23 @@ class CourseRosterWorker:
         if not cafe_nick:
             return False, "INVALID_NICKNAME_FORMAT", 0
 
-        snap = self.cafe_loader.load(rm.cafe_csv_path)
+        try:
+            snap = self.cafe_loader.load(rm)
+        except Exception as e:
+            pm.last_error = str(e)
+            return False, "CAFE_SNAPSHOT_ERROR", 0
+        if snap.error:
+            pm.last_error = snap.error
+            return False, "CAFE_SNAPSHOT_ERROR", snap.snapshot_at_ms
+
         ids = snap.nickname_to_user_ids.get(cafe_nick) or []
         if not ids:
-            return False, "NOT_FOUND_IN_CAFE", snap.source_mtime_ms
+            return False, "NOT_FOUND_IN_CAFE", snap.snapshot_at_ms
         if len(ids) > 1:
-            return False, "AMBIGUOUS_NICKNAME", snap.source_mtime_ms
+            return False, "AMBIGUOUS_NICKNAME", snap.snapshot_at_ms
 
         pm.cafe_user_id = ids[0]
-        return True, "", snap.source_mtime_ms
+        return True, "", snap.snapshot_at_ms
 
     def _compose_nudge1(self, rm: RoomConfig, name: str) -> str:
         lines = [
@@ -786,9 +1070,9 @@ class CourseRosterWorker:
             allow_send = False
             pm.last_error = send_reason
 
-        verified, reason, snap_mtime_ms = False, "", 0
+        verified, reason, snap_at_ms = False, "", 0
         try:
-            verified, reason, snap_mtime_ms = self._try_verify(rm, pm)
+            verified, reason, snap_at_ms = self._try_verify(rm, pm)
         except Exception as e:
             pm.last_error = str(e)
             reason = "CAFE_SNAPSHOT_ERROR"
@@ -805,7 +1089,7 @@ class CourseRosterWorker:
                         pm.last_error = f"verified_send_failed:{err}"
                 self.log("INFO", "verified", roomId=pm.room_id, userId=pm.kakao_user_id, cafeUserId=pm.cafe_user_id)
 
-            self._upsert_row(rm, pm, snap_mtime_ms)
+            self._upsert_row(rm, pm, snap_at_ms)
             self.pending.pop(self._make_key(pm.room_id, pm.kakao_user_id), None)
             return
 
@@ -813,10 +1097,12 @@ class CourseRosterWorker:
             pm.status = "INVALID_NICK"
         elif reason == "AMBIGUOUS_NICKNAME":
             pm.status = "AMBIGUOUS"
+        elif reason == "CAFE_SNAPSHOT_ERROR":
+            pm.status = "SNAPSHOT_ERROR"
         else:
             pm.status = "PENDING"
 
-        self._upsert_row(rm, pm, snap_mtime_ms)
+        self._upsert_row(rm, pm, snap_at_ms)
 
     def tick(self) -> None:
         now = _now_ms()
@@ -848,6 +1134,9 @@ class CourseRosterWorker:
             send_ok, send_reason = self._is_send_enabled(runtime, pm.room_id)
             if not send_ok:
                 pm.last_error = send_reason
+                continue
+            if pm.status == "SNAPSHOT_ERROR":
+                # 카페 스냅샷(크롤러/CSV) 자체가 불안정한 상태에서는 오발신을 막기 위해 안내를 스킵한다.
                 continue
 
             if pm.nudge1_at_ms == 0 and age >= self.policy.grace_ms:
@@ -1067,7 +1356,7 @@ def main() -> int:
     ap.add_argument(
         "--config",
         default=os.getenv("COURSE_ROSTER_CONFIG") or "data/course_roster_worker.json",
-        help="roomId별 시트/카페 CSV 매핑 config(JSON). 기본: data/course_roster_worker.json",
+        help="roomId별 시트/카페 설정 매핑 config(JSON). 기본: data/course_roster_worker.json",
     )
     ap.add_argument(
         "--service-account-json",
@@ -1077,7 +1366,12 @@ def main() -> int:
     ap.add_argument("--grace-min", type=int, default=15, help="1차 안내 유예(분). 기본 15")
     ap.add_argument("--remind2-hours", type=int, default=24, help="2차 안내 시점(시간). 기본 24")
     ap.add_argument("--check-interval-sec", type=int, default=60, help="주기적 체크 간격(초). 기본 60")
-    ap.add_argument("--cafe-cache-sec", type=int, default=300, help="카페 CSV 캐시 TTL(초). 기본 300")
+    ap.add_argument(
+        "--cafe-cache-sec",
+        type=int,
+        default=300,
+        help="카페 스냅샷 갱신 최소 간격(초). 기본 300 (crawler 모드에서는 이 주기보다 자주 크롤링하지 않음)",
+    )
     ap.add_argument("--verify-cooldown-sec", type=int, default=60, help="동일 사용자 재검증 쿨다운(초). 기본 60")
     args = ap.parse_args()
 

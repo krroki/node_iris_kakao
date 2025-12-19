@@ -5,7 +5,9 @@ import { promises as fs } from "fs";
 import path from "path";
 import { isRoomAllowed, isFeatureEnabledForContext } from "../utils/guard";
 import { APP_ROOT } from "../utils/paths";
-import { tryServerTalkApiDispatchRaw } from "../utils/talkapi";
+import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/talkapi";
+import { tryServerIrisReplyText } from "../utils/iris";
+import { stripAtMentionsForFallback } from "../utils/mentions";
 import DedupCache from "./dedupCache";
 
 type WelcomeEntrant = { name: string; senderId: string; joinedAt: number };
@@ -15,11 +17,17 @@ type RecordFn = (
   payload: Record<string, unknown> & { type: string },
 ) => Promise<void>;
 
+type TimeoutMentionConfig = {
+  enabled: boolean;
+  text: string;
+};
+
 type FollowUpConfig = {
   enabled: boolean;
   windowMs: number;
   maxPendingPerRoom: number;
   replies: string[];
+  timeoutMention: TimeoutMentionConfig;
 };
 
 type PendingEntry = {
@@ -40,6 +48,18 @@ function safeString(v: unknown): string {
   return String(v ?? "").trim();
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  const n = Math.max(1, Math.floor(size));
+  for (let i = 0; i < items.length; i += n) out.push(items.slice(i, i + n));
+  return out;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  const n = Math.max(0, Math.floor(ms));
+  return new Promise((r) => setTimeout(r, n));
+}
+
 function normalizeKakaoMessageType(raw: unknown): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
@@ -55,6 +75,7 @@ export class WelcomeFollowUpService {
   private readonly pending = new Map<string, PendingEntry>();
   private readonly photoDedup = new DedupCache(10 * 60 * 1000); // 10분 TTL
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private cleanupInFlight = false;
 
   // runtime.json 로드 캐시 (에러 시 폴백 금지: 캐시 사용하지 않고 skip)
   private runtimeCache: { at: number; data: any } | null = null;
@@ -182,16 +203,6 @@ export class WelcomeFollowUpService {
 
     const now = Date.now();
     if (now >= entry.expiresAt) {
-      this.pending.delete(key);
-      await this.recordSafe(context, {
-        type: "welcome_followup_expired",
-        roomId,
-        userId: senderId,
-        userName: entry.userName,
-        joinedAt: entry.joinedAt,
-        welcomeSentAt: entry.welcomeSentAt,
-        expiresAt: entry.expiresAt,
-      });
       return;
     }
 
@@ -440,7 +451,22 @@ export class WelcomeFollowUpService {
       return { ok: false, error: "welcome.followUp.replies must contain at least 1 non-empty string" };
     }
 
-    return { ok: true, cfg: { enabled, windowMs: Math.floor(windowMs), maxPendingPerRoom: Math.floor(maxPendingPerRoom), replies } };
+    const timeoutMentionRaw = (fu as any).timeoutMention;
+    let timeoutMention: TimeoutMentionConfig = { enabled: false, text: "" };
+    if (timeoutMentionRaw && typeof timeoutMentionRaw === "object") {
+      const en = (timeoutMentionRaw as any).enabled;
+      const text = safeString((timeoutMentionRaw as any).text ?? (timeoutMentionRaw as any).message ?? "");
+      timeoutMention = { enabled: en === true, text };
+    }
+
+    if (enabled && timeoutMention.enabled && !timeoutMention.text) {
+      return { ok: false, error: "welcome.followUp.timeoutMention.text must be non-empty" };
+    }
+
+    return {
+      ok: true,
+      cfg: { enabled, windowMs: Math.floor(windowMs), maxPendingPerRoom: Math.floor(maxPendingPerRoom), replies, timeoutMention },
+    };
   }
 
   private runtimeConfigPath(): string {
@@ -524,20 +550,131 @@ export class WelcomeFollowUpService {
     }
   }
 
+  private isSafeModeOn(runtime: any): boolean {
+    // SAFE_MODE 기본값은 true(발신 차단)이며, 명시적으로 false일 때만 발신을 허용한다.
+    return runtime?.safeMode !== false;
+  }
+
+  private isRoomAllowedByRuntime(runtime: any, roomId: string): boolean {
+    const list = Array.isArray(runtime?.allowedRoomIds) ? runtime.allowedRoomIds.map((x: any) => safeString(x)).filter(Boolean) : [];
+    if (list.length === 0) return false;
+    return list.includes(String(roomId));
+  }
+
+  private renderTimeoutMentionText(templateText: string, names: string[]): { text: string; hasMention: boolean } {
+    const nms = (Array.isArray(names) ? names : []).map((n) => safeString(n) || "Guest").filter(Boolean);
+    const first = nms[0] || "Guest";
+    let out = safeString(templateText || "");
+    if (!out) return { text: "", hasMention: false };
+
+    // Multi-entrant placeholder: replace with a single mention list (max 15 will be chunked outside).
+    if (nms.length > 1) {
+      const mentionPlain = nms.map((n) => `@${n}`).join(", ");
+      out = out.replace(/@\{(?:entrant|entrance|userName)\}님/g, `${mentionPlain}님`);
+      out = out.replace(/@\{(?:entrant|entrance|userName)\}/g, mentionPlain);
+    }
+
+    let hasMention = false;
+    out = out.replace(/@\{(?:entrant|entrance|userName)\}/g, () => {
+      hasMention = true;
+      return "@" + first;
+    });
+
+    if (!hasMention && nms.some((n) => out.includes("@" + n))) {
+      hasMention = true;
+    }
+    return { text: out, hasMention };
+  }
+
+  private async sendTimeoutMentionsForRoom(runtime: any, roomId: string, entries: PendingEntry[], cfg: FollowUpConfig): Promise<boolean> {
+    const targets = entries
+      .map((e) => ({ name: safeString(e.userName) || "Guest", userId: safeString(e.userId) }))
+      .filter((m) => m.userId && m.name);
+    if (targets.length === 0) return false;
+
+    const chunks = chunkArray(targets, 15);
+    let okAny = false;
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i]!;
+      const { text: message, hasMention } = this.renderTimeoutMentionText(cfg.timeoutMention.text, chunk.map((m) => m.name));
+      if (!message) continue;
+      const mentionees = chunk.filter((m) => message.includes("@" + m.name));
+
+      let okTalk = false;
+      let okIris = false;
+      try {
+        okTalk = await tryServerTalkApiDispatch(this.logger, roomId, message, hasMention && mentionees.length ? mentionees : [], 12000);
+      } catch (e) {
+        okTalk = false;
+        this.logger.warn("[welcome_followup] timeoutMention dispatch threw", { roomId, err: String(e) });
+      }
+      if (!okTalk) {
+        const fallbackText = hasMention && mentionees.length ? stripAtMentionsForFallback(message, mentionees) : message;
+        okIris = await tryServerIrisReplyText(this.logger, roomId, fallbackText, 12000);
+      }
+      okAny = okAny || okTalk || okIris;
+
+      if (i < chunks.length - 1) {
+        await sleepMs(1500);
+      }
+    }
+
+    return okAny;
+  }
+
+  private async cleanupExpiredAndMaybeNudge(): Promise<void> {
+    if (this.cleanupInFlight) return;
+    this.cleanupInFlight = true;
+    try {
+      const now = Date.now();
+      const expired: PendingEntry[] = [];
+      for (const [k, v] of this.pending.entries()) {
+        if (now >= v.expiresAt) {
+          expired.push(v);
+          this.pending.delete(k);
+        }
+      }
+      if (expired.length === 0) return;
+
+      const runtime = await this.loadRuntimeConfig();
+      if (!runtime) return;
+      const cfgRes = this.parseConfig(runtime);
+      if (!cfgRes.ok) return;
+      const cfg = cfgRes.cfg;
+      if (!cfg.enabled) return;
+      if (!cfg.timeoutMention.enabled || !cfg.timeoutMention.text) return;
+
+      // Guardrails
+      if (this.isSafeModeOn(runtime)) return;
+
+      const byRoom = new Map<string, PendingEntry[]>();
+      for (const e of expired) {
+        const rid = safeString(e?.roomId);
+        if (!rid) continue;
+        const list = byRoom.get(rid) || [];
+        list.push(e);
+        byRoom.set(rid, list);
+      }
+
+      for (const [rid, list] of byRoom.entries()) {
+        if (!list.length) continue;
+        if (!this.isRoomAllowedByRuntime(runtime, rid)) continue;
+        if (!this.isEnabledForRoom(runtime, rid)) continue;
+
+        const ok = await this.sendTimeoutMentionsForRoom(runtime, rid, list, cfg);
+        this.logger.info("[welcome_followup] timeoutMention attempted", { roomId: rid, count: list.length, ok });
+      }
+    } catch (e) {
+      this.logger.warn("[welcome_followup] cleanupExpiredAndMaybeNudge failed", { err: String(e) });
+    } finally {
+      this.cleanupInFlight = false;
+    }
+  }
+
   private startCleanup(): void {
     if (this.cleanupTimer) return;
     this.cleanupTimer = setInterval(() => {
-      const now = Date.now();
-      let removed = 0;
-      for (const [k, v] of this.pending.entries()) {
-        if (now >= v.expiresAt) {
-          this.pending.delete(k);
-          removed += 1;
-        }
-      }
-      if (removed > 0) {
-        this.logger.info("[welcome_followup] cleanup expired", { removed, pending: this.pending.size });
-      }
+      void this.cleanupExpiredAndMaybeNudge();
     }, 30_000);
     try {
       const t: any = this.cleanupTimer as any;

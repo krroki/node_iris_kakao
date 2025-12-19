@@ -2,7 +2,7 @@
 
 **언어 정책**: 모든 커뮤니케이션과 로그는 한국어로 작성한다.
 **프로젝트 요약**: Redroid(Hyper‑V) + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE) 운영. Python 봇, TypeScript IRIS 어댑터, Next.js 대시보드(FastAPI+SSE), 운영 스크립트로 구성된다.
-**주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), Streamlit, Playwright, PowerShell.
+**주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), FastAPI(+SSE), Next.js(React), Playwright, PowerShell.
 
 ---
 
@@ -158,6 +158,13 @@ if (result === null) {
   - `pwsh windows/start_welcome_worker.ps1 -Restart`
   - `pwsh windows/start_ai_worker.ps1 -Restart`
   - `pwsh windows/start_broadcast_worker.ps1 -Restart`
+  - `pwsh windows/start_command_worker.ps1 -Restart`
+  - `pwsh windows/start_image_worker.ps1 -Restart`
+  - `pwsh windows/start_auto_faq_worker.ps1 -Restart`
+  - `pwsh windows/start_roster_worker.ps1 -Restart` (선택 기능)
+  - `pwsh windows/start_openchat_members_sheets_worker.ps1 -Restart` (선택 기능)
+  - `pwsh windows/start_course_membership_audit_worker.ps1 -Restart` (선택 기능)
+  - `pwsh windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
 - 콜드 부팅/전체 복구가 필요할 때만: `windows/start_all.cmd`
 
 **이유**: Codex, Claude Code, 기타 개발 도구가 Node.js로 실행 중. 전체 kill 시 개발 환경 파괴.
@@ -271,8 +278,17 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - `docs/reference/project-structure.md` – 저장소 구조 및 책임 구분
 - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
 - `docs/reference/kakao-mentions-and-reply.md` – 오픈채팅 “실제 멘션(@)” / “답장(Reply)” 구현 레퍼런스(새 세션 온보딩용)
+- `docs/reference/kakao-room-command-triggers.md` – 방별 명령어(FAQ) 트리거 레퍼런스
+- `docs/reference/auto-faq-worker.md` – 무명령어 자동 FAQ(질문 트리거) 설계/가드레일
+- `docs/adr/ADR-0037-auto-faq-worker.md` – 무명령어 자동 FAQ 워커 결정
+- `docs/adr/ADR-0041-default-nickname-reminder-mentions.md` – 카카오 기본 닉네임 변경 요청(멘션) 워커(멤버 완전성 확인 후 발신)
+- `docs/reference/chat-summary.md` – 채팅 요약(chatSummary) 출력 규칙
+- `docs/adr/ADR-0038-chat-summary-solution-first.md` – 채팅요약 “해결책 우선” 결정
+- `docs/reference/outbound-message-style.md` – 발신 메시지 템플릿(튜브렌즈 스타일) 지침
 - `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
+- `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2: 등급 기반 톡방 참여 점검 + 통합 스프레드시트
+- `docs/adr/ADR-0039-course-roster-v2-membership-audit.md` – 강의 운영 v2 결정(SSOT)
 
 ---
 
@@ -313,6 +329,7 @@ UI 전환 지침
 - SAFE_MODE는 항상 ON이며 발신 UI/엔드포인트는 노출하지 않는다
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
 - **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영 토글/강의톡방 배지**는 RoomCard의 **강의 운영** 섹션)  
+- **기본닉 멘션(ADR-0041)**: 방 카드의 `기본닉 멘션` 토글이 방별 스위치이며, 2차/3차 안내 간격(24h/48h 등)은 **3100 홈 상단 카드**에서 변경해 `runtime.nicknameReminder.warningSchedule`에 저장한다.
 - **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
 
 ## 3. KB/RAG 스케줄 및 신선도 불변식
@@ -410,6 +427,9 @@ docs/adr/ADR-<4자리 번호>-<주제-kebab>.md
     - `windows/start_all.cmd`는 **콜드 부팅/전체 복구**(PC 재부팅 직후, 포트/프로세스 꼬임, web 404/산출물 파손, env 드리프트 등) 때만 사용한다.
     - 평소 배포/수정은 **변경한 컴포넌트만** 재기동한다(코어는 유지).
     - watchdog(`windows/watchdog.ps1`)가 살아있으면 대부분 자동 복구되므로, 수동 개입은 “죽은 컴포넌트만” 대상으로 한다.
+    - **watchdog 자동 기동(중요)**: watchdog가 꺼져 있으면 자동 복구는 절대 동작하지 않는다.
+      - Task Scheduler 등록(권장): `windows/register_watchdog_task.ps1` (기본 **1분 주기 + 로그인(ONLOGON)**)
+      - 스케줄러는 `windows/run_ensure_watchdog.vbs`(`wscript.exe`)로 실행해 PowerShell 창 플래시를 방지한다.
 
     | 상황 | 권장 명령 |
     |---|---|
@@ -431,6 +451,7 @@ docs/adr/ADR-<4자리 번호>-<주제-kebab>.md
       - `web`의 `npm run build`는 이제 **운영 UI(next start) 실행 중이면 사전 차단**된다(`web/scripts/prebuild_guard.ps1`). (정말 필요할 때만 `npm run build:unsafe`)
       - watchdog는 이제 `/api/ping`뿐 아니라 **`/` + `/_next/static`**까지 체크해 빈 화면 상태를 자동 감지/복구한다.
       - `start_web.ps1`도 READY 전에 **정적 자산 1개를 추가로 검증**해(실패 시 CleanBuild로 1회 자가복구) 빈 화면 재발을 줄인다.
+      - BRIDGE/LOG 상태(상단 StatusBar) 기준: `docs/reference/bridge-status.md` (LOG LAG 포함)
 - **Talk-API Reply(type=26) payload 타입 주의(중요)**:
   - 오픈채팅 “답장(Reply)”은 텍스트 `@`로 구현되지 않으며, `type=26` + `attachment.src_*` 메타로 구현된다(ADR-0026).
   - Node는 64-bit userId(2^53 초과)가 많아 `src_userId/src_linkId/src_type`를 문자열로 전달한다.

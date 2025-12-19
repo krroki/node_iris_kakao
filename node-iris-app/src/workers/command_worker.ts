@@ -110,6 +110,22 @@ function safeString(v: unknown): string {
   return String(v ?? "").trim();
 }
 
+function looksLikeUserId(s: string, senderId: string): boolean {
+  const v = safeString(s);
+  if (!v) return false;
+  const sid = safeString(senderId);
+  if (sid && v === sid) return true;
+  // 숫자-only는 userId일 가능성이 높으므로 노출 금지
+  if (/^\d{5,}$/.test(v)) return true;
+  return false;
+}
+
+function resolveSafeSenderDisplayName(senderName: string, senderId: string): string {
+  const sn = safeString(senderName);
+  if (sn && !looksLikeUserId(sn, senderId)) return sn;
+  return "";
+}
+
 function normalizeKey(raw: string): string {
   const s = safeString(raw);
   if (!s) return "";
@@ -1324,7 +1340,7 @@ async function processEntry(ent: StreamEntry, lastSeenMsRef: { v: number }): Pro
           runtime,
           formatOps("명령어 등록/수정/삭제 권한 확인 실패", [
             `방: ${safeString(ent.roomName) || roomId} (${roomId})`,
-            `요청자: ${senderName} (${senderId})`,
+            `요청자: ${resolveSafeSenderDisplayName(senderName, senderId) || "어떤 분"}`,
             `원인: IRIS 조회 실패 (${perm.err})`,
           ]),
         );

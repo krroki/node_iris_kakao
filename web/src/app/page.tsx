@@ -9,6 +9,7 @@ import {
   RoomFeatures,
   CourseRosterConfig,
   CourseRosterRoomConfig,
+  CourseMembershipAuditConfig,
   OpenchatMembersSheetsConfig,
   OpenchatMembersSheetsRoomConfig,
   BulkLogsResponse,
@@ -52,6 +53,14 @@ function dedupLogs(list: LogEntry[], max: number): LogEntry[] {
   return out;
 }
 
+function inferCourseRosterSheetName(roomName: string): string {
+  const s = String(roomName || "").trim();
+  if (/^\\(사담방\\)/.test(s)) return "ROSTER_CHAT";
+  if (/^\\(공지방\\)/.test(s)) return "ROSTER_NOTICE";
+  if (/^\\(프리미엄방\\)/.test(s)) return "ROSTER_PREMIUM";
+  return "ROSTER_RAW";
+}
+
 export default function Home() {
   const [status, setStatus] = useState<"connecting" | "sse" | "poll" | "error">("connecting");
   const [connectionVersion, setConnectionVersion] = useState(0);
@@ -68,6 +77,13 @@ export default function Home() {
   const [include, setInclude] = useState<string>("");
   const [exclude, setExclude] = useState<string>("");
   const [limit, setLimit] = useState<number>(80);
+
+  // 기본닉 멘션(닉네임 변경 요청) 전역 설정 (ADR-0041)
+  const [nickRemL2Hours, setNickRemL2Hours] = useState<number>(24);
+  const [nickRemL3Hours, setNickRemL3Hours] = useState<number>(48);
+  const [nickRemSaved, setNickRemSaved] = useState<{ l2: number; l3: number } | null>(null);
+  const [nickRemSaving, setNickRemSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [nickRemError, setNickRemError] = useState<string | null>(null);
 
   // IRIS/Redroid 연결(ADB device 캐시)
   const [irisUrl, setIrisUrl] = useState<string>("http://127.0.0.1:5050");
@@ -90,6 +106,18 @@ export default function Home() {
   const [courseRosterServiceAccount, setCourseRosterServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
   const [rosterWorkerStatus, setRosterWorkerStatus] = useState<any | null>(null);
   const [rosterWorkerStatusError, setRosterWorkerStatusError] = useState<string | null>(null);
+
+  // 강의 운영 v2(등급 기반 참여 점검) 설정/상태
+  const [courseMembershipAuditConfig, setCourseMembershipAuditConfig] = useState<CourseMembershipAuditConfig | null>(null);
+  const [courseMembershipAuditConfigExists, setCourseMembershipAuditConfigExists] = useState<boolean>(false);
+  const [courseMembershipAuditConfigPath, setCourseMembershipAuditConfigPath] = useState<string | null>(null);
+  const [courseMembershipAuditConfigDirty, setCourseMembershipAuditConfigDirty] = useState<boolean>(false);
+  const [courseMembershipAuditConfigSaving, setCourseMembershipAuditConfigSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [courseMembershipAuditConfigError, setCourseMembershipAuditConfigError] = useState<string | null>(null);
+  const [courseMembershipAuditServiceAccount, setCourseMembershipAuditServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
+  const [courseMembershipAuditWorkerStatus, setCourseMembershipAuditWorkerStatus] = useState<any | null>(null);
+  const [courseMembershipAuditWorkerStatusError, setCourseMembershipAuditWorkerStatusError] = useState<string | null>(null);
+  const [newCourseKey, setNewCourseKey] = useState<string>("");
 
   // 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 설정/상태
   const [openchatMembersSheetsConfig, setOpenchatMembersSheetsConfig] = useState<OpenchatMembersSheetsConfig | null>(null);
@@ -240,9 +268,29 @@ export default function Home() {
       .then((cfg: RuntimeConfig) => {
         setExcluded((cfg?.excludedRoomIds as string[]) || []);
         setFeatures((cfg?.features as Record<string, RoomFeatures>) || {});
+
+        // nicknameReminder schedule (2차/3차 간격) 로드
+        try {
+          const nr: any = (cfg as any)?.nicknameReminder;
+          const l2sec = Number(nr?.warningSchedule?.level2?.afterLastWarnSec);
+          const l3sec = Number(nr?.warningSchedule?.level3?.afterLastWarnSec);
+          const l2h = Number.isFinite(l2sec) && l2sec >= 0 ? Math.max(0, Math.round(l2sec / 3600)) : 24;
+          const l3h = Number.isFinite(l3sec) && l3sec >= 0 ? Math.max(0, Math.round(l3sec / 3600)) : 48;
+          setNickRemL2Hours(l2h || 24);
+          setNickRemL3Hours(l3h || 48);
+          setNickRemSaved({ l2: l2h || 24, l3: l3h || 48 });
+          setNickRemError(null);
+        } catch {
+          // best-effort: keep defaults
+        }
       })
       .catch(() => {});
   }, []);
+
+  const nickRemDirty = useMemo(() => {
+    if (!nickRemSaved) return false;
+    return nickRemL2Hours !== nickRemSaved.l2 || nickRemL3Hours !== nickRemSaved.l3;
+  }, [nickRemSaved, nickRemL2Hours, nickRemL3Hours]);
 
   const loadCourseRosterConfig = useCallback(async () => {
     try {
@@ -282,6 +330,47 @@ export default function Home() {
     } catch (e: any) {
       setRosterWorkerStatus(null);
       setRosterWorkerStatusError(String(e?.message || e));
+    }
+  }, []);
+
+  const loadCourseMembershipAuditConfig = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/course-membership-audit/config`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setCourseMembershipAuditConfigExists(!!j.exists);
+      setCourseMembershipAuditConfigPath(j.path ? String(j.path) : null);
+      setCourseMembershipAuditServiceAccount({
+        exists: !!j?.serviceAccount?.exists,
+        path: j?.serviceAccount?.path ? String(j.serviceAccount.path) : undefined,
+        clientEmail: j?.serviceAccount?.clientEmail ? String(j.serviceAccount.clientEmail) : null,
+        error: j?.serviceAccount?.error ? String(j.serviceAccount.error) : null,
+      });
+      const cfg: CourseMembershipAuditConfig = (j.config && typeof j.config === "object")
+        ? (j.config as CourseMembershipAuditConfig)
+        : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800 }, courses: {} } as CourseMembershipAuditConfig);
+      setCourseMembershipAuditConfig(cfg);
+      setCourseMembershipAuditConfigError(null);
+    } catch (e: any) {
+      setCourseMembershipAuditConfigError(String(e?.message || e));
+      setCourseMembershipAuditConfig((prev) => prev || ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800 }, courses: {} } as CourseMembershipAuditConfig));
+    }
+  }, []);
+
+  const loadCourseMembershipAuditWorkerStatus = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/course-membership-audit/status`, { cache: "no-store" });
+      const j: any = await r.json().catch(() => null);
+      if (!j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setCourseMembershipAuditWorkerStatus(j);
+      setCourseMembershipAuditWorkerStatusError(null);
+    } catch (e: any) {
+      setCourseMembershipAuditWorkerStatus(null);
+      setCourseMembershipAuditWorkerStatusError(String(e?.message || e));
     }
   }, []);
 
@@ -334,6 +423,13 @@ export default function Home() {
   }, [loadCourseRosterConfig, loadRosterWorkerStatus]);
 
   useEffect(() => {
+    void loadCourseMembershipAuditConfig();
+    void loadCourseMembershipAuditWorkerStatus();
+    const t = setInterval(() => { void loadCourseMembershipAuditWorkerStatus(); }, 5000);
+    return () => clearInterval(t);
+  }, [loadCourseMembershipAuditConfig, loadCourseMembershipAuditWorkerStatus]);
+
+  useEffect(() => {
     void loadOpenchatMembersSheetsConfig();
     void loadOpenchatMembersSheetsWorkerStatus();
     const t = setInterval(() => { void loadOpenchatMembersSheetsWorkerStatus(); }, 5000);
@@ -359,6 +455,69 @@ export default function Home() {
     setCourseRosterConfigDirty(true);
   }, []);
 
+  const addCourseMembershipAuditCourse = useCallback(() => {
+    const ck = String(newCourseKey || "").trim();
+    if (!ck) return;
+    setCourseMembershipAuditConfig((prev) => {
+      const base: CourseMembershipAuditConfig = (prev && typeof prev === "object")
+        ? prev
+        : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+      const courses: Record<string, any> = { ...(base.courses || {}) };
+      if (courses[ck]) return base;
+      courses[ck] = {
+        enabled: true,
+        clubId: "",
+        spreadsheetId: "",
+        tabs: { cafeRaw: "CAFE_RAW", openchatRaw: "OPENCHAT_RAW", rulesRaw: "RULES_RAW", audit: "AUDIT_VIEW", auditLog: "AUDIT_LOG" },
+        gradeRules: { premiumGrades: [], staffGrades: [] },
+        rooms: { chat: "", notice: "", premium: "" },
+      };
+      return { ...base, version: Number(base.version) || 1, courses };
+    });
+    setNewCourseKey("");
+    setCourseMembershipAuditConfigDirty(true);
+  }, [newCourseKey]);
+
+  const deleteCourseMembershipAuditCourse = useCallback((courseKey: string) => {
+    const ck = String(courseKey || "").trim();
+    if (!ck) return;
+    setCourseMembershipAuditConfig((prev) => {
+      const base: CourseMembershipAuditConfig = (prev && typeof prev === "object")
+        ? prev
+        : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800 }, courses: {} } as CourseMembershipAuditConfig);
+      const courses: Record<string, any> = { ...(base.courses || {}) };
+      delete courses[ck];
+      return { ...base, version: Number(base.version) || 1, courses };
+    });
+    setCourseMembershipAuditConfigDirty(true);
+  }, []);
+
+  const updateCourseMembershipAuditCourse = useCallback((courseKey: string, patch: any) => {
+    const ck = String(courseKey || "").trim();
+    if (!ck) return;
+    setCourseMembershipAuditConfig((prev) => {
+      const base: CourseMembershipAuditConfig = (prev && typeof prev === "object")
+        ? prev
+        : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800 }, courses: {} } as CourseMembershipAuditConfig);
+      const courses: Record<string, any> = { ...(base.courses || {}) };
+      const cur = (courses[ck] && typeof courses[ck] === "object") ? courses[ck] : {};
+      const next: any = { ...cur, ...patch };
+      if (patch && typeof patch === "object") {
+        if (patch.tabs && typeof patch.tabs === "object") next.tabs = { ...(cur.tabs || {}), ...(patch.tabs || {}) };
+        if (patch.gradeRules && typeof patch.gradeRules === "object") next.gradeRules = { ...(cur.gradeRules || {}), ...(patch.gradeRules || {}) };
+        if (patch.rooms && typeof patch.rooms === "object") next.rooms = { ...(cur.rooms || {}), ...(patch.rooms || {}) };
+      }
+      courses[ck] = next;
+      return { ...base, version: Number(base.version) || 1, courses };
+    });
+    setCourseMembershipAuditConfigDirty(true);
+  }, []);
+
+  const parseListLines = useCallback((raw: string): string[] => {
+    const parts = String(raw || "").split(/\r?\n|,|;/g).map((s) => s.trim()).filter((s) => !!s);
+    return Array.from(new Set(parts));
+  }, []);
+
   const onUpdateOpenchatMembersSheetsRoomConfig = useCallback((roomId: string, patch: Partial<OpenchatMembersSheetsRoomConfig>) => {
     const rid = String(roomId || "").trim();
     if (!rid) return;
@@ -380,10 +539,21 @@ export default function Home() {
       const cfg = courseRosterConfig && typeof courseRosterConfig === "object"
         ? courseRosterConfig
         : ({ version: 1, rooms: {} } as CourseRosterConfig);
+
+      const inRooms = (cfg.rooms && typeof cfg.rooms === "object") ? cfg.rooms : {};
+      const outRooms: Record<string, CourseRosterRoomConfig> = {};
+      for (const [rid, v] of Object.entries(inRooms || {})) {
+        const cur: any = (v && typeof v === "object") ? v : {};
+        const rosterSheetNameRaw = String(cur.rosterSheetName || "").trim();
+        const roomName = String(rooms.find((r) => r.roomId === rid)?.roomName || "");
+        const rosterSheetName = rosterSheetNameRaw || inferCourseRosterSheetName(roomName);
+        outRooms[String(rid)] = { ...cur, rosterSheetName };
+      }
+      const normalized: CourseRosterConfig = { ...cfg, version: Number(cfg.version) || 1, rooms: outRooms };
       const r = await fetch(`/api/course-roster/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: cfg }),
+        body: JSON.stringify({ config: normalized }),
       });
       const j: any = await r.json().catch(() => null);
       if (!r.ok || !j || j.ok !== true) {
@@ -399,7 +569,34 @@ export default function Home() {
       setCourseRosterConfigError(String(e?.message || e));
       return false;
     }
-  }, [courseRosterConfig, loadCourseRosterConfig]);
+  }, [courseRosterConfig, loadCourseRosterConfig, rooms]);
+
+  const saveCourseMembershipAuditConfig = useCallback(async (): Promise<boolean> => {
+    try {
+      setCourseMembershipAuditConfigSaving("saving");
+      const cfg = courseMembershipAuditConfig && typeof courseMembershipAuditConfig === "object"
+        ? courseMembershipAuditConfig
+        : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800 }, courses: {} } as CourseMembershipAuditConfig);
+      const r = await fetch(`/api/course-membership-audit/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: cfg }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      setCourseMembershipAuditConfigDirty(false);
+      setCourseMembershipAuditConfigSaving("saved");
+      setTimeout(() => setCourseMembershipAuditConfigSaving((s) => (s === "saved" ? "idle" : s)), 2000);
+      await loadCourseMembershipAuditConfig();
+      return true;
+    } catch (e: any) {
+      setCourseMembershipAuditConfigSaving("error");
+      setCourseMembershipAuditConfigError(String(e?.message || e));
+      return false;
+    }
+  }, [courseMembershipAuditConfig, loadCourseMembershipAuditConfig]);
 
   const saveOpenchatMembersSheetsConfig = useCallback(async (): Promise<boolean> => {
     try {
@@ -438,14 +635,16 @@ export default function Home() {
         throw new Error(String(j?.error || `HTTP ${r.status}`));
       }
       await loadCourseRosterConfig();
+      await loadCourseMembershipAuditConfig();
       await loadOpenchatMembersSheetsConfig();
       return true;
     } catch (e: any) {
       setCourseRosterConfigError(String(e?.message || e));
+      setCourseMembershipAuditConfigError(String(e?.message || e));
       setOpenchatMembersSheetsConfigError(String(e?.message || e));
       return false;
     }
-  }, [loadCourseRosterConfig, loadOpenchatMembersSheetsConfig]);
+  }, [loadCourseRosterConfig, loadCourseMembershipAuditConfig, loadOpenchatMembersSheetsConfig]);
 
   const restartRosterWorker = useCallback(async () => {
     try {
@@ -470,6 +669,19 @@ export default function Home() {
       // 상태는 polling으로 갱신됨
     } catch (e: any) {
       setOpenchatMembersSheetsWorkerStatusError(String(e?.message || e));
+    }
+  }, []);
+
+  const restartCourseMembershipAuditWorker = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/course-membership-audit/restart`, { method: "POST" });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) {
+        throw new Error(String(j?.error || `HTTP ${r.status}`));
+      }
+      // 상태는 polling으로 갱신됨
+    } catch (e: any) {
+      setCourseMembershipAuditWorkerStatusError(String(e?.message || e));
     }
   }, []);
 
@@ -685,7 +897,7 @@ export default function Home() {
       const allowedRoomIds = Object.keys(nextFeatures || {}).filter(rid => {
         if (nextExcluded.includes(rid)) return false;
         const f = nextFeatures[rid] || {};
-        return !!(f.welcome || f.broadcast || f.schedules || f.ai || f.chatSummary || f.commands || f.courseRoster);
+        return !!(f.welcome || f.broadcast || f.schedules || f.ai || f.chatSummary || f.commands || f.autoFaq || f.courseRoster || f.nicknameReminder || f.imageGen || f.videoGen);
       });
       // POST via Next API proxy (avoids CORS/host mismatch)
       const r = await fetch(`/api/runtime`, {
@@ -707,14 +919,68 @@ export default function Home() {
     return res.ok;
   };
 
+  const saveNickRemSchedule = useCallback(async () => {
+    const h2 = Math.floor(Number(nickRemL2Hours));
+    const h3 = Math.floor(Number(nickRemL3Hours));
+    if (!Number.isFinite(h2) || h2 <= 0) {
+      setNickRemError("2차 간격은 1시간 이상 숫자로 입력해 주세요.");
+      return false;
+    }
+    if (!Number.isFinite(h3) || h3 <= 0) {
+      setNickRemError("3차 간격은 1시간 이상 숫자로 입력해 주세요.");
+      return false;
+    }
+
+    setNickRemSaving("saving");
+    setNickRemError(null);
+    try {
+      const body = {
+        nicknameReminder: {
+          warningSchedule: {
+            level2: { afterLastWarnSec: h2 * 3600 },
+            level3: { afterLastWarnSec: h3 * 3600 },
+          },
+        },
+      };
+      const r = await fetch(`/api/runtime`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok) {
+        const detail = j && typeof j === "object" ? (j.detail || j.error) : "";
+        throw new Error(String(detail || `HTTP ${r.status}`));
+      }
+      // refresh runtime snapshot (single source of truth)
+      const cfg: RuntimeConfig = await (await fetch(`/api/runtime`, { cache: "no-store" })).json();
+      const nr: any = (cfg as any)?.nicknameReminder;
+      const l2sec = Number(nr?.warningSchedule?.level2?.afterLastWarnSec);
+      const l3sec = Number(nr?.warningSchedule?.level3?.afterLastWarnSec);
+      const l2h = Number.isFinite(l2sec) && l2sec > 0 ? Math.max(1, Math.round(l2sec / 3600)) : h2;
+      const l3h = Number.isFinite(l3sec) && l3sec > 0 ? Math.max(1, Math.round(l3sec / 3600)) : h3;
+      setNickRemSaved({ l2: l2h, l3: l3h });
+      setNickRemL2Hours(l2h);
+      setNickRemL3Hours(l3h);
+      setNickRemSaving("saved");
+      setTimeout(() => setNickRemSaving((cur) => (cur === "saved" ? "idle" : cur)), 2000);
+      return true;
+    } catch (e: any) {
+      setNickRemSaving("error");
+      setNickRemError(`저장 실패: ${String(e?.message || e)}`);
+      return false;
+    }
+  }, [nickRemL2Hours, nickRemL3Hours]);
+
   const onSaveRoom = async (rid: string) => {
     setSavingRooms(prev => ({ ...prev, [rid]: "saving" }));
     const next = { ...features };
     next[rid] = next[rid] || {};
     const okRuntime = await updateRuntime({ features: next, excludedRoomIds: excluded });
     const okCourse = courseRosterConfigDirty ? await saveCourseRosterConfig() : true;
+    const okCourseAudit = courseMembershipAuditConfigDirty ? await saveCourseMembershipAuditConfig() : true;
     const okMembersSheets = openchatMembersSheetsConfigDirty ? await saveOpenchatMembersSheetsConfig() : true;
-    const ok = okRuntime && okCourse && okMembersSheets;
+    const ok = okRuntime && okCourse && okCourseAudit && okMembersSheets;
     setSavingRooms(prev => ({ ...prev, [rid]: ok ? "saved" : "error" }));
     if (ok) {
       setTimeout(() => {
@@ -899,6 +1165,53 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 기본닉 멘션(닉네임 변경 요청) 전역 설정 */}
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>기본닉 멘션(닉네임 변경 요청) 설정</h3>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 8, lineHeight: 1.5 }}>
+          - 방 카드에서 <b>기본닉 멘션</b> 토글을 켠 방만 대상입니다.
+          <br />
+          - 2차/3차는 “이전 안내 발신 이후” 기준입니다. (기본: 2차 24시간, 3차 48시간)
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text-secondary)' }}>
+            2차 간격(시간)
+            <input
+              type="number"
+              min={1}
+              max={720}
+              value={nickRemL2Hours}
+              onChange={(e) => setNickRemL2Hours(parseInt(e.target.value || "24", 10) || 24)}
+              className="filter-input"
+              style={{ width: 120, height: 34, marginBottom: 0 }}
+            />
+          </label>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text-secondary)' }}>
+            3차 간격(시간)
+            <input
+              type="number"
+              min={1}
+              max={720}
+              value={nickRemL3Hours}
+              onChange={(e) => setNickRemL3Hours(parseInt(e.target.value || "48", 10) || 48)}
+              className="filter-input"
+              style={{ width: 120, height: 34, marginBottom: 0 }}
+            />
+          </label>
+          <button className="btn-save" onClick={() => void saveNickRemSchedule()} disabled={!nickRemDirty || nickRemSaving === "saving"}>
+            {nickRemSaving === "saving" ? "저장 중…" : nickRemDirty ? "저장" : "저장됨"}
+          </button>
+          <span className={`tag ${nickRemSaving === "error" ? "tag-excluded" : nickRemDirty ? "tag-inactive" : "tag-active"}`}>
+            {nickRemSaving === "error" ? "오류" : nickRemDirty ? "저장 필요" : "OK"}
+          </span>
+        </div>
+        {(nickRemError) && (
+          <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+            {nickRemError}
+          </div>
+        )}
+      </div>
+
       {/* 강의 운영(roster-worker) 상태/설정 */}
       <div className="pipeline-card" style={{ marginTop: 12 }}>
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>강의 운영 (카페/닉네임 검증)</h3>
@@ -961,7 +1274,362 @@ export default function Home() {
           </div>
         )}
         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          - 방 카드의 <b>강의 운영</b> 섹션에서 roomId별 시트/CSV/가입URL을 설정하고 <b>저장</b>하면, roster-worker가 15분/24시간 정책으로 멘션 안내 + Sheets 업서트를 수행합니다.
+          - 방 카드의 <b>강의 운영</b> 섹션에서 roomId별 시트 + 카페 clubId(크롤러) + 가입URL을 설정하고 <b>저장</b>하면, roster-worker가 15분/24시간 정책으로 멘션 안내 + Sheets 업서트를 수행합니다. (CSV는 레거시 옵션)
+        </div>
+      </div>
+
+      {/* 강의 운영 v2(등급 기반 참여 점검) 설정/상태 */}
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>강의 운영 v2 (등급 기반 참여 점검)</h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+          <span className={`tag ${courseMembershipAuditConfigDirty ? 'tag-inactive' : 'tag-active'}`}>
+            설정 {courseMembershipAuditConfigDirty ? '저장 필요' : 'OK'}
+          </span>
+          <span className="tag tag-excluded" title={courseMembershipAuditConfigPath || ''}>
+            설정파일 {courseMembershipAuditConfigExists ? 'OK' : '없음'}
+          </span>
+          <span className="tag tag-excluded" title={courseMembershipAuditServiceAccount.path || ''}>
+            서비스계정 {courseMembershipAuditServiceAccount.exists ? 'OK' : '없음'}
+          </span>
+          {courseMembershipAuditServiceAccount.clientEmail && (
+            <span className="tag tag-excluded" title="서비스계정 이메일">
+              {courseMembershipAuditServiceAccount.clientEmail}
+            </span>
+          )}
+          <span className="tag tag-excluded" title="course-membership-audit-worker heartbeat/status">
+            워커 {courseMembershipAuditWorkerStatus?.status?.pid ? `RUN(pid=${courseMembershipAuditWorkerStatus.status.pid})` : 'N/A'}
+          </span>
+          <button
+            className="btn-outline"
+            style={{ padding: '6px 10px', fontSize: 12 }}
+            onClick={() => void restartCourseMembershipAuditWorker()}
+            title="windows/start_course_membership_audit_worker.ps1 -Restart"
+          >
+            워커 재시작
+          </button>
+          <button
+            className="btn-save"
+            style={{ padding: '6px 10px', fontSize: 12 }}
+            disabled={courseMembershipAuditConfigSaving === 'saving' || !courseMembershipAuditConfigDirty}
+            onClick={() => void saveCourseMembershipAuditConfig()}
+            title="data/course_membership_audit.json 저장"
+          >
+            {courseMembershipAuditConfigSaving === 'saving' ? '저장 중…' : 'v2 설정 저장'}
+          </button>
+          <label className="btn-outline" style={{ padding: '6px 10px', fontSize: 12, cursor: 'pointer' }} title="data/gcp_service_account.json 업로드">
+            서비스계정 업로드
+            <input
+              type="file"
+              accept="application/json"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void uploadServiceAccount(f);
+              }}
+            />
+          </label>
+        </div>
+
+        {(courseMembershipAuditConfigError || courseMembershipAuditWorkerStatusError || courseMembershipAuditServiceAccount.error) && (
+          <div style={{ fontSize: 12, color: 'var(--error)', lineHeight: 1.5 }}>
+            {courseMembershipAuditConfigError && (<div>설정 로드/저장 오류: <code>{courseMembershipAuditConfigError}</code></div>)}
+            {courseMembershipAuditServiceAccount.error && (<div>서비스계정 파싱 오류: <code>{courseMembershipAuditServiceAccount.error}</code></div>)}
+            {courseMembershipAuditWorkerStatusError && (<div>워커 상태 조회 오류: <code>{courseMembershipAuditWorkerStatusError}</code></div>)}
+          </div>
+        )}
+
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          - Sheets 업서트는 <b>Chrome 로그인</b>이 아니라 <b>서비스계정 권한</b>이 필요합니다. (시트 문서에 위 이메일을 <b>Editor</b>로 공유)
+          <br />
+          - 코스별 1개 스프레드시트에 탭을 고정해서 씁니다: <code>CAFE_RAW</code> / <code>OPENCHAT_RAW</code> / <code>RULES_RAW</code> / <code>AUDIT_VIEW</code>
+        </div>
+
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <label className="tag tag-excluded" style={{ display: 'flex', alignItems: 'center', gap: 6 }} title="enabled=true면 워커가 주기적으로 점검/업서트를 수행합니다.">
+            <input
+              type="checkbox"
+              checked={!!courseMembershipAuditConfig?.worker?.enabled}
+              onChange={(e) => {
+                setCourseMembershipAuditConfig((prev) => {
+                  const base = (prev && typeof prev === "object")
+                    ? prev
+                    : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                  const w = { ...(base.worker || {}), enabled: e.target.checked };
+                  return { ...base, worker: w };
+                });
+                setCourseMembershipAuditConfigDirty(true);
+              }}
+            />
+            자동 점검 워커
+          </label>
+          <input
+            type="number"
+            value={String(courseMembershipAuditConfig?.worker?.hotIntervalSec ?? 600)}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setCourseMembershipAuditConfig((prev) => {
+                const base = (prev && typeof prev === "object")
+                  ? prev
+                  : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                const w = { ...(base.worker || {}), hotIntervalSec: Number.isFinite(n) ? n : 600 };
+                return { ...base, worker: w };
+              });
+              setCourseMembershipAuditConfigDirty(true);
+            }}
+            placeholder="초반 주기(초)"
+            className="filter-input"
+            style={{ width: 140, height: 34, marginBottom: 0 }}
+            title="초기(기본 2주) 주기(초)"
+          />
+          <input
+            type="number"
+            value={String(courseMembershipAuditConfig?.worker?.hotDays ?? 14)}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setCourseMembershipAuditConfig((prev) => {
+                const base = (prev && typeof prev === "object")
+                  ? prev
+                  : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                const w = { ...(base.worker || {}), hotDays: Number.isFinite(n) ? n : 14 };
+                return { ...base, worker: w };
+              });
+              setCourseMembershipAuditConfigDirty(true);
+            }}
+            placeholder="초반 일수"
+            className="filter-input"
+            style={{ width: 120, height: 34, marginBottom: 0 }}
+            title="초반 유지 기간(일)"
+          />
+          <input
+            type="number"
+            value={String(courseMembershipAuditConfig?.worker?.steadyIntervalSec ?? 10800)}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setCourseMembershipAuditConfig((prev) => {
+                const base = (prev && typeof prev === "object")
+                  ? prev
+                  : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                const w = { ...(base.worker || {}), steadyIntervalSec: Number.isFinite(n) ? n : 10800 };
+                return { ...base, worker: w };
+              });
+              setCourseMembershipAuditConfigDirty(true);
+            }}
+            placeholder="안정기 주기(초)"
+            className="filter-input"
+            style={{ width: 160, height: 34, marginBottom: 0 }}
+            title="안정기 주기(초)"
+          />
+        </div>
+
+        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <input
+            value={String(courseMembershipAuditConfig?.worker?.crawler?.repoPath || "")}
+            onChange={(e) => {
+              setCourseMembershipAuditConfig((prev) => {
+                const base = (prev && typeof prev === "object")
+                  ? prev
+                  : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                const crawler = { ...(base.worker?.crawler || {}), repoPath: e.target.value };
+                const w = { ...(base.worker || {}), crawler };
+                return { ...base, worker: w };
+              });
+              setCourseMembershipAuditConfigDirty(true);
+            }}
+            placeholder="crawler repoPath (예: C:\\dev\\naver-cafe-member-crawler)"
+            className="filter-input"
+            style={{ flex: 1, minWidth: 320, height: 34, marginBottom: 0 }}
+          />
+          <input
+            value={String(courseMembershipAuditConfig?.worker?.crawler?.pythonExe || "")}
+            onChange={(e) => {
+              setCourseMembershipAuditConfig((prev) => {
+                const base = (prev && typeof prev === "object")
+                  ? prev
+                  : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                const crawler = { ...(base.worker?.crawler || {}), pythonExe: e.target.value };
+                const w = { ...(base.worker || {}), crawler };
+                return { ...base, worker: w };
+              });
+              setCourseMembershipAuditConfigDirty(true);
+            }}
+            placeholder="crawler pythonExe (예: ...\\venv\\Scripts\\python.exe)"
+            className="filter-input"
+            style={{ flex: 1, minWidth: 320, height: 34, marginBottom: 0 }}
+          />
+          <input
+            value={String(courseMembershipAuditConfig?.worker?.crawler?.settingsPath || "")}
+            onChange={(e) => {
+              setCourseMembershipAuditConfig((prev) => {
+                const base = (prev && typeof prev === "object")
+                  ? prev
+                  : ({ version: 1, worker: { enabled: false, hotIntervalSec: 600, hotDays: 14, steadyIntervalSec: 10800, crawler: { repoPath: "", pythonExe: "", settingsPath: "" } }, courses: {} } as CourseMembershipAuditConfig);
+                const crawler = { ...(base.worker?.crawler || {}), settingsPath: e.target.value };
+                const w = { ...(base.worker || {}), crawler };
+                return { ...base, worker: w };
+              });
+              setCourseMembershipAuditConfigDirty(true);
+            }}
+            placeholder="crawler settingsPath (빈칸이면 자동 탐색)"
+            className="filter-input"
+            style={{ flex: 1, minWidth: 260, height: 34, marginBottom: 0 }}
+          />
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+            <input
+              value={newCourseKey}
+              onChange={(e) => setNewCourseKey(e.target.value)}
+              placeholder="코스키(예: 쇼투벤 3기)"
+              className="filter-input"
+              style={{ width: 220, height: 34, marginBottom: 0 }}
+            />
+            <button className="btn-outline" style={{ padding: '6px 10px', fontSize: 12 }} onClick={() => addCourseMembershipAuditCourse()}>
+              코스 추가
+            </button>
+            <span className="tag tag-excluded" title="courses 개수">
+              {Object.keys(courseMembershipAuditConfig?.courses || {}).length} courses
+            </span>
+          </div>
+
+          {Object.entries(courseMembershipAuditConfig?.courses || {})
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+            .map(([ck, c]) => {
+              const cc: any = c as any;
+              const premiumTxt = Array.isArray(cc?.gradeRules?.premiumGrades) ? cc.gradeRules.premiumGrades.join("\n") : "";
+              const staffTxt = Array.isArray(cc?.gradeRules?.staffGrades) ? cc.gradeRules.staffGrades.join("\n") : "";
+              return (
+                <div key={ck} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+                    <span className="tag tag-excluded" title="courseKey">{ck}</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                      <input
+                        type="checkbox"
+                        checked={cc?.enabled !== false}
+                        onChange={(e) => updateCourseMembershipAuditCourse(ck, { enabled: e.target.checked })}
+                      />
+                      enabled
+                    </label>
+                    <button
+                      className="btn-outline"
+                      style={{ padding: '6px 10px', fontSize: 12 }}
+                      onClick={() => deleteCourseMembershipAuditCourse(ck)}
+                      title="courses에서 제거(저장 필요)"
+                    >
+                      삭제
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                    <input
+                      value={String(cc?.clubId || "")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { clubId: e.target.value })}
+                      placeholder="clubId (네이버 카페)"
+                      className="filter-input"
+                      style={{ width: 220, height: 34, marginBottom: 0 }}
+                    />
+                    <input
+                      value={String(cc?.spreadsheetId || "")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { spreadsheetId: e.target.value })}
+                      placeholder="Spreadsheet ID/URL"
+                      className="filter-input"
+                      style={{ flex: 1, minWidth: 320, height: 34, marginBottom: 0 }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-start', marginTop: 8 }}>
+                    <div style={{ flex: 1, minWidth: 260 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>premiumGrades (1줄=1개)</div>
+                      <textarea
+                        value={premiumTxt}
+                        onChange={(e) => updateCourseMembershipAuditCourse(ck, { gradeRules: { premiumGrades: parseListLines(e.target.value) } })}
+                        className="filter-input"
+                        style={{ width: '100%', height: 90, resize: 'vertical' }}
+                        placeholder="예: 프리미엄반"
+                      />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 260 }}>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>staffGrades (운영진, 1줄=1개)</div>
+                      <textarea
+                        value={staffTxt}
+                        onChange={(e) => updateCourseMembershipAuditCourse(ck, { gradeRules: { staffGrades: parseListLines(e.target.value) } })}
+                        className="filter-input"
+                        style={{ width: '100%', height: 90, resize: 'vertical' }}
+                        placeholder="예: 운영진"
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 8 }}>
+                    <input
+                      value={String(cc?.tabs?.cafeRaw || "CAFE_RAW")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { tabs: { cafeRaw: e.target.value } })}
+                      placeholder="CAFE_RAW"
+                      className="filter-input"
+                      style={{ width: 160, height: 34, marginBottom: 0 }}
+                      title="카페 RAW 탭"
+                    />
+                    <input
+                      value={String(cc?.tabs?.openchatRaw || "OPENCHAT_RAW")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { tabs: { openchatRaw: e.target.value } })}
+                      placeholder="OPENCHAT_RAW"
+                      className="filter-input"
+                      style={{ width: 160, height: 34, marginBottom: 0 }}
+                      title="오픈채팅 RAW 탭"
+                    />
+                    <input
+                      value={String(cc?.tabs?.rulesRaw || "RULES_RAW")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { tabs: { rulesRaw: e.target.value } })}
+                      placeholder="RULES_RAW"
+                      className="filter-input"
+                      style={{ width: 160, height: 34, marginBottom: 0 }}
+                      title="룰/상태 탭"
+                    />
+                    <input
+                      value={String(cc?.tabs?.audit || "AUDIT_VIEW")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { tabs: { audit: e.target.value } })}
+                      placeholder="AUDIT_VIEW"
+                      className="filter-input"
+                      style={{ width: 160, height: 34, marginBottom: 0 }}
+                      title="통합 점검 탭"
+                    />
+                    <input
+                      value={String(cc?.tabs?.auditLog || "AUDIT_LOG")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { tabs: { auditLog: e.target.value } })}
+                      placeholder="AUDIT_LOG"
+                      className="filter-input"
+                      style={{ width: 160, height: 34, marginBottom: 0 }}
+                      title="변경 이력 탭(append-only)"
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginTop: 8 }}>
+                    <input
+                      value={String(cc?.rooms?.chat || "")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { rooms: { chat: e.target.value } })}
+                      placeholder="(옵션) 사담방 roomId override"
+                      className="filter-input"
+                      style={{ width: 240, height: 34, marginBottom: 0 }}
+                      title="방 이름 규칙이 깨지면 roomId를 직접 지정"
+                    />
+                    <input
+                      value={String(cc?.rooms?.notice || "")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { rooms: { notice: e.target.value } })}
+                      placeholder="(옵션) 공지방 roomId override"
+                      className="filter-input"
+                      style={{ width: 240, height: 34, marginBottom: 0 }}
+                    />
+                    <input
+                      value={String(cc?.rooms?.premium || "")}
+                      onChange={(e) => updateCourseMembershipAuditCourse(ck, { rooms: { premium: e.target.value } })}
+                      placeholder="(옵션) 프리미엄방 roomId override"
+                      className="filter-input"
+                      style={{ width: 240, height: 34, marginBottom: 0 }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
         </div>
       </div>
 

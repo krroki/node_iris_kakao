@@ -39,6 +39,27 @@ if (result === null) {
 
 ---
 
+## 운영 장애: EMFILE(too many open files)
+
+### 핵심
+`EMFILE`은 “잠깐 오류”가 아니라 **로그/상태 기록이 멈추며 welcome/worker 트리거까지 끊길 수 있는 운영 장애**다.
+
+### 원인 분류(자주 재발하는 2가지)
+1. **MessageStore append burst**(ADR-0031)
+   - 증상: `/status extra.emfile=true` 또는 `node-iris-app/data/bot_health.json` 존재
+2. **node-iris Logger 파일 핸들 누수**(ADR-0042)
+   - 증상: `Get-Process -Id <PID> | Select HandleCount`가 수천 단위로 증가
+   - 핸들이 `node-iris-app/logs/app.log`, `node-iris-app/logs/error*.log`에 과다하게 잡힘
+
+### 복구(운영 원칙: 부분 재기동 우선)
+1. Bot 재기동: `windows/start_bot.ps1 -Restart` (빠른 재기동은 `-SkipBuild`)
+2. 재발 시(핫픽스/패치 확인):
+   - `node-iris-app/package.json`에서 `@tsuki-chat/node-iris=1.6.41` 고정 여부 확인
+   - `cd node-iris-app && npx patch-package --error-on-fail`
+   - 참고(SSOT): `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md`
+
+---
+
 ## 네이버 카페 접속 지침
 
 ### 로그인 절차

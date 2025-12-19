@@ -16,13 +16,16 @@ $repoPathEsc = [Regex]::Escape((Resolve-Path $RepoPath).Path)
 $windowsDir = Join-Path $RepoPath 'windows'
 $watchdogScript = Join-Path $windowsDir 'watchdog.ps1'
 if (-not (Test-Path $watchdogScript)) { throw "watchdog.ps1 not found: $watchdogScript" }
+$watchdogScriptEsc = [Regex]::Escape((Resolve-Path $watchdogScript).Path)
 
 function Find-WatchdogProcs {
   try {
     return @(
       Get-CimInstance Win32_Process |
         Where-Object { $_.Name -in @('powershell.exe','pwsh.exe') } |
-        Where-Object { $_.CommandLine -match 'watchdog\.ps1' -and $_.CommandLine -match $repoPathEsc }
+        # NOTE: ensure_watchdog.ps1 / register_watchdog_task.ps1도 "watchdog.ps1" 서브스트링을 포함하므로
+        # 단순 'watchdog\.ps1' 매칭을 하면 오탐이 발생한다. 전체 경로 기준으로만 매칭한다.
+        Where-Object { $_.CommandLine -match $watchdogScriptEsc -and $_.CommandLine -match $repoPathEsc }
     )
   } catch {
     return @()

@@ -26,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <a href="/" className="nav-link">대시보드</a>
               <a href="/templates" className="nav-link">템플릿</a>
               <a href="/settings" className="nav-link">기능별 관리</a>
+              <a href="/auto-faq" className="nav-link">자동 FAQ</a>
               <a href="/announcement" className="nav-link">공지 관리</a>
               <a href="/kb" className="nav-link">카페 지식베이스</a>
             </nav>

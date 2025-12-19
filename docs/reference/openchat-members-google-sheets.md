@@ -21,7 +21,7 @@ IRIS DB에 로딩된 오픈채팅 멤버 목록(`db2.open_chat_member`)을 Googl
 
 1) 멤버 DB 강제 로딩(송신 없음)
 
-`pwsh scripts/openchat_load_members.ps1 -RoomId <ROOM_ID> -Scrolls 600`
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/openchat_load_members.ps1 -RoomId <ROOM_ID> -Serial <ADB_SERIAL> -Scrolls 650`
 
 2) 로딩 상태 확인
 
@@ -84,9 +84,10 @@ API key는 주로 **공개 데이터 읽기**에만 쓰이며, 업서트(쓰기)
 - 설정 UI:
   1) 대시보드(3100) 상단 카드 **“오픈채팅 멤버(전체) Sheets 동기화”**
      - 서비스 계정 업로드(없다면)
-     - `자동 동기화 워커` ON
-     - 스케줄: **ON이면 10분마다 업서트(고정)** / `기본 Spreadsheet ID/URL` / `기본 시트 탭 이름` 설정
+     - `기본 Spreadsheet ID/URL` / `기본 시트 탭 이름` 설정(ON/OFF와 무관하게 저장 가능)
+     - `자동 동기화 워커` ON 시: **10분마다 업서트(고정)**
   2) 각 방(RoomCard) → **“멤버 Sheets 자동”**
+     - `Spreadsheet ID/URL` / `시트 탭`은 ON/OFF와 무관하게 미리 저장 가능(ON은 실행 여부만 제어)
      - `자동 동기화` ON
      - 강의별 분리가 필요하면 roomId별 `Spreadsheet ID/URL` 또는 `시트 탭`을 override
      - 즉시 1회 실행은 `지금 업서트` 버튼(수동)으로 수행한다(자동 동기화는 “다음 주기”부터 실행).

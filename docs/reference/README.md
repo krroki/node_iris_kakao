@@ -13,6 +13,10 @@
 | `chat-summary.md` | 채팅 요약(chatSummary) 사용법/범위(오늘 vs 최근 N시간) |
 | `openchat-members-google-sheets.md` | 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth) |
 | `course-roster-worker.md` | 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내, Sheets 업서트) |
+| `course-roster-v2-membership-audit.md` | 강의 운영 v2: 카페 등급(grade) 기반 톡방 참여 점검 + 통합 스프레드시트(RAW→VIEW) |
+| `image-worker.md` | Gemini 웹 기반 이미지 생성/수정 워커(`!사진 / !사진수정`) 운영/환경변수/세션 준비 |
+| `video-worker.md` | Gemini 웹 기반 영상 생성 워커(`!영상`) 운영/환경변수/세션 준비 |
 | `ui-3100-troubleshooting.md` | UI(3100) “남색 배경만/빈 화면” 문제(Next `/_next/static` 404) 원인·복구·재발 방지 |
+| `bridge-status.md` | StatusBar의 BRIDGE/LOG 판정 기준(`heartbeatAgeSec`/`lastEventAgeSec`/`logAgeSec`, LOG LAG) |
 
 > 신규 레퍼런스 문서를 추가할 때는 위 표에 링크를 추가하고, `agents.md`/`claude.md` 온보딩 절차에서 참고하도록 연결하세요.

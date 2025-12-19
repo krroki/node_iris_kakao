@@ -27,20 +27,28 @@ export async function GET() {
       const raw = await fs.readFile(STATUS_JSON, 'utf-8');
       const s = JSON.parse(raw) || {};
       const startedAt = s.startedAt as string | undefined;
-      let ageSec: number | null = null;
-      if (startedAt) {
-        const ts = Date.parse(startedAt);
-        if (!Number.isNaN(ts)) {
-          ageSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-        }
-      }
+      const lastEventTs = (s.lastEventTs as string | undefined) || startedAt;
+      const heartbeatTs = s.heartbeatTs as string | undefined;
+
+      const toAgeSec = (ts?: string): number | null => {
+        if (!ts) return null;
+        const ms = Date.parse(ts);
+        if (Number.isNaN(ms)) return null;
+        return Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      };
+
+      const lastEventAgeSec = toAgeSec(lastEventTs);
+      const heartbeatAgeSec = toAgeSec(heartbeatTs);
       const payload = {
         ok: true,
         rooms: -1,
         bot: {
           pid: s.pid,
-          lastEventTs: startedAt,
-          lastEventAgeSec: ageSec,
+          irisUrl: s.irisUrl,
+          lastEventTs,
+          lastEventAgeSec,
+          heartbeatTs,
+          heartbeatAgeSec,
         },
         fallback: true,
         error: String(e?.message || e),

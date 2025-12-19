@@ -94,9 +94,9 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0020 | 이미지 기반 규칙의 텍스트 매뉴얼화 및 RAG 연동    | Draft              | 이미지→텍스트 매뉴얼 생성 규칙 |
 | 0021 | RAG 질의 라우팅 / 컨텍스트 태그 정렬             | Accepted           | context_tags 기반 routing |
 | 0022 | Welcome 템플릿 세트 + 카카오 기본 닉네임 분기    | Accepted           | CASE1/CASE2 세트, 기본닉 정규식 |
-| 0023 | `/status` 기반 Watchdog 자동 재시작              | Accepted           | 봇/파이프라인 자동 복구 |
+| 0023 | `/status` 기반 Watchdog 자동 재시작              | Accepted           | 봇/파이프라인 자동 복구 + ensure_watchdog(Task Scheduler 1분/ONLOGON) |
 | 0024 | Talk-API authHeader 캡처(Frida)                  | Accepted           | Authorization/Duuid 캡처, data 저장/반영 |
-| 0025 | Next.js Web 운영(prod) 고정 + web 헬스체크 재시작  | Accepted           | .next/.next-prod 분리 + watchdog /api/ping |
+| 0025 | Next.js Web 운영(prod) 고정 + web 헬스체크 재시작  | Accepted           | .next/.next-prod 분리 + `/api/ping`/`/`/`/_next/static` 헬스 + prebuild_guard |
 | 0026 | Welcome 후속(첫 이미지) 자동 답장(Reply)          | Accepted           | type=26 Reply + src_* 타입(coerce)로 -203 방지 |
 | 0027 | 코어(LogStore) 상시 가동 + 기능 워커 분리(Welcome) | Accepted           | welcome/후속답장을 워커로 분리해 코어 다운타임 최소화 |
 | 0028 | AI 응답을 ai-worker로 분리 (LogStore 구독 기반)   | Accepted           | `?디하클` 질의 처리를 bot에서 분리, KB 호출/발신은 워커가 담당 |
@@ -108,3 +108,9 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0034 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백 | Accepted | `/send/iris/reply_text` + worker/command explicit fallback |
 | 0035 | 오픈채팅 방별 명령어(FAQ) 트리거 워커(command-worker) | Accepted | `!등록/!삭제/!명령어/!키` + Reply(type=26) 기반 응답 |
 | 0036 | 발신 메시지 템플릿(튜브렌즈 스타일) 표준화 | Accepted | userId/타임스탬프/보고서형 섹션 금지 + 푸터 링크 |
+| 0037 | 무명령어 자동 FAQ(auto-faq-worker) – Reply + 이미지(업로드) | Accepted | 전역/강의ID/방별 트리거 승인 기반 자동응답 |
+| 0038 | 채팅 요약(chatSummary) 해결책/결론 중심(Q&A) 요약 | Accepted | 메타 설명 금지 + 문제→해결 구조(상위 3~5개) |
+| 0039 | 강의 운영 v2 — 카페 멤버 자동 갱신 + 등급 기반 톡방 참여 점검 + 통합 스프레드시트 | Accepted | 코스 단위 RAW→VIEW 점검 시트 |
+| 0041 | 카카오 기본 닉네임 변경 요청(멘션) 워커 | Accepted | 멤버 완전성(스크롤 로딩) 확인 후 멘션 발신 |
+| 0040 | roster-worker 카페 데이터 소스 — CSV(레거시) → 크롤러(JSON 스냅샷) 기본값 | Accepted | 강의 운영(v1) 설정 UX 단순화, 수동 CSV 의존 제거 |
+| 0042 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | Accepted | 공유 winstonLogger(transport 단일)로 핸들 누수 차단 |

@@ -126,6 +126,122 @@ def health():
     return {"ok": True}
 
 
+@app.get("/health/selfcheck")
+def health_selfcheck():
+    """KB 기능 selfcheck.
+
+    목적:
+    - /health는 OK지만, /chat/qa 같은 특정 엔드포인트가 코드/런타임 오류로 500이 나는 '부분 고장'을
+      watchdog(server/status)이 감지할 수 있게 한다.
+    - 외부 LLM 호출 없이, 내부 전처리/후처리 경로가 최소 1회 정상 실행되는지 확인한다.
+    """
+    t0 = time.time()
+    try:
+        # 1) 후처리 기본 동작(보고서형/타임스탬프 제거) sanity
+        _ = _postprocess_chat_answer(
+            "1) 답변:\n테스트\n\n2) 근거:\n- [2025-12-17T05:26:29.528Z] 123456: 테스트\n\n3) 다음 액션:\n- 테스트"
+        )
+
+        # 2) /chat/qa의 결정적(date extract) 분기 1회 실행 (LLM 호출 없음)
+        dummy = ChatQaRequest(
+            room_id="__selfcheck__",
+            room_name="__selfcheck__",
+            question="마라하기 인터뷰글은 언제 나와?",
+            messages=[
+                ChatMessage(ts="2025-01-01T00:00:00Z", sender="테스터", text="마라하기 인터뷰글은 12월 25일에 나온대요"),
+                ChatMessage(ts="2025-01-01T00:00:01Z", sender="테스터", text="!요약 마라하기 인터뷰글은 언제 나와?"),
+            ],
+        )
+        res = chat_qa(dummy)
+        if not isinstance(res, dict) or not bool(res.get("ok")):
+            raise RuntimeError("chat_qa deterministic branch failed")
+        ans = str(res.get("answer") or "").strip()
+        if not ans:
+            raise RuntimeError("chat_qa deterministic answer empty")
+
+        return {"ok": True, "ms": round((time.time() - t0) * 1000)}
+    except Exception as e:
+        log.exception(f"/health/selfcheck failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "detail": "selfcheck_failed", "ms": round((time.time() - t0) * 1000)},
+        )
+
+
+@app.get("/posts/recent")
+def posts_recent(
+    menu_ids: str = "",
+    limit: int = 3,
+    keywords: str = "",
+    include_norm_text: int = 0,
+    title_only: int = 0,
+):
+    """최근 글(제목/URL) 조회용 경량 API.
+
+    용도:
+    - feature-worker(auto-faq 등)가 "최근 N개 링크"를 제공할 때, Chat QA 전체 경로를 타지 않고
+      결정적으로 최근 게시글을 조회하기 위한 엔드포인트.
+
+    정책:
+    - menu_ids는 필수(스코프 명확화).
+    - DISABLED_MENU_IDS는 내부 함수에서 자동 제외된다.
+    - include_norm_text=1일 때만 norm_text를 포함한다(기본은 title/url 중심).
+    """
+    try:
+        raw_menu = (menu_ids or "").strip()
+        if not raw_menu:
+            raise HTTPException(status_code=400, detail="menu_ids_required")
+        menu_list: list[int] = []
+        for part in raw_menu.replace(" ", "").split(","):
+            if not part:
+                continue
+            if not re.fullmatch(r"\d+", part):
+                raise HTTPException(status_code=400, detail="menu_ids_invalid")
+            menu_list.append(int(part))
+        menu_list = [m for m in menu_list if m > 0]
+        if not menu_list:
+            raise HTTPException(status_code=400, detail="menu_ids_empty")
+
+        lim = int(limit or 3)
+        lim = max(1, min(10, lim))
+
+        kw_any: list[str] = []
+        raw_kw = (keywords or "").strip()
+        if raw_kw:
+            kw_any = [k.strip() for k in raw_kw.split(",") if k.strip()]
+
+        want_norm = bool(int(include_norm_text or 0))
+        want_title_only = bool(int(title_only or 0))
+
+        if kw_any:
+            rows = _get_recent_posts_filtered(menu_list, limit=lim, keywords_any=kw_any, title_only=want_title_only)
+        else:
+            rows = _get_recent_posts(menu_list, limit=lim, date_range=None)
+
+        posts: list[dict[str, Any]] = []
+        for r in rows or []:
+            try:
+                post = {
+                    "post_id": r.get("post_id"),
+                    "menu_id": r.get("menu_id"),
+                    "title": r.get("title"),
+                    "url": r.get("url"),
+                    "created_at": r.get("created_at"),
+                }
+                if want_norm:
+                    post["norm_text"] = r.get("norm_text")
+                posts.append(post)
+            except Exception:
+                continue
+
+        return {"ok": True, "menu_ids": menu_list, "limit": lim, "posts": posts}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f"/posts/recent failed: {e}")
+        return JSONResponse(status_code=500, content={"ok": False, "code": "recent_posts_failed", "detail": str(e)})
+
+
 @app.post("/ask")
 def ask(req: AskRequest):
     t0 = time.time()
@@ -393,19 +509,73 @@ def chat_summary(req: ChatSummaryRequest):
 
     # 과도한 토큰 사용을 막기 위해 최근 N개만 사용하고, 각 메시지는 앞부분만 사용한다.
     max_messages = int(os.getenv("KB_CHAT_SUMMARY_MAX_MESSAGES", "200"))
-    max_chars_per_msg = int(os.getenv("KB_CHAT_SUMMARY_MAX_CHARS", "220"))
+    max_chars_per_msg = int(os.getenv("KB_CHAT_SUMMARY_MAX_CHARS", "320"))
     msgs = req.messages[-max_messages:]
 
+    def _compact_ws(s: str) -> str:
+        return re.sub(r"\s+", " ", s or "").strip()
+
+    def _looks_like_smalltalk(text: str) -> bool:
+        t = _compact_ws(text).lower()
+        if not t:
+            return True
+        if re.fullmatch(r"[ㅋㅎㅠㅜ]+", t):
+            return True
+        if len(t) <= 2 and re.fullmatch(r"[ㅇㄴㄱㅅ]+", t):
+            return True
+        if any(t.startswith(x) for x in ("안녕", "반가", "감사", "고마", "수고", "좋은아침", "좋은 아침", "좋은밤", "좋은 밤")):
+            return True
+        return False
+
+    def _is_info_signal(text: str) -> bool:
+        t = _compact_ws(text)
+        if not t:
+            return False
+        if _looks_like_smalltalk(t):
+            return False
+        tl = t.lower()
+        if "http://" in tl or "https://" in tl or "naver.me" in tl:
+            return True
+        if "?" in t:
+            return True
+        if re.search(r"(어떻게|방법|해결|가능|안\s*돼|안\s*되|안됩니다|오류|에러|가입|인증|설정|단축키|ctrl|shift|alt|cmd|메뉴|버튼|페이지|폼|공지|과제|제출|마감|기간|신청|링크|주소)", tl):
+            return True
+        if re.search(r"\b\d+\s*(일|시간|분|회|번|원|개월|주)\b", t):
+            return True
+        return False
+
+    # “대화가 길고 잡담이 섞이는” 방에서 해결책 요약을 더 잘 만들기 위해,
+    # 정보성 후보(질문/해결/링크/수치)를 중심으로 주변 컨텍스트만 발췌한다.
+    picked_idx: set[int] = set()
+    for i, m in enumerate(msgs):
+        t = _compact_ws(m.text or "")
+        if not t:
+            continue
+        if _is_info_signal(t):
+            for j in range(max(0, i - 1), min(len(msgs), i + 3)):
+                picked_idx.add(j)
+    picked = [msgs[i] for i in sorted(picked_idx)] if picked_idx else msgs[-min(len(msgs), 120):]
+    max_prompt_messages = int(os.getenv("KB_CHAT_SUMMARY_PROMPT_MESSAGES", "160"))
+    if len(picked) > max_prompt_messages:
+        picked = picked[-max_prompt_messages:]
+
     lines: list[str] = [
-        "너는 '디하클(디지털노마드 하이클래스)' 오픈채팅방의 친절하고 센스 있는 AI 매니저야.",
-        "사용자가 '!요약'을 요청했어. 아래 대화 로그(Context)를 바탕으로 핵심만 깔끔하게 요약해줘.",
+        "너는 커뮤니티 채팅 로그를 분석해, 핵심 정보를 정리해주는 스태프야.",
+        "사용자가 '!요약'을 요청했어. 아래 대화 로그(Context)만 보고, '무슨 얘기 했는지'가 아니라 '그래서 결론/해결책이 뭔지'를 정리해줘.",
         "",
         "답변 스타일(튜브렌즈 스타일, 엄격 준수):",
-        "- 두괄식: 첫 줄에서 결론을 말하거나 질문 의도에 공감하며 시작해줘(😊).",
-        "- 구조화: 정보가 2개 이상이면 번호(1. 2. 3.) 또는 불릿(-)로 끊어서 써줘.",
+        "- 두괄식: 첫 줄은 결론 중심 1~2문장 + 공감(😊/😥). ('요약해드릴게요'만 단독으로 시작 금지)",
+        "- 구조화: 반드시 '문제/질문(Q) -> 해결/결론(A)' 형태로 정리해줘.",
+        "- 정보가 2개 이상이면 번호(1. 2. 3.) 또는 불릿(-)로 끊어서 써줘.",
         "- 시각적 환기: 문단 시작/강조에 이모지(📌, 💡, 😥 등)를 적절히 써줘.",
         "- 모바일 최적화: 한 문장/한 포인트가 끝나면 줄바꿈을 넣어 빽빽하지 않게 해줘.",
         "- 링크는 본문에 섞지 말고, 맨 아래 푸터로 분리해줘(구분선 `---` 아래).",
+        "",
+        "요약 내용 규칙(핵심):",
+        "- 메타 설명 금지: '~~~에 대해 이야기했어/논의했어/조언이 오갔어/공유됐어/언급됐어' 같은 문장 금지.",
+        "- 대신 대화에서 나온 '구체적인 방법/해결법/절차/단축키/메뉴 위치/기간/숫자'를 반드시 적어줘.",
+        "- 잡담/인사/리액션은 제외하고, 정보성 대화(질문, 팁, 노하우, 해결책)만 뽑아줘.",
+        "- 해결책이 로그에 없으면, A에 솔직하게 '아직 구체적인 해결책은 안 나왔어 😥'처럼 말해줘(추측 금지).",
         "",
         "금지(무조건):",
         "- '근거(Evidence)', '다음 액션(Next Action)', '참고 로그' 같은 섹션/헤더 출력 금지.",
@@ -414,17 +584,21 @@ def chat_summary(req: ChatSummaryRequest):
         "- 개인정보(전화번호/이메일/계좌 등) 노출 금지.",
         "",
         "출력 구조(모바일 친화):",
-        "1) 첫 줄: 결론 1문장 + 공감(😊/😥) (단순히 '찾아봤어요/요약해드릴게요'로만 시작하면 안 됨)",
+        "1) 첫 줄: 결론 1~2문장 + 공감(😊/😥)",
         "2) 빈 줄 1개",
         "3) 💡 요약 내용",
-        "   - 다음 줄부터 2~6줄(또는 1~3개 번호/불릿)로 핵심만",
-        "4) (URL이 있을 때만) 빈 줄 1개 + `---` + `🔗 관련 링크`를 출력하고, 다음 줄부터 URL만",
+        "   - 상위 3~5개 항목만",
+        "   - 각 항목은 아래 형식을 지켜:",
+        "     1. (키워드/주제)",
+        "     Q. (가장 핵심 질문/이슈)",
+        "     A. (해결책/팁/결론 — 구체적으로)",
+        "4) (URL이 있을 때만) 빈 줄 1개 + `---` + `🔗 관련 링크`를 출력하고, 다음 줄부터 URL만 나열",
         "",
         f"방 이름: {req.room_name or req.room_id}",
         "--- 대화 로그 ---",
     ]
 
-    for m in msgs:
+    for m in picked:
         text = (m.text or "").replace("\n", " ").strip()
         if not text:
             continue
@@ -754,7 +928,7 @@ def chat_qa(req: ChatQaRequest):
             dates = uniq_hits
             hint_line = "표현이 '28일'처럼 월/연도가 빠져 있을 수도 있어서, 딱 떨어지는 날짜로는 못 박기 어렵네요 😥"
             answer_lines = [
-                f"{requester_disp}찾아봤어요! 대화에서 일정/날짜 언급이 이렇게 있었어요 😊",
+                f"{requester_disp}결론부터 말하면, 대화에서 일정/날짜 언급이 있었어요 😊",
                 "",
                 "💡 요약 내용",
                 *[f"- {d}" for d in dates],
@@ -793,8 +967,9 @@ def chat_qa(req: ChatQaRequest):
         "- 첫 줄에서 '못 찾았어요 😥'를 솔직하게 말해줘.",
         "- 다음 줄에는 1~2개 불릿으로 '공지/고정글 확인' 정도만 안내해줘.",
         "CASE 2) 정보가 확실하게 있을 때:",
-        f"- 첫 줄: \"{requester_disp}질문하신 내용 찾아봤어요! 봇이 요약해 드릴게요 📝\"",
-        "- 다음 줄은 반드시 빈 줄 1개",
+        "- 첫 줄은 '결론부터 말하면 ...' 형태로 1~2문장 결론을 먼저 말해줘(😊/😥).",
+        "- 필요하면 2번째 줄에 '찾아봤어요/요약해 드릴게요 📝' 같은 짧은 서문을 넣어도 돼.",
+        "- 그 다음 줄은 반드시 빈 줄 1개",
         "- 다음은 `💡 요약 내용` (콜론 없이) 라인을 단독으로 출력",
         "- 그 아래 줄부터 2~5줄 또는 1~3개 번호/불릿로 핵심만",
         "- (URL이 있으면) 빈 줄 1개 후 `---` + `🔗 관련 링크` 라인을 출력하고, 아래 줄부터 URL만 출력",

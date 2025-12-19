@@ -1,6 +1,6 @@
 {
   "title": "CASE1-옵션2(기본닉)",
-  "content": "어서오세요 @{entrance}님 ✨\n\n대화 참여하시기 전에\n닉네임부터 맞춰주시고,\n\n상단 하트 인증샷\n업로드 부탁드립니다.\n\n필수 규정이라 양해 부탁드려요 🙏",
+  "content": "@{entrance} 어서오세요~ 소통편한걸로 닉네임변경이랑 하트스샷 부탁드립니다!",
   "category": "welcome",
   "images": [
     "assets/welcome/common/KakaoTalk_20251213_123012048.png"

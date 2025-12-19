@@ -5,7 +5,12 @@
       "enabled": false,
       "spreadsheetId": "https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit",
       "rosterSheetName": "ROSTER_RAW",
-      "cafeCsvPath": "C:\\\\dev\\\\naver-cafe-member-crawler\\\\data\\\\<카페이름>_<clubid>.csv",
+      "cafeSource": "crawler",
+      "cafeUrl": "https://cafe.naver.com/ManageWholeMember.nhn?clubid=<NAVER_CAFE_CLUB_ID>",
+      "cafeClubId": "<NAVER_CAFE_CLUB_ID>",
+      "crawlerRepoPath": "C:\\\\dev\\\\naver-cafe-member-crawler",
+      "crawlerPythonExe": "C:\\\\dev\\\\naver-cafe-member-crawler\\\\venv\\\\Scripts\\\\python.exe",
+      "crawlerSettingsPath": "",
       "joinUrl": "https://cafe.naver.com/<clubname>"
     }
   }

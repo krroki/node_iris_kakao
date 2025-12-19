@@ -25,6 +25,15 @@
 
 Windows에서 상주 실행되는 watchdog를 도입해 **장애를 자동 감지하고 봇/파이프라인을 자동 재시작**한다.
 
+### 운영 원칙(중요): 운영자가 수동 명령을 치지 않는다
+
+- 정상 운영에서는 운영자가 `start_all`/`start_bot` 같은 명령을 수동 실행하지 않아도 되도록,
+  **Watchdog가 자동 감지/자동 복구**하는 것을 기본 전제로 한다.
+- 전제 조건(1회 설정):
+  - Windows Task Scheduler에 `windows/register_watchdog_task.ps1`로 ensure 작업을 등록한다.
+  - 기본값으로 **1분 주기 + 로그인(ONLOGON)** 2개의 작업을 만들고, 두 작업 모두 `windows/run_ensure_watchdog.vbs`(`wscript.exe`)로 실행해 **PowerShell 창이 뜨지 않게** 한다.
+  - ensure 작업은 `windows/ensure_watchdog.ps1`를 실행해 watchdog를 “항상 켜진 상태”로 유지한다.
+
 ### 1) 상태 소스: FastAPI `/status`
 
 - watchdog는 `http://127.0.0.1:8650/status`(기본)를 주기적으로 폴링한다.
@@ -81,4 +90,18 @@ cooldown으로 인해 조치를 “스킵”하는 경우에도 **스킵 사유�
 2. **자동 재시작은 명시적 규칙과 근거(/status)로만 수행**한다.
 3. **재시작 폭주 방지**: cooldown 없이 무한 루프 재가동을 하지 않는다.
 4. **UI에서 확인 가능**해야 한다(`/api/watchdog`).
+
+---
+
+## Update (2025-12-18) — Web 재시작/BRIDGE DOWN 오탐 보강
+
+- Web 재시작(`windows/watchdog.ps1` → `windows/start_web.ps1`)은 **문자열 배열로 `"-Port" "3100"` 형태를 전달하면 안 된다.**
+  - PowerShell은 런타임 문자열을 “파라미터 토큰”으로 재해석하지 않아, `Port([int])`에 `"-Port"` 문자열이 바인딩되는 오류가 발생한다.
+  - 해결: `start_web.ps1` 호출은 **명시적 파라미터** 또는 **해시테이블 splat**으로 수행한다.
+- “BRIDGE DOWN” 판단은 단순 `lastEventTs`(채팅 이벤트) 기준이면 **채팅이 잠시 없는 방에서 오탐**이 잦다.
+  - FastAPI `/status`의 bot stage는 **heartbeatTs freshness 기반으로 ok**를 판단하고,
+  - UI의 상태바는 `/health`의 `heartbeatAgeSec`를 기준으로 BRIDGE 상태를 표시한다.
+- BRIDGE OK인데 “로그 저장이 멈춘 상태”(LOG LAG)를 구분하기 위해, `/health`에 `logStore.latestLogTs/logAgeSec`를 추가하고 UI에서 별도 배지로 표시한다.
+- `windows/ensure_watchdog.ps1`는 `ensure_watchdog.ps1` 자체가 `watchdog.ps1` 서브스트링에 매칭되는 오탐을 피하기 위해,
+  “watchdog.ps1” 단독 문자열 매칭이 아니라 **watchdog 스크립트의 전체 경로**로 프로세스를 판별한다.
 

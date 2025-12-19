@@ -11,12 +11,13 @@
     "start": "node dist/index.js",
     "dev": "nodemon --exec ts-node src/index.ts",
     "deploy": "tsc && node dist/index.js",
+    "postinstall": "patch-package --error-on-fail",
     "test": "vitest",
     "test:watch": "vitest --watch",
     "check:env": "ts-node scripts/checkEnv.ts"
   },
   "dependencies": {
-    "@tsuki-chat/node-iris": "latest",
+    "@tsuki-chat/node-iris": "1.6.41",
     "dotenv": "^17.2.2",
     "iconv-lite": "^0.6.3"
   },
@@ -24,6 +25,7 @@
     "@types/http-cache-semantics": "^4.0.4",
     "@types/node": "^22.18.3",
     "nodemon": "^3.1.10",
+    "patch-package": "^8.0.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2",
     "vitest": "^4.0.4"

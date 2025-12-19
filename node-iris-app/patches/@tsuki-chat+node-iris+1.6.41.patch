@@ -1,0 +1,180 @@
+diff --git a/node_modules/@tsuki-chat/node-iris/dist/utils/logger.js b/node_modules/@tsuki-chat/node-iris/dist/utils/logger.js
+index 8cfebfd..becbf5c 100644
+--- a/node_modules/@tsuki-chat/node-iris/dist/utils/logger.js
++++ b/node_modules/@tsuki-chat/node-iris/dist/utils/logger.js
+@@ -115,83 +115,88 @@ const logger = winston_1.default.createLogger({
+     ],
+ });
+ exports.winstonLogger = logger;
+-// 로거 래퍼 클래스
+-class Logger {
+-    constructor(context = 'App', options = {}) {
+-        this.context = context;
+-        this.saveChatLogs = options.saveChatLogs || false;
+-        this.logLevel = options.logLevel || 'info';
+-        // 개별 winston 인스턴스 생성 (logLevel 적용)
+-        this.winstonLogger = winston_1.default.createLogger({
+-            level: this.logLevel,
++// NOTE(핫픽스, 2025-12-19):
++// - Logger 인스턴스마다 winston.createLogger + File transport를 새로 만들면
++//   동일 파일(app.log/error.log)에 대한 파일 핸들이 누적되어 EMFILE(too many open files)을 유발한다.
++// - node-iris 내부의 모델/파서 코드가 핫패스에서 new Logger(...)를 반복 생성하는 케이스가 있어
++//   장시간 운영 시 핸들 누수가 치명적이다.
++// - 따라서 모든 Logger 래퍼는 "공유 winstonLogger(transport 단일)"를 사용하고,
++//   per-instance logLevel은 래퍼에서 필터링한다.
++const NPM_LEVELS = (winston_1.default?.config?.npm?.levels) || {};
++function levelValue(level) {
++    const k = String(level || '').trim().toLowerCase();
++    const v = NPM_LEVELS[k];
++    return typeof v === 'number' ? v : null;
++}
++function isLevelAllowed(instanceLevel, msgLevel) {
++    const inst = levelValue(instanceLevel);
++    const msg = levelValue(msgLevel);
++    if (inst == null || msg == null)
++        return true; // unknown level -> do not drop
++    return msg <= inst;
++}
++function ensureLoggerVerbosity(desiredLevel) {
++    const cur = levelValue(logger.level);
++    const want = levelValue(desiredLevel);
++    if (cur == null || want == null)
++        return;
++    // winston(npm)에서 숫자가 클수록 더 verbose (debug=4 > info=2).
++    if (want > cur) {
++        logger.level = String(desiredLevel);
++    }
++}
++let sharedChatLogger = null;
++function ensureChatLoggerVerbosity(desiredLevel) {
++    if (!sharedChatLogger)
++        return;
++    const cur = levelValue(sharedChatLogger.level);
++    const want = levelValue(desiredLevel);
++    if (cur == null || want == null)
++        return;
++    if (want > cur) {
++        sharedChatLogger.level = String(desiredLevel);
++    }
++}
++function getSharedChatLogger(desiredLevel) {
++    if (!sharedChatLogger) {
++        sharedChatLogger = winston_1.default.createLogger({
++            level: String(desiredLevel || 'info'),
+             format: logFormat,
+             transports: [
+-                // 콘솔 출력 - 컬러 포맷 분리
+-                new winston_1.default.transports.Console({
+-                    format: winston_1.default.format.combine(winston_1.default.format.timestamp({
+-                        format: 'YYYY-MM-DD HH:mm:ss',
+-                    }), winston_1.default.format.colorize(), winston_1.default.format.printf(({ timestamp, level, message, stack, ...meta }) => {
+-                        let log = `[${timestamp}] [${level}] ${message}`;
+-                        // 메타데이터가 있으면 추가 (안전한 stringify 사용)
+-                        if (Object.keys(meta).length > 0) {
+-                            try {
+-                                log += ' ' + (0, lossless_json_1.stringify)(meta, getCircularReplacer());
+-                            }
+-                            catch (error) {
+-                                log += ' [메타데이터 직렬화 오류]';
+-                            }
+-                        }
+-                        // 스택 트레이스가 있으면 추가
+-                        if (stack) {
+-                            log += '\n' + stack;
+-                        }
+-                        return log;
+-                    })),
+-                }),
+-                // 파일 출력 - 모든 로그 (채팅 로그 제외)
+                 new winston_1.default.transports.File({
+-                    filename: path_1.default.join(process.cwd(), 'logs', 'app.log'),
+-                    maxsize: 5242880, // 5MB
+-                    maxFiles: 5,
+-                    format: winston_1.default.format.combine(winston_1.default.format((info) => {
+-                        // 채팅 로그는 파일에 저장하지 않음
+-                        if (typeof info.message === 'string' &&
+-                            info.message.includes('[MSG]')) {
+-                            return false;
+-                        }
+-                        return info;
+-                    })(), logFormat),
+-                }),
+-                // 파일 출력 - 에러만
+-                new winston_1.default.transports.File({
+-                    filename: path_1.default.join(process.cwd(), 'logs', 'error.log'),
+-                    level: 'error',
+-                    maxsize: 5242880, // 5MB
++                    filename: path_1.default.join(process.cwd(), 'logs', 'chat.log'),
++                    maxsize: 5242880,
+                     maxFiles: 5,
+                 }),
+             ],
+-            // 개별 로거는 예외 핸들러를 등록하지 않음 (메모리 누수 방지)
++            // chatLogger는 예외 핸들러를 등록하지 않는다.
+             silent: false,
+         });
+-        // 채팅 로그 저장이 활성화된 경우 별도 로거 생성
++        return sharedChatLogger;
++    }
++    ensureChatLoggerVerbosity(desiredLevel);
++    return sharedChatLogger;
++}
++// 로거 래퍼 클래스
++class Logger {
++    constructor(context = 'App', options = {}) {
++        this.context = context;
++        this.saveChatLogs = options.saveChatLogs || false;
++        this.logLevel = options.logLevel || 'info';
++        // 공유 winston 로거 사용 (File transport 단일 유지)
++        ensureLoggerVerbosity(this.logLevel);
++        this.winstonLogger = logger;
++        // 채팅 로그 저장이 활성화된 경우 공유 chatLogger 사용
+         if (this.saveChatLogs) {
+-            this.chatLogger = winston_1.default.createLogger({
+-                level: this.logLevel,
+-                format: logFormat,
+-                transports: [
+-                    new winston_1.default.transports.File({
+-                        filename: path_1.default.join(process.cwd(), 'logs', 'chat.log'),
+-                        maxsize: 5242880, // 5MB
+-                        maxFiles: 5,
+-                    }),
+-                ],
+-            });
++            this.chatLogger = getSharedChatLogger(this.logLevel);
+         }
+     }
+     formatMessage(message) {
+         return `[${this.context}] ${message}`;
+     }
+     error(message, error, meta) {
++        if (!isLevelAllowed(this.logLevel, 'error'))
++            return;
+         if (error instanceof Error) {
+             this.winstonLogger.error(this.formatMessage(message), {
+                 error: error.message,
+@@ -207,16 +212,24 @@ class Logger {
+         }
+     }
+     warn(message, meta) {
++        if (!isLevelAllowed(this.logLevel, 'warn'))
++            return;
+         this.winstonLogger.warn(this.formatMessage(message), meta);
+     }
+     info(message, meta) {
++        if (!isLevelAllowed(this.logLevel, 'info'))
++            return;
+         this.winstonLogger.info(this.formatMessage(message), meta);
+     }
+     debug(message, meta) {
++        if (!isLevelAllowed(this.logLevel, 'debug'))
++            return;
+         this.winstonLogger.debug(this.formatMessage(message), meta);
+     }
+     // 채팅 관련 특별한 로그 메서드들
+     chat(type, roomName, senderName, message) {
++        if (!isLevelAllowed(this.logLevel, 'info'))
++            return;
+         const logMessage = this.formatMessage(`[${type.replace(' | ', '] [')}] [${roomName}] ${senderName}: ${message}`);
+         // 콘솔에는 항상 출력
+         this.winstonLogger.info(logMessage);

@@ -49,6 +49,8 @@ pwsh -ExecutionPolicy Bypass -File windows/start_web.ps1 -Mode prod -Port 3100 -
 
 - `-CleanBuild`는 `.next-prod`를 삭제 후 재빌드하여 “정적 자산 불일치/부분 손상”을 복구합니다.
 - 복구 후 브라우저는 `Ctrl+Shift+R`(강력 새로고침) 1회 권장.
+- UI 실행 중에 `cd web && npm run build`를 직접 실행하면 **prebuild guard가 차단**할 수 있습니다(의도적).
+  - 이 경우에도 위 `start_web.ps1 -CleanBuild` 경로로만 반영합니다.
 
 ---
 
@@ -56,10 +58,18 @@ pwsh -ExecutionPolicy Bypass -File windows/start_web.ps1 -Mode prod -Port 3100 -
 
 - 운영 중에는 `cd web && npm run build`를 **UI 실행과 동시에** 돌리지 않습니다.
   - 필요하면 `start_web.ps1`로 “정지→빌드→기동” 절차를 사용합니다.
+- `web/scripts/prebuild_guard.ps1`는 “운영 UI(next start)가 켜진 상태에서 build로 산출물이 덮어써지는 사고”를 방지하기 위해,
+  UI가 실행 중이면 build를 차단합니다(정적 자산 404 → 남색 화면 재발 방지).
 - `windows/start_web.ps1`는 READY 판정에 `/api/ping`뿐 아니라 **`/` + `/_next/static` 자산 1개(200)** 검증을 포함합니다.
   - 실패 시 **CleanBuild로 1회 자가복구**를 시도합니다.
 - `windows/watchdog.ps1`는 web 헬스체크를 `/api/ping` 단독에서 **`/` + `/_next/static`**까지 확장해,
   “프로세스는 살아있는데 UI가 빈 화면”인 상태를 자동 감지/복구합니다.
+- watchdog 자체가 꺼져 있으면 `windows/ensure_watchdog.ps1`가 자동 기동하며,
+  수동으로는 아래로 재기동합니다.
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File windows/ensure_watchdog.ps1 -Restart
+```
 
 ---
 

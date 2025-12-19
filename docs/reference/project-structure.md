@@ -63,6 +63,12 @@
 
 ### 3.2 `node-iris-app/` – TypeScript IRIS 어댑터
 - `src/`: IRIS SDK(`@tsuki-chat/node-iris`)를 활용한 이벤트 핸들러.
+- `src/workers/`: 기능별 워커(코어(LogStore)와 분리되어 개별 재기동/복구 가능).
+  - `welcome_worker.ts`: Welcome/후속 Reply
+  - `ai_worker.ts`: `?디하클` AI 응답
+  - `broadcast_worker.ts`: 공지/브로드캐스트
+  - `command_worker.ts`: 방별 명령어(FAQ)
+  - `nickname_reminder_worker.ts`: 카카오 기본 닉네임 변경 요청(멘션) (ADR-0041)
 - `config/`: 런타임 토글(`runtime.json`)과 `.env.example`.
 - `scripts/`: 환경 체크(`checkEnv.ts`) 및 운영 유틸리티.
 - `tests/`: Vitest 기반 자동화.
@@ -80,6 +86,11 @@
 - **검증/테스트**: `test_room_registration.py`, `test_real_kakao_integration.py`, `verify_safe_mode_wsl.sh`.
 - **강의 운영 자동화**: `course_roster_worker.py` (오픈채팅 입장자 카페/닉네임 검증 + Sheets 업서트, 운영 스크립트: `windows/start_roster_worker.ps1`)
 - **오픈채팅 멤버 Sheets 자동 동기화**: `openchat_members_sheets_worker.py` (IRIS `db2.open_chat_member` → Google Sheets upsert, 운영 스크립트: `windows/start_openchat_members_sheets_worker.ps1`, 설정: `data/openchat_members_sheets.json`)
+- **강의 운영 v2(등급 기반 참여 점검)**: `course_membership_audit_worker.py`, `course_membership_audit/*`
+  - 카페 멤버 자동 갱신(`naver-cafe-member-crawler` 재사용) + 코스 단위 RAW→VIEW(AUDIT_VIEW) 점검 시트 업서트
+  - 운영 스크립트: `windows/start_course_membership_audit_worker.ps1`
+  - 설정: `data/course_membership_audit.json` (예시: `config/course_membership_audit.example.json`)
+  - 카페 크롤링 브리지: `scripts/crawl_naver_cafe_members.py`
 - 스크립트마다 의존성이 다르므로 실행 전 README/주석과 `docs/op` 자료를 확인한다.
 
 ### 3.5 `docs/` – 운영 문서 및 레퍼런스

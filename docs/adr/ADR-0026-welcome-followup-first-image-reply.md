@@ -14,8 +14,10 @@
 운영 요구:
 
 - welcome 기능이 켜진 방에서 신규 입장자를 멘션 포함 환영 문구로 안내한다.
-- 환영을 받은 신규 입장자가 **입장 후 5분 이내**에 올리는 **첫 이미지 메시지(= 하트 인증샷으로 간주)** 에,
+- 환영을 받은 신규 입장자가 **입장 후 15분 이내**에 올리는 **첫 이미지 메시지(= 하트 인증샷으로 간주)** 에,
   봇이 해당 이미지 메시지에 **답장(Reply)** 으로 “감사합니다~ 편하게 소통해주시면 됩니다!” 류 안내를 **랜덤 1회** 발신한다.
+- 신규 입장자가 **입장 후 15분이 지나도 첫 이미지(하트 인증샷)를 올리지 않으면**, 1회 추가 멘션으로 아래 경고 문구를 발신한다:
+  - `@{entrance} 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
 - 트래킹 상태가 누적되어 메모리/운영 부담이 커지지 않도록 **TTL/상한**이 필요하다.
 
 제약/가드레일:
@@ -45,14 +47,18 @@
 
 1. **트래킹 시작 시점**은 “welcome 텍스트 발신 성공 이후”로 고정한다. (결정 A)
 2. **트리거 조건**:
-   - 동일 사용자 기준 **입장 후 5분(windowMs=300_000) 이내**
+   - 동일 사용자 기준 **입장 후 15분(windowMs=900_000) 이내**
    - **첫 이미지 메시지 1회**만 트리거
    - 이미지 판별이 어려운 경우를 고려해 **“이미지면 전부 하트 인증샷”** 으로 간주(Option B).
 3. **답장 문구**는 여러 개를 설정하고 **랜덤 선택**한다.
-4. **link_id 조회는 보수적으로 강화**한다.
+4. **타임아웃(미업로드) 경고 멘션**:
+   - 동일 사용자 기준 **입장 후 15분(windowMs) 경과** 시점에, 첫 이미지가 없으면 1회 추가 멘션을 발신한다.
+   - 멘션 메시지 템플릿은 런타임 설정으로 관리한다:
+     - `@{entrance} 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
+5. **link_id 조회는 보수적으로 강화**한다.
    - 우선순위: **최근 로그에서 `src_linkId` 추론 → IRIS `/query` 2회(타임아웃 증가/재시도)**
    - `src_linkId`를 끝내 얻지 못하면 **Reply(type=26)는 포기하고**, 일반 메시지(텍스트)로 1회라도 안내를 발신한 뒤 트래킹을 종료한다.
-5. **적용 범위**:
+6. **적용 범위**:
    - welcome이 켜진 방에서 기본 활성
    - 방별로 추가 옵션으로 끄고/킬 수 있어야 한다.
      - 구현은 `runtime.features[roomId].welcomeFollowUp === false` 인 경우만 비활성(기본은 ON).
@@ -65,9 +71,11 @@
 
 - 글로벌 설정:
   - `runtime.json.welcome.followUp.enabled`
-  - `runtime.json.welcome.followUp.windowMs` (기본 300000)
+  - `runtime.json.welcome.followUp.windowMs` (기본 900000)
   - `runtime.json.welcome.followUp.maxPendingPerRoom`
   - `runtime.json.welcome.followUp.replies` (비어 있으면 오류로 처리)
+  - `runtime.json.welcome.followUp.timeoutMention.enabled`
+  - `runtime.json.welcome.followUp.timeoutMention.text`
 - 방별 비활성:
   - `runtime.features[roomId].welcomeFollowUp: false`
 

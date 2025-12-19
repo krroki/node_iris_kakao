@@ -37,8 +37,13 @@ param(
   [int]$AiWorkerRestartCooldownSec = 120,
   [int]$BroadcastWorkerRestartCooldownSec = 120,
   [int]$CommandWorkerRestartCooldownSec = 120,
+  [int]$NicknameReminderWorkerRestartCooldownSec = 120,
+  [int]$ImageWorkerRestartCooldownSec = 120,
+  [int]$VideoWorkerRestartCooldownSec = 120,
+  [int]$AutoFaqWorkerRestartCooldownSec = 120,
   [int]$RosterWorkerRestartCooldownSec = 120,
   [int]$OpenchatMembersSheetsWorkerRestartCooldownSec = 120,
+  [int]$CourseMembershipAuditWorkerRestartCooldownSec = 120,
   # Talk-API authHeader 재적용(파일 → /runtime) 주기: 캡처는 수동, 반영은 자동으로 드리프트를 줄인다.
   [int]$TalkApiAuthSyncIntervalSec = 1800,
   [int]$IrisRepairCooldownSec = 300,
@@ -60,11 +65,16 @@ $startAllScript = Join-Path $root "windows\start_all.ps1"
 $startBotScript = Join-Path $root "windows\start_bot.ps1"
 $startWebScript = Join-Path $root "windows\start_web.ps1"
 $startWelcomeWorkerScript = Join-Path $root "windows\start_welcome_worker.ps1"
-$startAiWorkerScript = Join-Path $root "windows\start_ai_worker.ps1"
-$startBroadcastWorkerScript = Join-Path $root "windows\start_broadcast_worker.ps1"
-$startCommandWorkerScript = Join-Path $root "windows\start_command_worker.ps1"
+  $startAiWorkerScript = Join-Path $root "windows\start_ai_worker.ps1"
+  $startBroadcastWorkerScript = Join-Path $root "windows\start_broadcast_worker.ps1"
+  $startCommandWorkerScript = Join-Path $root "windows\start_command_worker.ps1"
+  $startNicknameReminderWorkerScript = Join-Path $root "windows\start_nickname_reminder_worker.ps1"
+  $startImageWorkerScript = Join-Path $root "windows\start_image_worker.ps1"
+  $startVideoWorkerScript = Join-Path $root "windows\start_video_worker.ps1"
+  $startAutoFaqWorkerScript = Join-Path $root "windows\start_auto_faq_worker.ps1"
 $startRosterWorkerScript = Join-Path $root "windows\start_roster_worker.ps1"
 $startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_openchat_members_sheets_worker.ps1"
+$startCourseMembershipAuditWorkerScript = Join-Path $root "windows\start_course_membership_audit_worker.ps1"
 $smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
 $repairScript = Join-Path $root "windows\repair_redroid_iris.ps1"
 $kbServiceScript = Join-Path $root "windows\kb_service.ps1"
@@ -78,10 +88,15 @@ $script:lastKbRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastKbPostgresEnsureAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastWelcomeWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
-$script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
-$script:lastCommandWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+  $script:lastBroadcastWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+  $script:lastCommandWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+  $script:lastNicknameReminderWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+  $script:lastImageWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+  $script:lastVideoWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+  $script:lastAutoFaqWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastOpenchatMembersSheetsWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastCourseMembershipAuditWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastTalkApiAuthSyncAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
 $script:webFailCount = 0
@@ -394,19 +409,15 @@ function Restart-Web {
   $script:webRestartAttemptsSinceOk++
 
   $logDir = Join-Path $root 'windows\logs'
-  $args = @(
-    '-Port', "$WebPort",
-    '-TimeoutSec', '180',
-    '-ForceKillPort',
-    '-Mode', 'prod',
-    '-LogDir', $logDir
-  )
-  if ($CleanBuild) { $args += '-CleanBuild' }
-
   $cleanLabel = if ($CleanBuild) { ' (CleanBuild)' } else { '' }
   Write-Log -Level 'ACTION' -Message ("web 재시작(start_web.ps1{0}) 실행. 사유: {1}" -f $cleanLabel, $Reason)
   try {
-    & $startWebScript @args 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[start_web] $_" }
+    # NOTE:
+    # - 문자열 배열에 "-Port", "3100" 형태로 넣으면 "파라미터"가 아니라 "문자열 인자"로 전달되어
+    #   start_web.ps1의 Port([int])가 "-Port" 문자열을 받는 바인딩 오류가 발생한다.
+    # - 동적 인자는 해시테이블 splat 또는 명시적 파라미터로 전달해야 한다.
+    & $startWebScript -Port $WebPort -TimeoutSec 180 -ForceKillPort -Mode 'prod' -LogDir $logDir -CleanBuild:$CleanBuild 2>&1 |
+      ForEach-Object { Write-Log -Level 'INFO' -Message "[start_web] $_" }
     Write-Log -Level 'INFO' -Message "web 재시작 호출 완료"
     return $true
   } catch {
@@ -725,6 +736,306 @@ function Restart-CommandWorker {
   }
 }
 
+function Test-NicknameReminderWorkerOk {
+  try {
+    if ($env:NICKNAME_REMINDER_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\nickname_reminder_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatAt) { $hbTs = [string]$j.heartbeatAt }
+        if (-not $hbTs -and $j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-NicknameReminderWorker {
+  param([string]$Reason)
+
+  if ($env:NICKNAME_REMINDER_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startNicknameReminderWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_nickname_reminder_worker.ps1 없음: $startNicknameReminderWorkerScript (nickname-reminder-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastNicknameReminderWorkerRestartAt.AddSeconds($NicknameReminderWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "nickname-reminder-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastNicknameReminderWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "nickname-reminder-worker 재시작(start_nickname_reminder_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startNicknameReminderWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[nickname_reminder_worker] $_" }
+    Write-Log -Level 'INFO' -Message "nickname-reminder-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "nickname-reminder-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-ImageWorkerOk {
+  try {
+    if ($env:IMAGE_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\image_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatAt) { $hbTs = [string]$j.heartbeatAt }
+        if (-not $hbTs -and $j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-ImageWorker {
+  param([string]$Reason)
+
+  if ($env:IMAGE_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startImageWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_image_worker.ps1 없음: $startImageWorkerScript (image-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastImageWorkerRestartAt.AddSeconds($ImageWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "image-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastImageWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "image-worker 재시작(start_image_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startImageWorkerScript -Restart -TimeoutSec 60 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[image_worker] $_" }
+    Write-Log -Level 'INFO' -Message "image-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "image-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-AnyVideoGenEnabled {
+  try {
+    $runtimePath = Join-Path $root "node-iris-app\config\runtime.json"
+    if (-not (Test-Path $runtimePath)) { return $true } # 보수적으로: runtime을 못 읽으면 enabled 취급
+
+    $mtime = $null
+    try { $mtime = (Get-Item -LiteralPath $runtimePath).LastWriteTimeUtc } catch { $mtime = $null }
+
+    if ($null -ne $mtime -and $null -ne $script:videoGenAnyCacheMtimeUtc -and $script:videoGenAnyCacheMtimeUtc -eq $mtime -and $null -ne $script:videoGenAnyCacheValue) {
+      return [bool]$script:videoGenAnyCacheValue
+    }
+
+    $any = $false
+    try {
+      $rt = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $features = $rt.features
+      if ($features) {
+        foreach ($p in $features.PSObject.Properties) {
+          $f = $p.Value
+          if ($f -and $f.videoGen -eq $true) { $any = $true; break }
+        }
+      }
+    } catch {
+      # 파싱 실패/권한 문제 등 예외는 "enabled"로 취급해 복구 로직이 꺼지지 않게 한다.
+      $any = $true
+    }
+
+    $script:videoGenAnyCacheMtimeUtc = $mtime
+    $script:videoGenAnyCacheValue = $any
+    return $any
+  } catch {
+    return $true
+  }
+}
+
+function Test-VideoWorkerOk {
+  try {
+    if ($env:VIDEO_WORKER_DISABLE -eq '1') { return $true }
+    if (-not (Test-AnyVideoGenEnabled)) { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\video_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatAt) { $hbTs = [string]$j.heartbeatAt }
+        if (-not $hbTs -and $j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-VideoWorker {
+  param([string]$Reason)
+
+  if ($env:VIDEO_WORKER_DISABLE -eq '1') { return }
+  if (-not (Test-AnyVideoGenEnabled)) { return }
+
+  if (-not (Test-Path $startVideoWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_video_worker.ps1 없음: $startVideoWorkerScript (video-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastVideoWorkerRestartAt.AddSeconds($VideoWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "video-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastVideoWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "video-worker 재시작(start_video_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startVideoWorkerScript -Restart -TimeoutSec 90 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[video_worker] $_" }
+    Write-Log -Level 'INFO' -Message "video-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "video-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-AutoFaqWorkerOk {
+  try {
+    if ($env:AUTO_FAQ_WORKER_DISABLE -eq '1') { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\auto_faq_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-AutoFaqWorker {
+  param([string]$Reason)
+
+  if ($env:AUTO_FAQ_WORKER_DISABLE -eq '1') { return }
+
+  if (-not (Test-Path $startAutoFaqWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_auto_faq_worker.ps1 없음: $startAutoFaqWorkerScript (auto-faq-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastAutoFaqWorkerRestartAt.AddSeconds($AutoFaqWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "auto-faq-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastAutoFaqWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "auto-faq-worker 재시작(start_auto_faq_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startAutoFaqWorkerScript -Restart -TimeoutSec 45 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[auto_faq_worker] $_" }
+    Write-Log -Level 'INFO' -Message "auto-faq-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "auto-faq-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
 function Test-RosterWorkerOk {
   try {
     if ($env:ROSTER_WORKER_DISABLE -eq '1') { return $true }
@@ -875,6 +1186,90 @@ function Restart-OpenchatMembersSheetsWorker {
     Write-Log -Level 'INFO' -Message "openchat-members-sheets-worker 재시작 호출 완료"
   } catch {
     Write-Log -Level 'ERROR' -Message "openchat-members-sheets-worker 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
+function Test-CourseMembershipAuditWorkerOk {
+  try {
+    if ($env:COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE -eq '1') { return $true }
+    # course-membership-audit-worker는 운영에서 선택 기능이다. 설정 파일이 없으면(미사용) watchdog도 스킵한다.
+    $cfgPath = Join-Path $root "data\course_membership_audit.json"
+    if (-not (Test-Path $cfgPath)) { return $true }
+
+    $cfgEnabled = $false
+    try {
+      $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($j.worker -and $j.worker.enabled -eq $true) { $cfgEnabled = $true }
+    } catch { $cfgEnabled = $false }
+    if (-not $cfgEnabled) { return $true }
+
+    $statusPath = Join-Path $root "node-iris-app\data\course_membership_audit_worker_status.json"
+    $workerPid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $workerPid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 300) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($workerPid) {
+      try {
+        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-CourseMembershipAuditWorker {
+  param([string]$Reason)
+
+  if ($env:COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE -eq '1') { return }
+  $cfgPath = Join-Path $root "data\course_membership_audit.json"
+  if (-not (Test-Path $cfgPath)) { return }
+
+  $cfgEnabled = $false
+  try {
+    $j = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($j.worker -and $j.worker.enabled -eq $true) { $cfgEnabled = $true }
+  } catch { $cfgEnabled = $false }
+  if (-not $cfgEnabled) { return }
+
+  if (-not (Test-Path $startCourseMembershipAuditWorkerScript)) {
+    Write-Log -Level 'WARN' -Message "start_course_membership_audit_worker.ps1 없음: $startCourseMembershipAuditWorkerScript (course-membership-audit-worker 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastCourseMembershipAuditWorkerRestartAt.AddSeconds($CourseMembershipAuditWorkerRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "course-membership-audit-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastCourseMembershipAuditWorkerRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "course-membership-audit-worker 재시작(start_course_membership_audit_worker.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startCourseMembershipAuditWorkerScript -Restart -TimeoutSec 60 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[course_membership_audit_worker] $_" }
+    Write-Log -Level 'INFO' -Message "course-membership-audit-worker 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "course-membership-audit-worker 재시작 실패: $($_.Exception.Message)"
   }
 }
 
@@ -1130,6 +1525,38 @@ try
       }
     } catch {}
 
+    # nickname-reminder-worker stage (feature worker) - 카카오 기본 닉네임 변경 안내(멘션) 워커 자동 복구
+    try {
+      $ok = Test-NicknameReminderWorkerOk
+      if (-not $ok) {
+        Restart-NicknameReminderWorker -Reason "nickname-reminder-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # image-worker stage (feature worker) - 이미지 생성/수정 워커 자동 복구
+    try {
+      $ok = Test-ImageWorkerOk
+      if (-not $ok) {
+        Restart-ImageWorker -Reason "image-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # video-worker stage (feature worker) - 영상 생성 워커 자동 복구
+    try {
+      $ok = Test-VideoWorkerOk
+      if (-not $ok) {
+        Restart-VideoWorker -Reason "video-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # auto-faq-worker stage (feature worker) - 무명령어 자동 FAQ 워커 자동 복구
+    try {
+      $ok = Test-AutoFaqWorkerOk
+      if (-not $ok) {
+        Restart-AutoFaqWorker -Reason "auto-faq-worker not running/heartbeat stale"
+      }
+    } catch {}
+
     # roster-worker stage (feature worker) - 강의 운영(카페/닉네임 검증) 워커 자동 복구
     try {
       $ok = Test-RosterWorkerOk
@@ -1143,6 +1570,14 @@ try
       $ok = Test-OpenchatMembersSheetsWorkerOk
       if (-not $ok) {
         Restart-OpenchatMembersSheetsWorker -Reason "openchat-members-sheets-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # course-membership-audit-worker stage (feature worker) - 강의 운영 v2(등급 기반 참여 점검) 워커 자동 복구
+    try {
+      $ok = Test-CourseMembershipAuditWorkerOk
+      if (-not $ok) {
+        Restart-CourseMembershipAuditWorker -Reason "course-membership-audit-worker not running/heartbeat stale"
       }
     } catch {}
 
