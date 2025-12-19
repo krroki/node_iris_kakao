@@ -51,7 +51,7 @@
 - 신규 입장자 기준으로 15분 내 “첫 이미지 업로드”가 감지되면 프로필 상태를 IRIS DB로 조회한다.
 - 오픈프로필(닫기 안내 대상)인 경우:
   - 감사 Reply를 보내지 않는다.
-  - 멘션 텍스트 + 가이드 이미지(1장)를 발신한다.
+  - 멘션 텍스트 + 가이드 이미지(3장(01~03))를 발신한다.
   - 이후 닫힘을 폴링으로 감지하면 **즉시 1회** 확인 멘션을 발신한다.
 - 오픈프로필이 아닌 경우:
   - 기존 정책대로 “감사합니다 …” Reply를 1회 발신한다.
@@ -73,7 +73,9 @@
    - IRIS 조회 실패/판별 불가 시 안내/확인 발신을 스킵한다.
 3. **오픈프로필 안내는 “첫 이미지 업로드”에서만**
    - 입장 이벤트만으로는 오픈프로필 안내/이미지 발신이 발생하지 않는다.
-4. **멘션 1회 메시지 최대 15명**
+4. **봇(Iris) 자신의 입장 이벤트는 스킵**
+   - 봇이 방에 재입장/재연결되어도 Welcome/후속 Reply가 “자기 자신”에게 발신되는 문제를 방지한다.
+5. **멘션 1회 메시지 최대 15명**
 
 ---
 
@@ -83,16 +85,19 @@
   - `node-iris-app/src/workers/welcome_worker.ts`
     - 첫 이미지 업로드 핸들러에서 오픈프로필 체크/가이드 발신
     - 닫힘 감지 폴링 + 1회 확인 멘션 발신
+    - `senderName=Iris`인 join 이벤트는 무시(봇 self-welcome 방지)
 - 런타임 설정(SSOT):
   - `node-iris-app/config/runtime.json`
     - `welcome.openProfileCloseGuide`:
       - `enabled`, `match`, `text`, `confirmText`
       - `confirmWindowMs`, `confirmCheckIntervalMs`
-      - `images` (현재 1장)
+      - `images` (3장(01~03))
     - `welcome.followUp`:
       - `enabled`, `windowMs`, `replies` (오픈프로필이 아닌 경우에만 사용)
-- 가이드 이미지(1장):
+- 가이드 이미지(3장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/02.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/03.png`
 - 상태/진단:
   - `node-iris-app/data/welcome_worker_state.json` (pending confirmations 포함)
   - `node-iris-app/data/welcome_worker_status.json`
@@ -110,4 +115,3 @@
 
 - 신규 입장자가 이미지를 올리지 않으면 오픈프로필 안내가 트리거되지 않는다.
 - IRIS `open_chat_member` 갱신이 지연/누락되면 안내/확인이 스킵될 수 있다(불확실 상태 폴백 금지 원칙).
-

@@ -95,10 +95,8 @@
 ### 조치
 - broadcast-worker는 IRIS 이미지 폴백 시:
   - 이미지 URL→base64 다운로드를 **타겟마다 반복하지 않고 1회 캐시**한다(동일 공지의 여러 방 전파 속도 개선).
-  - IRIS `/reply_media` 전송은 **배치(일괄)로 1차 시도**하고, MessageStore 로그(`node-iris-app/data/logs/<roomId>/*.log`)에서 “IRIS가 보낸 이미지” 에코를 **방별로 확인한 뒤에만 성공**으로 판정한다.
-  - 에코가 관측되지 않은 방만 **느린 간격으로 재시도(최대 1회)** 한다(기본: 1s → 2.5s).
-  - 최근(10분) IRIS 이미지 미발신 이력이 있는 방은 “같은 공지 내 재시도” 대상에서 제외한다.
-    - 상태 파일: `node-iris-app/data/iris_media_health.json`
+  - IRIS `/reply_media`는 **방별 최소 간격(gap)을 지켜 1회 전송**하고, MessageStore 로그(`node-iris-app/data/logs/<roomId>/*.log`)의 “IRIS가 보낸 이미지” 에코를 **배치 폴링(최대 20초)** 으로 확인해 성공/실패를 판정한다.
+  - `node-iris-app/data/iris_media_health.json` 이력(최근 실패는 뒤로)을 참고해 전송 순서를 정렬한다.
   - 공지 결과 메시지는 기존 `[공지 전파 결과]` 외에 `📣 공지 전송 결과` 프리픽스도 루프 방지 대상으로 포함하며, 결과 포맷을 “성공/실패 방 목록 + 발송 정보” 형태로 가독성 개선했다.
 
 ### 영향

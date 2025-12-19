@@ -85,8 +85,7 @@ const IRIS_SENDER_ID = "434886784";
 // 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
 const IRIS_MEDIA_MIN_GAP_MS = 1000;
 const IRIS_MEDIA_RETRY_GAP_MS = 2500;
-const IRIS_MEDIA_MAX_ATTEMPTS = 2; // 1회 + retry 1회 (체감 속도 개선)
-const IRIS_MEDIA_ECHO_TIMEOUT_MS = 8000;
+const IRIS_MEDIA_ECHO_TIMEOUT_MS = 20000;
 const IRIS_MEDIA_ECHO_POLL_MS = 700;
 const IRIS_MEDIA_LOG_SCAN_BYTES = 256 * 1024;
 
@@ -489,6 +488,9 @@ async function hasIrisImageEchoSince(roomId: string, sinceMs: number): Promise<b
   const st = await fs.stat(p).catch(() => null);
   if (!st || !st.isFile()) return false;
 
+  const mtimeMs = typeof (st as any).mtimeMs === "number" ? Number((st as any).mtimeMs) : st.mtime.getTime();
+  if (Number.isFinite(mtimeMs) && mtimeMs + 2000 < sinceMs) return false;
+
   const size = Number(st.size) || 0;
   const start = Math.max(0, size - IRIS_MEDIA_LOG_SCAN_BYTES);
   const len = Math.max(0, size - start);
@@ -539,16 +541,6 @@ async function hasIrisImageEchoSince(roomId: string, sinceMs: number): Promise<b
   return false;
 }
 
-async function waitForIrisImageEcho(roomId: string, sinceMs: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
-  while (Date.now() < deadline) {
-    const ok = await hasIrisImageEchoSince(roomId, sinceMs);
-    if (ok) return true;
-    await sleepMs(IRIS_MEDIA_ECHO_POLL_MS);
-  }
-  return false;
-}
-
 async function waitForIrisImageEchoBatch(attemptAtByRoom: Map<string, number>, timeoutMs: number): Promise<Set<string>> {
   const pending = new Map<string, { sinceMs: number; deadlineMs: number }>();
   for (const [roomId, sinceMs] of attemptAtByRoom.entries()) {
@@ -587,8 +579,8 @@ async function sendIrisImagesOnce(
   targetIds: string[],
   imagesBase64: string[],
   gapMs: number,
-): Promise<{ callOkAttemptAt: Map<string, number>; callFailed: Set<string> }> {
-  const callOkAttemptAt = new Map<string, number>();
+): Promise<{ attemptAtByRoom: Map<string, number>; callFailed: Set<string> }> {
+  const attemptAtByRoom = new Map<string, number>();
   const callFailed = new Set<string>();
 
   const gap = Math.max(0, Math.floor(gapMs));
@@ -598,9 +590,8 @@ async function sendIrisImagesOnce(
 
     const attemptAt = Date.now();
     const okIris = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
-    if (okIris) {
-      callOkAttemptAt.set(roomId, attemptAt);
-    } else {
+    attemptAtByRoom.set(roomId, attemptAt);
+    if (!okIris) {
       callFailed.add(roomId);
     }
 
@@ -609,7 +600,7 @@ async function sendIrisImagesOnce(
     }
   }
 
-  return { callOkAttemptAt, callFailed };
+  return { attemptAtByRoom, callFailed };
 }
 
 async function dispatchIrisImagesToTargets(
@@ -659,48 +650,16 @@ async function dispatchIrisImagesToTargets(
     });
 
   const gaps = Array.isArray(gapMsList) && gapMsList.length > 0 ? gapMsList : [IRIS_MEDIA_MIN_GAP_MS, IRIS_MEDIA_RETRY_GAP_MS];
-  const maxAttempts = Math.max(1, Math.min(IRIS_MEDIA_MAX_ATTEMPTS, gaps.length));
   const gapBetweenRooms = Math.max(0, Math.floor(gaps[0] ?? 0));
 
   // NOTE:
   // IRIS /reply_media can return HTTP 200 before the actual UI-send completes.
-  // If we spam multiple targets first and only then wait for echoes, IRIS can drop queued sends.
-  // So we serialize by room: send -> wait echo -> next room (retry per-room if needed).
-  let firstRoom = true;
+  // We keep a minimum per-room gap, then confirm via MessageStore echo in batch (avoid per-room blocking/duplicates).
+  const { attemptAtByRoom } = await sendIrisImagesOnce(orderedTargets, imagesBase64, gapBetweenRooms);
+  const okSet = await waitForIrisImageEchoBatch(attemptAtByRoom, IRIS_MEDIA_ECHO_TIMEOUT_MS);
+  for (const rid of okSet) okFinal.add(rid);
   for (const roomId of orderedTargets) {
-    if (!roomId) continue;
-
-    if (!firstRoom && gapBetweenRooms > 0) {
-      await sleepMs(gapBetweenRooms);
-    }
-    firstRoom = false;
-
-    const hadRecentFailAtStart = hasRecentIrisMediaFail(roomHealthAtStart.get(roomId) || {}, nowMsAtStart);
-    const roomAttempts = hadRecentFailAtStart ? 1 : maxAttempts;
-
-    let okRoom = false;
-    for (let attempt = 0; attempt < roomAttempts; attempt += 1) {
-      const retryGap = attempt > 0 ? Math.max(0, Math.floor(gaps[Math.min(attempt, gaps.length - 1)] ?? 0)) : 0;
-      if (retryGap > 0) {
-        await sleepMs(retryGap);
-      }
-
-      const attemptAt = Date.now();
-      const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
-      if (!okCall) continue;
-
-      const echoed = await waitForIrisImageEcho(roomId, attemptAt, IRIS_MEDIA_ECHO_TIMEOUT_MS);
-      if (echoed) {
-        okRoom = true;
-        break;
-      }
-    }
-
-    if (okRoom) {
-      okFinal.add(roomId);
-    } else {
-      failedFinal.add(roomId);
-    }
+    if (!okFinal.has(roomId)) failedFinal.add(roomId);
   }
 
   await updateIrisMediaHealthBatch(okFinal, failedFinal);
@@ -785,14 +744,22 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     logger.warn("[announce] 방 이름 조회 실패(결과 메시지 제한)", { err: roomNameErr });
   }
 
-  const roomNameOnly = (rid: string) => {
+  const unknownLabels = new Map<string, string>();
+  let unknownSeq = 0;
+  const roomLabel = (rid: string) => {
     const key = safeString(rid);
     const name = roomNameMap ? safeString(roomNameMap.get(key)) : "";
     if (name && name !== key) return name;
-    return key;
+    if (!key) return "알 수 없는 방";
+    const prev = unknownLabels.get(key);
+    if (prev) return prev;
+    unknownSeq += 1;
+    const label = `알 수 없는 방 ${unknownSeq}`;
+    unknownLabels.set(key, label);
+    return label;
   };
 
-  const sourceName = roomNameOnly(roomId);
+  const sourceName = roomLabel(roomId);
   const resultLines: string[] = [];
   resultLines.push("📣 공지 전송 결과");
   if (roomNameErr) {
@@ -835,11 +802,11 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       resultLines.push(`📌 ${route.id}`);
       resultLines.push(`⚠️ 발송 대상 0개 (설정:${targetsUniq.length}, 스킵:${targetsUniq.length})`);
       if (notAllowedTargets.length > 0) {
-        const labels = notAllowedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
+        const labels = notAllowedTargets.slice(0, 30).map((rid) => roomLabel(rid));
         resultLines.push(`🚫 allowlist 제외: ${labels.join(", ")}${notAllowedTargets.length > 30 ? ` 외 ${notAllowedTargets.length - 30}개` : ""}`);
       }
       if (excludedTargets.length > 0) {
-        const labels = excludedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
+        const labels = excludedTargets.slice(0, 30).map((rid) => roomLabel(rid));
         resultLines.push(`🚫 excludedRoomIds: ${labels.join(", ")}${excludedTargets.length > 30 ? ` 외 ${excludedTargets.length - 30}개` : ""}`);
       }
       continue;
@@ -870,9 +837,6 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       if (TARGET_DEDUP.isDuplicate(targetKey)) continue;
       processedTargets.push(targetId);
 
-      if (delayMs > 0) {
-        await sleepMs(delayMs);
-      }
 
       // 더 이상 숨김 마커를 텍스트 끝에 붙이지 않는다(일부 환경에서 마커가 그대로 노출됨).
       const textToSend = finalText
@@ -881,6 +845,9 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
 
       let textOk = true;
       if (textToSend) {
+        if (delayMs > 0) {
+          await sleepMs(delayMs);
+        }
         const h = hashTextForDedup(textToSend);
         SENT_TEXT_DEDUP.mark(`sent_txt:${targetId}:${h}`);
         const okTalk = await tryServerTalkApiDispatch(logger, targetId, textToSend, [], 12000);
@@ -934,10 +901,10 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       const ok = okText && okImg;
       if (ok) {
         successCount += 1;
-        if (!roomNameErr) okNames.push(roomNameOnly(targetId));
+        if (!roomNameErr) okNames.push(roomLabel(targetId));
       } else {
         failCount += 1;
-        if (!roomNameErr) failNames.push(roomNameOnly(targetId));
+        if (!roomNameErr) failNames.push(roomLabel(targetId));
       }
     }
 

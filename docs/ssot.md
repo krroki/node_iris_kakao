@@ -71,6 +71,7 @@
 - 2025-12-14: KB 스케줄러가 작업 lock의 PID 확인에 실패할 때(권한/일시 오류 등) “실행 중”으로 고정되어 재개가 막히지 않도록, 확인 실패 시 재개 우선(False)으로 처리.
 - 2025-12-19: EMFILE 재발 원인 확정 및 핫픽스 — `@tsuki-chat/node-iris` Logger가 인스턴스마다 winston File transport를 생성해 `logs/app.log`/`logs/error*.log` 핸들이 누수되었고, 공유 winstonLogger(transport 단일) 방식으로 핫픽스해 누수를 차단. 재설치 대비로 `patch-package`를 도입해 `postinstall`에서 자동 재적용, `@tsuki-chat/node-iris`는 `1.6.41`로 버전 고정. (ADR-0042)
 - 2025-12-19: Welcome 정책 재정렬 — 오픈프로필 닫기 안내는 “첫 이미지 업로드(15분 내)”에서만 멘션+가이드 1장으로 발신하고, 닫힘이 감지되면 즉시 1회 확인 멘션을 발신. 5분 기본닉 리마인더/미업로드 경고는 제거. (ADR-0045, supersedes ADR-0043)
+- 2025-12-19: Welcome-worker self-join 가드 — `senderName=Iris` join 이벤트(feedType=4)는 스킵하여 “봇이 자기 자신을 환영/Reply”하는 오발신을 차단. (ADR-0045)
 
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
@@ -82,7 +83,7 @@
 | 2025-12-19 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` |
 | 2025-12-19 | Welcome: 오픈프로필 닫기 안내(첫 이미지 트리거) + 리마인더 제거 | `docs/adr/ADR-0045-welcome-open-profile-guide-first-image-no-reminders.md` |
 | 2025-12-19 | 운영: Watchdog hung 방지 + UI에서 Watchdog/워커 재시작 | `docs/adr/ADR-0023-watchdog-auto-restart.md`, `docs/agents.md` |
-| 2025-12-19 | 공지: 이미지 전파 “성공 보고/실제 미발신” 핫픽스(에코 확인 + 배치 전송 + 재시도 + 결과 포맷 개선) | `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md` |
+| 2025-12-19 | 공지: 이미지 전파 “성공 보고/실제 미발신” 핫픽스(에코 확인(20s) + 배치 전송 + 중복 방지 + 결과 포맷 개선) | `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md` |
 | 2025-12-15 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백(워커/명령) | `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md` |
 | 2025-12-15 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 추가 | `docs/adr/ADR-0033-openchat-members-sheets-worker.md` |
 | 2025-12-15 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | `docs/adr/ADR-0031-messagestore-emfile-mitigation.md` |

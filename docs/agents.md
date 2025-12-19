@@ -106,9 +106,9 @@ if (result === null) {
 ### 조치(현재 기본 동작)
 - broadcast-worker는 IRIS 이미지 폴백 시:
   - 이미지 URL→base64 다운로드를 **1회 캐시**하고(타겟마다 반복 다운로드 금지)
-  - IRIS `/reply_media`를 **빠른 간격으로 1차 배치 전송**한 뒤 MessageStore 로그 에코를 확인한다.
-  - 에코가 관측되지 않은 방만 **느린 간격으로 재시도(최대 1회)** 하며, 결과는 에코 기준으로 성공/실패를 집계한다.
-  - 최근(10분) IRIS 이미지 미발신 이력이 있는 방은 “같은 공지 내 재시도” 대상에서 제외한다. (상태 파일: `node-iris-app/data/iris_media_health.json`)
+  - IRIS `/reply_media`를 **방별 최소 간격(gap)으로 1회 전송**한 뒤, MessageStore 로그 에코를 **배치 폴링(최대 20초)** 으로 확인해 성공/실패를 판정한다.
+  - **재전송(리트라이) 없이** 에코 기준으로만 집계한다. (중복 이미지 전송 방지)
+  - 전송 순서는 `node-iris-app/data/iris_media_health.json` 이력(최근 실패는 뒤로)을 참고해 정렬한다.
   - 공지 결과 메시지 프리픽스는 `📣 공지 전송 결과`(루프 방지 스킵 대상)이다.
 
 ### 운영 복구
@@ -126,11 +126,13 @@ if (result === null) {
   - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdZero`가 기본 운영값
 - 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.openProfileCloseGuide`
   - 텍스트: `text` (멘션, Talk-API 우선)
-  - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 현재 1장)
+  - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 3장(01~03))
   - 닫힘 확인 멘트: `confirmText` (프로필이 닫힌 것이 감지되면 즉시 1회 멘션 발신)
   - 폴링: `confirmWindowMs`(최대 대기), `confirmCheckIntervalMs`(체크 주기)
-- 가이드 이미지(1장):
+- 가이드 이미지(3장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/02.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/03.png`
 
 ### Welcome 후속 Reply(감사합니다)
 
