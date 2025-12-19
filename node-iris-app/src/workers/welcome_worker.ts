@@ -58,9 +58,21 @@ type PendingFollowUp = {
   expiresAt: number;
 };
 
+type PendingNicknameChangeReminder = {
+  roomId: string;
+  roomName: string;
+  userId: string;
+  joinedAt: number;
+  dueAt: number;
+  nextAttemptAt: number;
+  giveUpAt: number;
+  attempts: number;
+};
+
 type WorkerState = {
   lastSeenMs: number;
   pending: PendingFollowUp[];
+  pendingNicknameChangeReminders?: PendingNicknameChangeReminder[];
   roomLinkIds?: Record<string, { linkId: string; at: number }>;
   updatedAt: string;
 };
@@ -80,6 +92,9 @@ const PHOTO_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const JOIN_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const SKIP_LOG_DEDUP = new DedupCache(60 * 1000); // 1분
 const OPEN_PROFILE_GUIDE_DEDUP = new DedupCache(24 * 60 * 60 * 1000); // 24시간
+const NICKNAME_CHANGE_REMINDER_GRACE_MS = 2 * 60 * 1000; // 2분
+const NICKNAME_CHANGE_REMINDER_RETRY_DELAY_MS = 30_000; // 30초
+const NICKNAME_CHANGE_REMINDER_MAX_ATTEMPTS = 3;
 
 // roomId -> join batch
 type JoinBatch = {
@@ -94,6 +109,8 @@ const joinBatches = new Map<string, JoinBatch>();
 
 // roomId:userId -> pending follow-up
 const pendingByUser = new Map<string, PendingFollowUp>();
+// roomId:userId -> pending nickname-change reminder
+const nicknamePendingByUser = new Map<string, PendingNicknameChangeReminder>();
 
 // roomId -> linkId cache (reply attachment requires src_linkId)
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
@@ -318,6 +335,37 @@ function parseFollowUpConfig(runtime: RuntimeConfig): { ok: true; cfg: FollowUpC
   return { ok: true, cfg: { enabled, windowMs, maxPendingPerRoom, replies, timeoutMention } };
 }
 
+type NicknameChangeReminderConfig = {
+  enabled: boolean;
+  delayMs: number;
+  maxPendingPerRoom: number;
+  text: string;
+};
+
+function parseNicknameChangeReminderConfig(
+  runtime: RuntimeConfig,
+): { ok: true; cfg: NicknameChangeReminderConfig } | { ok: false; error: string } {
+  const w = runtime.welcome && typeof runtime.welcome === "object" ? runtime.welcome : null;
+  const raw = w && typeof w === "object" ? (w as any).nicknameChangeReminder : null;
+  if (!raw || typeof raw !== "object") return { ok: false, error: "welcome.nicknameChangeReminder missing" };
+
+  const enabled = (raw as any).enabled;
+  if (typeof enabled !== "boolean") return { ok: false, error: "welcome.nicknameChangeReminder.enabled must be boolean" };
+
+  const delayMsRaw = (raw as any).delayMs;
+  const maxRaw = (raw as any).maxPendingPerRoom;
+  const text = safeString((raw as any).text ?? (raw as any).message ?? "");
+
+  const delayMs = typeof delayMsRaw === "number" && Number.isFinite(delayMsRaw) ? Math.max(0, Math.floor(delayMsRaw)) : 0;
+  const maxPendingPerRoom = typeof maxRaw === "number" && Number.isFinite(maxRaw) ? Math.max(0, Math.floor(maxRaw)) : 200;
+
+  if (enabled && delayMs <= 0) return { ok: false, error: "welcome.nicknameChangeReminder.delayMs must be > 0" };
+  if (enabled && maxPendingPerRoom <= 0) return { ok: false, error: "welcome.nicknameChangeReminder.maxPendingPerRoom must be > 0" };
+  if (enabled && !text) return { ok: false, error: "welcome.nicknameChangeReminder.text must be non-empty" };
+
+  return { ok: true, cfg: { enabled, delayMs, maxPendingPerRoom, text } };
+}
+
 function parseOpenProfileCloseGuideConfig(
   runtime: RuntimeConfig,
 ): { ok: true; cfg: OpenProfileCloseGuideConfig } | { ok: false; error: string } {
@@ -381,10 +429,13 @@ async function loadState(): Promise<WorkerState> {
     const parsed = JSON.parse(raw) as Partial<WorkerState>;
     const lastSeenMs = typeof parsed.lastSeenMs === "number" && Number.isFinite(parsed.lastSeenMs) ? parsed.lastSeenMs : 0;
     const pending = Array.isArray(parsed.pending) ? (parsed.pending as PendingFollowUp[]) : [];
+    const pendingNicknameChangeReminders = Array.isArray(parsed.pendingNicknameChangeReminders)
+      ? (parsed.pendingNicknameChangeReminders as PendingNicknameChangeReminder[])
+      : [];
     const roomLinkIds =
       parsed.roomLinkIds && typeof parsed.roomLinkIds === "object" ? (parsed.roomLinkIds as Record<string, { linkId: string; at: number }>) : undefined;
     const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
-    return { lastSeenMs, pending, roomLinkIds, updatedAt };
+    return { lastSeenMs, pending, pendingNicknameChangeReminders, roomLinkIds, updatedAt };
   } catch {
     return { lastSeenMs: 0, pending: [], updatedAt: new Date().toISOString() };
   }
@@ -619,6 +670,53 @@ function countPendingByRoom(roomId: string): number {
   return n;
 }
 
+function countPendingNicknameChangeRemindersByRoom(roomId: string): number {
+  let n = 0;
+  for (const it of nicknamePendingByUser.values()) {
+    if (it.roomId === roomId) n += 1;
+  }
+  return n;
+}
+
+function enqueueNicknameChangeReminder(roomId: string, roomName: string, entrants: WelcomeEntrant[], runtime: RuntimeConfig): void {
+  const cfgRes = parseNicknameChangeReminderConfig(runtime);
+  if (!cfgRes.ok) return;
+  const cfg = cfgRes.cfg;
+  if (!cfg.enabled) return;
+
+  // No implicit fallback: if we can't reliably classify default nickname, skip entirely.
+  const regexes = compileDefaultNickRegexes(runtime);
+  if (!regexes) return;
+
+  const now = Date.now();
+  let roomPending = countPendingNicknameChangeRemindersByRoom(roomId);
+  for (const e of entrants) {
+    if (roomPending >= cfg.maxPendingPerRoom) break;
+    const userId = safeString(e?.senderId);
+    if (!userId) continue;
+
+    const nameAtJoin = safeString(e?.name) || "Guest";
+    const klass = isKakaoDefaultNickname(nameAtJoin, regexes);
+    if (klass !== true) continue;
+
+    const joinedAt = Number(e?.joinedAt || 0) || now;
+    const dueAt = joinedAt + cfg.delayMs;
+    const key = `${roomId}:${userId}`;
+
+    nicknamePendingByUser.set(key, {
+      roomId,
+      roomName: safeString(roomName) || roomId,
+      userId,
+      joinedAt,
+      dueAt,
+      nextAttemptAt: dueAt,
+      giveUpAt: dueAt + NICKNAME_CHANGE_REMINDER_GRACE_MS,
+      attempts: 0,
+    });
+    roomPending += 1;
+  }
+}
+
 async function inferOpenLinkIdFromLogs(roomId: string): Promise<string | null> {
   try {
     const dir = path.join(APP_ROOT, "data", "logs", roomId);
@@ -767,6 +865,79 @@ async function queryOpenChatMemberProfile(
       return { profileLinkId, profileType };
     } catch (e) {
       logger.warn("[welcome] queryOpenChatMemberProfile failed", { roomId, err: String(e), attempt, timeoutMs: tms });
+    }
+
+    if (attempt < 2) {
+      await sleepMs(200);
+    }
+  }
+
+  return null;
+}
+
+const HANGUL_RE = /[\uAC00-\uD7A3]/;
+
+function normalizeNameForMention(raw: string): string {
+  return String(raw || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function decodeNicknameFromDb(raw: string): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (HANGUL_RE.test(s)) return s;
+  try {
+    const decoded = Buffer.from(s, "latin1").toString("utf8").trim();
+    if (decoded && HANGUL_RE.test(decoded)) return decoded;
+  } catch {
+    // ignore
+  }
+  return s;
+}
+
+async function queryOpenChatMemberNickname(roomIdRaw: string, userIdRaw: string, timeoutMs: number): Promise<string | null> {
+  const roomId = safeString(roomIdRaw);
+  const userId = safeString(userIdRaw);
+  if (!roomId || !userId) return null;
+
+  const base = safeString(process.env.IRIS_QUERY_BASE || process.env.IRIS_URL || "http://127.0.0.1:5050").replace(/\/+$/, "");
+  const url = `${base}/query`;
+  const body = {
+    query: "select nickname from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
+    bind: [roomId, userId],
+  };
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const tms = Math.min(25_000, Math.max(5000, Math.floor(timeoutMs) + (attempt - 1) * 3000));
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), tms);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+
+      const j: any = await res.json().catch(() => null);
+      if (!res.ok) {
+        logger.warn("[welcome] queryOpenChatMemberNickname non-OK", { roomId, httpStatus: res.status, attempt });
+        continue;
+      }
+
+      const row: any = j?.data?.[0] || null;
+      if (!row || typeof row !== "object") return null;
+
+      const nicknameRaw = safeString(row?.nickname ?? row?.nickName ?? "");
+      const nickname = normalizeNameForMention(decodeNicknameFromDb(nicknameRaw));
+      return nickname || null;
+    } catch (e) {
+      logger.warn("[welcome] queryOpenChatMemberNickname failed", { roomId, err: String(e), attempt, timeoutMs: tms });
     }
 
     if (attempt < 2) {
@@ -1065,6 +1236,12 @@ async function flushWelcome(roomId: string): Promise<void> {
 
   if (!ok) return;
 
+  try {
+    enqueueNicknameChangeReminder(roomId, batch.roomName, entrants, runtime);
+  } catch (e) {
+    logger.warn("[welcome-nickname-change] unexpected error; skip", { roomId, err: String(e) });
+  }
+
   // Follow-up tracking starts after welcome text sent (ADR-0026 Decision A).
   const cfgRes = parseFollowUpConfig(runtime);
   if (!cfgRes.ok) return;
@@ -1310,6 +1487,161 @@ async function expirePendingFollowUpsAndMaybeNudge(): Promise<void> {
   }
 }
 
+async function expirePendingNicknameChangeRemindersAndMaybeNudge(): Promise<void> {
+  const now = Date.now();
+  const due: PendingNicknameChangeReminder[] = [];
+  for (const [k, v] of nicknamePendingByUser.entries()) {
+    const nextAt = Number(v.nextAttemptAt || v.dueAt || 0);
+    const giveUpAt = Number(v.giveUpAt || 0);
+    const attempts = Number(v.attempts || 0);
+
+    if (Number.isFinite(giveUpAt) && giveUpAt > 0 && now > giveUpAt) {
+      nicknamePendingByUser.delete(k);
+      continue;
+    }
+    if (attempts >= NICKNAME_CHANGE_REMINDER_MAX_ATTEMPTS && now >= nextAt) {
+      nicknamePendingByUser.delete(k);
+      continue;
+    }
+    if (now < nextAt) continue;
+    due.push(v);
+  }
+  if (due.length === 0) return;
+
+  const runtime = await loadRuntime();
+  const cfgRes = parseNicknameChangeReminderConfig(runtime);
+  if (!cfgRes.ok) {
+    for (const p of due) {
+      nicknamePendingByUser.delete(`${safeString(p.roomId)}:${safeString(p.userId)}`);
+    }
+    return;
+  }
+  const cfg = cfgRes.cfg;
+  if (!cfg.enabled) {
+    for (const p of due) {
+      nicknamePendingByUser.delete(`${safeString(p.roomId)}:${safeString(p.userId)}`);
+    }
+    return;
+  }
+
+  // Guardrails (time-sensitive, don't send late)
+  if (isSafeModeOn(runtime)) {
+    for (const p of due) {
+      nicknamePendingByUser.delete(`${safeString(p.roomId)}:${safeString(p.userId)}`);
+    }
+    return;
+  }
+
+  // No implicit fallback: if we can't reliably classify default nickname, skip entirely.
+  const regexes = compileDefaultNickRegexes(runtime);
+  if (!regexes) {
+    for (const p of due) {
+      nicknamePendingByUser.delete(`${safeString(p.roomId)}:${safeString(p.userId)}`);
+    }
+    return;
+  }
+
+  const byRoom = new Map<string, PendingNicknameChangeReminder[]>();
+  for (const p of due) {
+    const roomId = safeString(p?.roomId);
+    if (!roomId) continue;
+    const list = byRoom.get(roomId) || [];
+    list.push(p);
+    byRoom.set(roomId, list);
+  }
+
+  for (const [roomId, list] of byRoom.entries()) {
+    if (!list.length) continue;
+    if (!isRoomAllowed(runtime, roomId) || !isFeatureEnabled(runtime, roomId, "welcome")) {
+      for (const p of list) {
+        nicknamePendingByUser.delete(`${roomId}:${safeString(p.userId)}`);
+      }
+      continue;
+    }
+
+    const remindEntrants: WelcomeEntrant[] = [];
+    const deleteKeys: string[] = [];
+
+    for (const p of list) {
+      const userId = safeString(p?.userId);
+      if (!userId) continue;
+      const key = `${roomId}:${userId}`;
+      const cur = nicknamePendingByUser.get(key);
+      if (!cur) continue;
+
+      const attempts = Number(cur.attempts || 0) + 1;
+      cur.attempts = attempts;
+      cur.nextAttemptAt = now + NICKNAME_CHANGE_REMINDER_RETRY_DELAY_MS;
+      nicknamePendingByUser.set(key, cur);
+
+      if (attempts > NICKNAME_CHANGE_REMINDER_MAX_ATTEMPTS) {
+        deleteKeys.push(key);
+        continue;
+      }
+
+      const nickname = await queryOpenChatMemberNickname(roomId, userId, 8000);
+      if (!nickname) {
+        if (attempts >= NICKNAME_CHANGE_REMINDER_MAX_ATTEMPTS) deleteKeys.push(key);
+        continue;
+      }
+
+      const klass = isKakaoDefaultNickname(nickname, regexes);
+      if (klass === true) {
+        remindEntrants.push({ name: nickname, senderId: userId, joinedAt: Number(cur.joinedAt || 0) || now });
+        deleteKeys.push(key);
+      } else if (klass === false) {
+        deleteKeys.push(key);
+      } else {
+        // should not happen, but avoid stuck pending
+        deleteKeys.push(key);
+      }
+    }
+
+    if (remindEntrants.length > 0) {
+      const roomName = safeString(list[0]?.roomName) || roomId;
+      const chunks = chunkArray(remindEntrants, 15);
+      let okAny = false;
+      for (let i = 0; i < chunks.length; i += 1) {
+        const chunk = chunks[i]!;
+        const { text: message, hasMention } = renderWelcomeText(cfg.text, chunk, roomName);
+        const mentionees = chunk
+          .map((e) => ({ name: e.name, userId: e.senderId }))
+          .filter((m) => m.userId && m.name && message.includes("@" + m.name));
+        const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+
+        let okTalk = false;
+        let okIris = false;
+        try {
+          okTalk = await tryServerTalkApiDispatch(logger, roomId, message, hasMention && capped.length ? capped : [], 12000);
+        } catch (e) {
+          okTalk = false;
+          logger.warn("[welcome-nickname-change] dispatch threw", { roomId, err: String(e) });
+        }
+        if (!okTalk) {
+          const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
+          okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+        }
+        okAny = okAny || okTalk || okIris;
+
+        if (i < chunks.length - 1) {
+          await sleepMs(1500);
+        }
+      }
+
+      await updateStatus({
+        lastNicknameChangeReminderAttemptTs: new Date().toISOString(),
+        lastNicknameChangeReminderRoomId: roomId,
+        lastNicknameChangeReminderOk: okAny,
+        lastNicknameChangeReminderCount: remindEntrants.length,
+      });
+    }
+
+    for (const k of deleteKeys) {
+      nicknamePendingByUser.delete(k);
+    }
+  }
+}
+
 async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): Promise<void> {
   const roomId = safeString(entry.roomId);
   if (!roomId) return;
@@ -1363,6 +1695,31 @@ async function connectAndRun(): Promise<void> {
       pendingByUser.set(`${p.roomId}:${p.userId}`, p);
     }
   }
+  // restore nickname-change reminders (within TTL)
+  for (const p of state.pendingNicknameChangeReminders || []) {
+    if (!p || !p.roomId || !p.userId) continue;
+    const roomId = safeString(p.roomId);
+    const userId = safeString(p.userId);
+    if (!roomId || !userId) continue;
+
+    const giveUpAt = Number((p as any).giveUpAt);
+    if (!Number.isFinite(giveUpAt) || giveUpAt <= now) continue;
+
+    const dueAt = Number((p as any).dueAt);
+    const nextAttemptAt = Number((p as any).nextAttemptAt);
+    const joinedAt = Number((p as any).joinedAt);
+    const attempts = Number((p as any).attempts);
+    nicknamePendingByUser.set(`${roomId}:${userId}`, {
+      roomId,
+      roomName: safeString((p as any).roomName) || roomId,
+      userId,
+      joinedAt: Number.isFinite(joinedAt) && joinedAt > 0 ? joinedAt : now,
+      dueAt: Number.isFinite(dueAt) && dueAt > 0 ? dueAt : now,
+      nextAttemptAt: Number.isFinite(nextAttemptAt) && nextAttemptAt > 0 ? nextAttemptAt : now,
+      giveUpAt,
+      attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
+    });
+  }
   // restore link_id cache (best-effort)
   if (state.roomLinkIds && typeof state.roomLinkIds === "object") {
     for (const [rid, v] of Object.entries(state.roomLinkIds)) {
@@ -1381,7 +1738,12 @@ async function connectAndRun(): Promise<void> {
   const startedAt = new Date().toISOString();
   await updateStatus({ startedAt, heartbeatTs: startedAt, lastSeenMs: lastSeenMsRef.v });
   const hbTimer = setInterval(() => {
-    void updateStatus({ heartbeatTs: new Date().toISOString(), lastSeenMs: lastSeenMsRef.v, pending: pendingByUser.size });
+    void updateStatus({
+      heartbeatTs: new Date().toISOString(),
+      lastSeenMs: lastSeenMsRef.v,
+      pending: pendingByUser.size,
+      pendingNicknameChangeReminders: nicknamePendingByUser.size,
+    });
   }, 30_000);
   try {
     const t: any = hbTimer as any;
@@ -1396,9 +1758,11 @@ async function connectAndRun(): Promise<void> {
     void (async () => {
       try {
         await expirePendingFollowUpsAndMaybeNudge();
+        await expirePendingNicknameChangeRemindersAndMaybeNudge();
         const snapshot: WorkerState = {
           lastSeenMs: lastSeenMsRef.v,
           pending: Array.from(pendingByUser.values()),
+          pendingNicknameChangeReminders: Array.from(nicknamePendingByUser.values()),
           roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
           updatedAt: new Date().toISOString(),
         };

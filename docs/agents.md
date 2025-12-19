@@ -60,6 +60,27 @@ if (result === null) {
 
 ---
 
+## Welcome 운영: 오픈프로필 닫기 안내 + 5분 기본닉 리마인더
+
+### 오픈프로필 닫기 안내
+
+- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id != 0` → 오픈프로필(별도 프로필)로 참여 중
+- 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.openProfileCloseGuide`
+- 가이드 이미지(3장):
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/02.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/03.png`
+
+### 5분 기본닉 닉네임 변경 리마인더
+
+- 트리거: 신규 입장 시 닉네임이 기본닉으로 판정된 경우에만 “5분 후 재확인”
+- 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.nicknameChangeReminder`
+- 주의(구분 필요):
+  - `welcome.nicknameChangeReminder`: **신규 입장자 기준(5분)** 1회 리마인더 (welcome-worker)
+  - `nickname-reminder-worker`: **방 전체 스캔 기반(24h/48h 등)** 단계적 멘션 (ADR-0041)
+
+---
+
 ## 네이버 카페 접속 지침
 
 ### 로그인 절차

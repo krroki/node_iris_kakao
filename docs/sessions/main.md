@@ -249,3 +249,19 @@
   - 재설치 대비(워크플로우): `patch-package` 도입 + `postinstall`에서 패치 자동 재적용(`node-iris-app/patches/@tsuki-chat+node-iris+1.6.41.patch`).
   - 버전 드리프트 방지: `node-iris-app/package.json`의 `@tsuki-chat/node-iris`를 `1.6.41`로 고정.
   - 문서: `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` + `docs/ssot.md`/`AGENTS.md`/`docs/reference/verification-commands.md` 업데이트.
+
+- Welcome 업그레이드(오픈프로필 안내 + 5분 기본닉 리마인더):
+  - 환영 문구(템플릿) 정합성:
+    - 커스텀 닉네임: `@{entrance} 님 어서오세요~ 하트스샷 부탁드립니닷`
+    - 기본 닉네임: `@{entrance} 님 어서오세요~ 소통편한걸로 닉네임변경이랑 하트스샷 부탁드립니다!`
+    - 템플릿 파일: `node-iris-app/config/templates/welcome/welcome_custom_*.json`, `node-iris-app/config/templates/welcome/welcome_kakao_default_*.json`
+  - 하트스샷 미업로드(15분) 경고 문구 정렬:
+    - `runtime.json.welcome.followUp.timeoutMention.text`: `@{entrance} 님 ~ 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
+  - 오픈프로필 닫기 안내:
+    - 판별: `db2.open_chat_member.profile_link_id != 0` (오픈프로필)
+    - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 3장)
+    - 이미지(01~03): 모바일(1) → 모바일(2) → PC 설정 가이드
+  - 기본닉 닉네임 변경 리마인더(5분):
+    - 설정: `runtime.json.welcome.nicknameChangeReminder` (`delayMs=300000`)
+    - 동작: 신규 입장자가 기본닉인 경우 5분 후 닉네임 재확인 → 여전히 기본닉이면 1회 안내
+  - 결정 문서: `docs/adr/ADR-0043-welcome-open-profile-guide-and-5m-nickname-reminder.md`

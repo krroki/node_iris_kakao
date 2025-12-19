@@ -69,6 +69,7 @@
 - 2025-12-14: 일반 상식(웹 검색) 경로에서 유튜브 수익창출(YPP) 질문은 공식 도메인(support.google.com/youtube.com) 근거가 우선 노출되도록 프롬프트 규칙을 강화.
 - 2025-12-14: KB 스케줄러가 작업 lock의 PID 확인에 실패할 때(권한/일시 오류 등) “실행 중”으로 고정되어 재개가 막히지 않도록, 확인 실패 시 재개 우선(False)으로 처리.
 - 2025-12-19: EMFILE 재발 원인 확정 및 핫픽스 — `@tsuki-chat/node-iris` Logger가 인스턴스마다 winston File transport를 생성해 `logs/app.log`/`logs/error*.log` 핸들이 누수되었고, 공유 winstonLogger(transport 단일) 방식으로 핫픽스해 누수를 차단. 재설치 대비로 `patch-package`를 도입해 `postinstall`에서 자동 재적용, `@tsuki-chat/node-iris`는 `1.6.41`로 버전 고정. (ADR-0042)
+- 2025-12-19: Welcome 업그레이드 — 오픈프로필(별도 프로필) 참여자에게 “닫기 안내 + 가이드 이미지 3장”을 발송하고, 기본닉 신규 입장자에 대해 “5분 내 미변경 시 1회 리마인더”를 추가. (ADR-0043)
 
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
@@ -78,6 +79,7 @@
 | 2025-12-18 | 운영 안정화: BRIDGE/LOG 상태 분리 + watchdog 보장(Task Scheduler) + Web 빈 화면 방지 | `docs/reference/bridge-status.md`, `docs/adr/ADR-0023-watchdog-auto-restart.md`, `docs/adr/ADR-0025-web-prod-mode-and-watchdog-web-health.md` |
 | 2025-12-18 | 카카오 기본 닉네임 변경 요청(멘션) 워커 도입 | `docs/adr/ADR-0041-default-nickname-reminder-mentions.md` |
 | 2025-12-19 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` |
+| 2025-12-19 | Welcome: 오픈프로필 닫기 안내 + 5분 기본닉 닉네임 변경 리마인더 | `docs/adr/ADR-0043-welcome-open-profile-guide-and-5m-nickname-reminder.md` |
 | 2025-12-15 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백(워커/명령) | `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md` |
 | 2025-12-15 | 오픈채팅 멤버(전체) Sheets 자동 동기화 워커 추가 | `docs/adr/ADR-0033-openchat-members-sheets-worker.md` |
 | 2025-12-15 | MessageStore EMFILE(too many open files) 완화 및 자동복구 정렬 | `docs/adr/ADR-0031-messagestore-emfile-mitigation.md` |
