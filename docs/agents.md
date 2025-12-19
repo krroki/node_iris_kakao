@@ -104,10 +104,11 @@ if (result === null) {
   IRIS 응답이 HTTP 200이어도 실제 UI 발신은 비동기/지연 처리라 “연속 발신 속도”가 빠르면 누락될 수 있음
 
 ### 조치(현재 기본 동작)
-- broadcast-worker는 IRIS 이미지 폴백 시:
+- broadcast-worker는 공지 이미지 전파 시:
   - 이미지 URL→base64 다운로드를 **1회 캐시**하고(타겟마다 반복 다운로드 금지)
-  - IRIS `/reply_media`를 **방별 최소 간격(gap)으로 1회 전송**한 뒤, MessageStore 로그 에코를 **배치 폴링(최대 20초)** 으로 확인해 성공/실패를 판정한다.
-  - **재전송(리트라이) 없이** 에코 기준으로만 집계한다. (중복 이미지 전송 방지)
+  - Talk-API `dispatch_raw(photo)`는 불안정(`-500/502`)하여 사용하지 않고, **IRIS `/reply_media` 단일 경로**로 전송한다.
+  - IRIS `/reply_media`는 **방별 직렬 전송**한다. (send → MessageStore 이미지 echo 확인 → 다음 방)
+  - echo 확인 타임아웃은 **최대 60초**로 두고, **재전송(리트라이) 없이** echo 기준으로만 집계한다. (중복 이미지 전송 방지)
   - 전송 순서는 `node-iris-app/data/iris_media_health.json` 이력(최근 실패는 뒤로)을 참고해 정렬한다.
   - 공지 결과 메시지 프리픽스는 `📣 공지 전송 결과`(루프 방지 스킵 대상)이다.
 
@@ -122,15 +123,15 @@ if (result === null) {
 ### 오픈프로필 닫기 안내
 
 - 트리거: 신규 입장 후 `welcome.followUp.windowMs` 내 “첫 이미지 업로드”가 감지된 경우에만 실행
-- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id == 0` → 오픈채팅 열린 프로필(닫기 안내 대상)
-  - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdZero`가 기본 운영값
+- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id != 0` → 오픈프로필(닫기 안내 대상)
+  - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdNonZero`가 기본 운영값
 - 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.openProfileCloseGuide`
   - 텍스트: `text` (멘션, Talk-API 우선)
   - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 1장)
   - 닫힘 확인 멘트: `confirmText` (프로필이 닫힌 것이 감지되면 즉시 1회 멘션 발신)
   - 폴링: `confirmWindowMs`(최대 대기), `confirmCheckIntervalMs`(체크 주기)
 - 가이드 이미지(1장):
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
 
 ### Welcome 후속 Reply(감사합니다)
 

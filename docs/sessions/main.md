@@ -233,6 +233,15 @@
 
 ---
 
+## 2025-12-20
+
+- 공지 이미지 전파 누락(“1/N만 성공”) 재현 및 2차 핫픽스:
+  - 관측: IRIS `/reply_media`는 모든 요청에 HTTP 200을 반환했지만, 실제 타겟 방에서는 일부만 이미지가 전송되는 케이스가 재현됨.
+  - 원인: `/reply_media`가 UI 전송 완료 전에 반환 + 여러 방 연속 호출 시 IRIS UI automation이 이전 전송을 덮어써 “마지막 방만 전송”처럼 누락이 발생 가능.
+  - 조치: IRIS 이미지 전파를 **방별 직렬화(send → MessageStore echo 확인 → 다음 방)**로 변경하고, echo 타임아웃을 60초로 확대. 공지 이미지 전파에서 Talk-API `dispatch_raw(photo)`는 비활성(불안정) 처리.
+  - 코드: `node-iris-app/src/workers/broadcast_worker.ts`
+  - 문서: `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md`, `docs/ssot.md`
+
 ## 2025-12-19
 
 - 기본닉 예외값(카카오 기본 닉네임 후보) DB 리포트 보강:
@@ -260,9 +269,9 @@
     - 오픈프로필인 경우: 감사 Reply는 스킵하고 “닫기 안내 + 가이드 이미지 1장”만 발신
   - 오픈프로필 닫기 안내:
     - 트리거: 입장 후 15분 내 “첫 이미지 업로드”에서만 실행(입장 직후 발신 금지)
-    - 판별: `db2.open_chat_member.profile_link_id == 0` (닫기 안내 대상)
+    - 판별: `db2.open_chat_member.profile_link_id != 0` (닫기 안내 대상)
     - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 1장 + confirmText + 폴링)
-    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
   - 닫힘 확인 멘트:
     - 가이드 발신 후 `confirmWindowMs` 내에서 폴링으로 닫힘을 감지하면 즉시 1회 멘션 발신
   - 제거:
@@ -282,9 +291,10 @@
 - 운영 장애(공지 이미지 전파 성공/미발신) 핫픽스:
   - 증상: 공지(이미지 포함) 전파에서 “성공”으로 보고되지만 타겟 방에 이미지가 누락되는 케이스 발생.
   - 원인(대표): Talk-API raw 이미지 발신이 `status=-500`으로 실패 → IRIS `/reply_media` 폴백으로 전환되며, IRIS 응답이 HTTP 200이어도 실제 UI 발신은 비동기/지연 처리라 연속 발신 속도가 빠르면 누락 가능.
-  - 조치: `broadcast-worker`에서 IRIS 이미지 폴백 시
+  - 조치(1차): `broadcast-worker`에서 IRIS 이미지 전파 시
     - 이미지 URL→base64 다운로드를 **1회 캐시**하고,
-    - **빠른 1차 배치 전송(기본 1s 간격)** 후 MessageStore 로그 에코를 확인,
-    - 실패 방만 **느린 간격 재시도(2.5s/5s, 최대 2회)** 하도록 보강 + 결과 메시지 포맷(성공/실패 목록 + 발송 정보) 개선(프리픽스: `📣 공지 전송 결과`).
+    - IRIS `/reply_media`는 **방별 1회 전송**(중복/리트라이 제거) 후,
+    - MessageStore 로그 “IRIS 이미지 echo”를 기준으로 성공/실패를 판정(배치 폴링, 최대 20초),
+    - 결과 메시지 포맷(성공/실패 목록 + 발송 정보) 개선(프리픽스: `📣 공지 전송 결과`).
   - 코드: `node-iris-app/src/workers/broadcast_worker.ts`, `node-iris-app/src/utils/iris.ts`
   - 문서: `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md`, `docs/ssot.md`

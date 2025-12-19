@@ -8,7 +8,7 @@ import { broadcastService } from "../services";
 import { downloadUrlAsBase64 } from "../utils/download";
 import { tryServerIrisReplyMedia, tryServerIrisReplyText } from "../utils/iris";
 import { APP_ROOT } from "../utils/paths";
-import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/talkapi";
+import { tryServerTalkApiDispatch } from "../utils/talkapi";
 
 type StreamEntry = {
   ts?: string;
@@ -85,7 +85,7 @@ const IRIS_SENDER_ID = "434886784";
 // 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
 const IRIS_MEDIA_MIN_GAP_MS = 1000;
 const IRIS_MEDIA_RETRY_GAP_MS = 2500;
-const IRIS_MEDIA_ECHO_TIMEOUT_MS = 20000;
+const IRIS_MEDIA_ECHO_TIMEOUT_MS = 60000;
 const IRIS_MEDIA_ECHO_POLL_MS = 700;
 const IRIS_MEDIA_LOG_SCAN_BYTES = 256 * 1024;
 
@@ -541,66 +541,18 @@ async function hasIrisImageEchoSince(roomId: string, sinceMs: number): Promise<b
   return false;
 }
 
-async function waitForIrisImageEchoBatch(attemptAtByRoom: Map<string, number>, timeoutMs: number): Promise<Set<string>> {
-  const pending = new Map<string, { sinceMs: number; deadlineMs: number }>();
-  for (const [roomId, sinceMs] of attemptAtByRoom.entries()) {
-    const s = Number(sinceMs);
-    if (!Number.isFinite(s) || s <= 0) continue;
-    pending.set(roomId, { sinceMs: s, deadlineMs: s + Math.max(0, Math.floor(timeoutMs)) });
-  }
-  if (pending.size === 0) return new Set();
-
-  const ok = new Set<string>();
-  while (pending.size > 0) {
+async function waitForIrisImageEcho(roomId: string, sinceMs: number, timeoutMs: number): Promise<boolean> {
+  const s = Number(sinceMs);
+  if (!Number.isFinite(s) || s <= 0) return false;
+  const deadlineMs = s + Math.max(0, Math.floor(timeoutMs));
+  while (true) {
     const now = Date.now();
-    for (const [roomId, v] of pending.entries()) {
-      if (now > v.deadlineMs) {
-        pending.delete(roomId);
-        continue;
-      }
-      const echoed = await hasIrisImageEchoSince(roomId, v.sinceMs);
-      if (echoed) {
-        ok.add(roomId);
-        pending.delete(roomId);
-      }
-    }
-    if (pending.size === 0) break;
-
-    const nextDeadline = Math.min(...Array.from(pending.values()).map((v) => v.deadlineMs));
-    const sleepFor = Math.min(IRIS_MEDIA_ECHO_POLL_MS, Math.max(0, nextDeadline - Date.now()));
-    if (sleepFor > 0) {
-      await sleepMs(sleepFor);
-    }
+    if (now > deadlineMs) return false;
+    const echoed = await hasIrisImageEchoSince(roomId, s);
+    if (echoed) return true;
+    const sleepFor = Math.min(IRIS_MEDIA_ECHO_POLL_MS, Math.max(0, deadlineMs - Date.now()));
+    if (sleepFor > 0) await sleepMs(sleepFor);
   }
-  return ok;
-}
-
-async function sendIrisImagesOnce(
-  targetIds: string[],
-  imagesBase64: string[],
-  gapMs: number,
-): Promise<{ attemptAtByRoom: Map<string, number>; callFailed: Set<string> }> {
-  const attemptAtByRoom = new Map<string, number>();
-  const callFailed = new Set<string>();
-
-  const gap = Math.max(0, Math.floor(gapMs));
-  for (let i = 0; i < targetIds.length; i += 1) {
-    const roomId = safeString(targetIds[i]);
-    if (!roomId) continue;
-
-    const attemptAt = Date.now();
-    const okIris = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
-    attemptAtByRoom.set(roomId, attemptAt);
-    if (!okIris) {
-      callFailed.add(roomId);
-    }
-
-    if (i < targetIds.length - 1 && gap > 0) {
-      await sleepMs(gap);
-    }
-  }
-
-  return { attemptAtByRoom, callFailed };
 }
 
 async function dispatchIrisImagesToTargets(
@@ -654,12 +606,22 @@ async function dispatchIrisImagesToTargets(
 
   // NOTE:
   // IRIS /reply_media can return HTTP 200 before the actual UI-send completes.
-  // We keep a minimum per-room gap, then confirm via MessageStore echo in batch (avoid per-room blocking/duplicates).
-  const { attemptAtByRoom } = await sendIrisImagesOnce(orderedTargets, imagesBase64, gapBetweenRooms);
-  const okSet = await waitForIrisImageEchoBatch(attemptAtByRoom, IRIS_MEDIA_ECHO_TIMEOUT_MS);
-  for (const rid of okSet) okFinal.add(rid);
-  for (const roomId of orderedTargets) {
-    if (!okFinal.has(roomId)) failedFinal.add(roomId);
+  // Also, overlapping /reply_media requests can cause "only the last room actually gets the image" in some environments.
+  // So we serialize per room: send -> wait for MessageStore echo -> next room.
+  for (let i = 0; i < orderedTargets.length; i += 1) {
+    const roomId = orderedTargets[i]!;
+    const attemptAt = Date.now();
+    const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
+    if (!okCall) {
+      failedFinal.add(roomId);
+    } else {
+      const echoed = await waitForIrisImageEcho(roomId, attemptAt, IRIS_MEDIA_ECHO_TIMEOUT_MS);
+      if (echoed) okFinal.add(roomId);
+      else failedFinal.add(roomId);
+    }
+    if (i < orderedTargets.length - 1 && gapBetweenRooms > 0) {
+      await sleepMs(gapBetweenRooms);
+    }
   }
 
   await updateIrisMediaHealthBatch(okFinal, failedFinal);
@@ -829,8 +791,6 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     const imageOkByTarget = new Map<string, boolean>();
     const processedTargets: string[] = [];
     const irisImageTargets: string[] = [];
-    let canTryTalkApiImage = true;
-
     for (let idx = 0; idx < validTargets.length; idx++) {
       const targetId = validTargets[idx];
       const targetKey = `${roomId}:${msgId}:${targetId}`;
@@ -861,18 +821,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
         // Record "sent image" so when the mirrored image appears in logs we can ignore it.
         // (No visible marker in the message body)
         SENT_IMAGE_DEDUP.mark(`sent_img:${targetId}:${h}`);
-        if (canTryTalkApiImage) {
-          const okTalk = await tryServerTalkApiDispatchRaw(logger, targetId, "photo", 27, { imageUrls: images }, 15000);
-          if (okTalk) {
-            imageOkByTarget.set(targetId, true);
-          } else {
-            // Talk-API 이미지 raw가 1회라도 실패하면(환경/버전 의존 -500 등), 이후에는 즉시 IRIS로 폴백한다.
-            canTryTalkApiImage = false;
-            irisImageTargets.push(targetId);
-          }
-        } else {
-          irisImageTargets.push(targetId);
-        }
+        irisImageTargets.push(targetId);
       }
     }
 
