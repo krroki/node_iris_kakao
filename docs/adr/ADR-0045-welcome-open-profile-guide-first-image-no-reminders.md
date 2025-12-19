@@ -51,7 +51,7 @@
 - 신규 입장자 기준으로 15분 내 “첫 이미지 업로드”가 감지되면 프로필 상태를 IRIS DB로 조회한다.
 - 오픈프로필(닫기 안내 대상)인 경우:
   - 감사 Reply를 보내지 않는다.
-  - 멘션 텍스트 + 가이드 이미지(3장(01~03))를 발신한다.
+  - 멘션 텍스트 + 가이드 이미지(1장)를 발신한다.
   - 이후 닫힘을 폴링으로 감지하면 **즉시 1회** 확인 멘션을 발신한다.
 - 오픈프로필이 아닌 경우:
   - 기존 정책대로 “감사합니다 …” Reply를 1회 발신한다.
@@ -91,13 +91,11 @@
     - `welcome.openProfileCloseGuide`:
       - `enabled`, `match`, `text`, `confirmText`
       - `confirmWindowMs`, `confirmCheckIntervalMs`
-      - `images` (3장(01~03))
+      - `images` (1장)
     - `welcome.followUp`:
       - `enabled`, `windowMs`, `replies` (오픈프로필이 아닌 경우에만 사용)
-- 가이드 이미지(3장):
+- 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/02.png`
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/03.png`
 - 상태/진단:
   - `node-iris-app/data/welcome_worker_state.json` (pending confirmations 포함)
   - `node-iris-app/data/welcome_worker_status.json`

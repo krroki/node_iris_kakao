@@ -126,13 +126,11 @@ if (result === null) {
   - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdZero`가 기본 운영값
 - 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.openProfileCloseGuide`
   - 텍스트: `text` (멘션, Talk-API 우선)
-  - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 3장(01~03))
+  - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 1장)
   - 닫힘 확인 멘트: `confirmText` (프로필이 닫힌 것이 감지되면 즉시 1회 멘션 발신)
   - 폴링: `confirmWindowMs`(최대 대기), `confirmCheckIntervalMs`(체크 주기)
-- 가이드 이미지(3장):
+- 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/02.png`
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/03.png`
 
 ### Welcome 후속 Reply(감사합니다)
 

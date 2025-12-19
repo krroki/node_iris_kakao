@@ -257,12 +257,12 @@
     - 템플릿 파일: `node-iris-app/config/templates/welcome/welcome_custom_*.json`, `node-iris-app/config/templates/welcome/welcome_kakao_default_*.json`
   - 첫 이미지 업로드(15분 내) 후속 동작:
     - 오픈프로필이 아닌 경우: 첫 이미지에 “감사합니다 …” Reply(type=26) 1회 발신
-    - 오픈프로필인 경우: 감사 Reply는 스킵하고 “닫기 안내 + 가이드 이미지 3장(01~03)”만 발신
+    - 오픈프로필인 경우: 감사 Reply는 스킵하고 “닫기 안내 + 가이드 이미지 1장”만 발신
   - 오픈프로필 닫기 안내:
     - 트리거: 입장 후 15분 내 “첫 이미지 업로드”에서만 실행(입장 직후 발신 금지)
     - 판별: `db2.open_chat_member.profile_link_id == 0` (닫기 안내 대상)
-    - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 3장 + confirmText + 폴링)
-    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`, `02.png`, `03.png`
+    - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 1장 + confirmText + 폴링)
+    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
   - 닫힘 확인 멘트:
     - 가이드 발신 후 `confirmWindowMs` 내에서 폴링으로 닫힘을 감지하면 즉시 1회 멘션 발신
   - 제거:
