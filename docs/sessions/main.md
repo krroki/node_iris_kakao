@@ -250,21 +250,25 @@
   - 버전 드리프트 방지: `node-iris-app/package.json`의 `@tsuki-chat/node-iris`를 `1.6.41`로 고정.
   - 문서: `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` + `docs/ssot.md`/`AGENTS.md`/`docs/reference/verification-commands.md` 업데이트.
 
-- Welcome 업그레이드(오픈프로필 안내 + 5분 기본닉 리마인더):
-  - 환영 문구(템플릿) 정합성:
-    - 커스텀 닉네임: `@{entrance} 님 어서오세요~ 하트스샷 부탁드립니닷`
-    - 기본 닉네임: `@{entrance} 님 어서오세요~ 소통편한걸로 닉네임변경이랑 하트스샷 부탁드립니다!`
+- Welcome 정책 재정렬(오픈프로필 안내 첫 이미지 트리거 + 리마인더 제거):
+  - 환영 문구(텍스트만 발신; 템플릿 이미지 사용 안 함):
+    - 커스텀 닉네임: `@{entrance} 님 어서오세요 ~ 하트스샷 부탁드립니닷`
+    - 기본 닉네임: `@{entrance} 님 어서오세요~ 닉네임변경이랑 하트스샷 부탁드립니다!`
     - 템플릿 파일: `node-iris-app/config/templates/welcome/welcome_custom_*.json`, `node-iris-app/config/templates/welcome/welcome_kakao_default_*.json`
-  - 하트스샷 미업로드(15분) 경고 문구 정렬:
-    - `runtime.json.welcome.followUp.timeoutMention.text`: `@{entrance} 님 ~ 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
+  - 첫 이미지 업로드(15분 내) 후속 동작:
+    - 오픈프로필이 아닌 경우: 첫 이미지에 “감사합니다 …” Reply(type=26) 1회 발신
+    - 오픈프로필인 경우: 감사 Reply는 스킵하고 “닫기 안내 + 가이드 이미지 1장”만 발신
   - 오픈프로필 닫기 안내:
-    - 판별: `db2.open_chat_member.profile_link_id != 0` (오픈프로필)
-    - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 3장)
-    - 이미지(01~03): 모바일(1) → 모바일(2) → PC 설정 가이드
-  - 기본닉 닉네임 변경 리마인더(5분):
-    - 설정: `runtime.json.welcome.nicknameChangeReminder` (`delayMs=300000`)
-    - 동작: 신규 입장자가 기본닉인 경우 5분 후 닉네임 재확인 → 여전히 기본닉이면 1회 안내
-  - 결정 문서: `docs/adr/ADR-0043-welcome-open-profile-guide-and-5m-nickname-reminder.md`
+    - 트리거: 입장 후 15분 내 “첫 이미지 업로드”에서만 실행(입장 직후 발신 금지)
+    - 판별: `db2.open_chat_member.profile_link_id == 0` (닫기 안내 대상)
+    - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 1장 + confirmText + 폴링)
+    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+  - 닫힘 확인 멘트:
+    - 가이드 발신 후 `confirmWindowMs` 내에서 폴링으로 닫힘을 감지하면 즉시 1회 멘션 발신
+  - 제거:
+    - 15분 미업로드 경고(`welcome.followUp.timeoutMention`) 제거
+    - 5분 기본닉 리마인더(`welcome.nicknameChangeReminder`) 제거
+  - 결정 문서: `docs/adr/ADR-0045-welcome-open-profile-guide-first-image-no-reminders.md` (→ ADR-0043 superseded)
 
 - 운영 장애(워커 미실행) 복구/재발 방지:
   - 원인(대표): watchdog가 `start_all.ps1`을 동일 프로세스에서 동기 호출 → start_all이 장시간 블록되면 watchdog 루프가 멈춰 자동 복구 중단 가능.

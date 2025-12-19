@@ -114,5 +114,6 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0041 | 카카오 기본 닉네임 변경 요청(멘션) 워커 | Accepted | 멤버 완전성(스크롤 로딩) 확인 후 멘션 발신 |
 | 0040 | roster-worker 카페 데이터 소스 — CSV(레거시) → 크롤러(JSON 스냅샷) 기본값 | Accepted | 강의 운영(v1) 설정 UX 단순화, 수동 CSV 의존 제거 |
 | 0042 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | Accepted | 공유 winstonLogger(transport 단일)로 핸들 누수 차단 |
-| 0043 | Welcome 오픈프로필 닫기 안내 + 5분 기본닉 리마인더 | Accepted | 오픈프로필(별도 프로필) 안내 + 신규입장 기본닉 5분 리마인더 |
+| 0043 | Welcome 오픈프로필 닫기 안내 + 5분 기본닉 리마인더 | Superseded (→0045) | 기록용(운영 정책 변경으로 대체) |
 | 0044 | 강의 운영 UI를 `/course` 탭으로 통합 | Accepted | RoomCard 강의 운영 입력 제거 + 코스 단위 관리 |
+| 0045 | Welcome 오픈프로필 닫기 안내(첫 이미지 트리거) + 리마인더 제거 | Accepted | 오픈프로필 안내를 첫 이미지 업로드에서만 트리거 + 리마인더 전부 제거 |

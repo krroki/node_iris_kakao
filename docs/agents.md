@@ -117,24 +117,30 @@ if (result === null) {
 
 ---
 
-## Welcome 운영: 오픈프로필 닫기 안내 + 5분 기본닉 리마인더
+## Welcome 운영: 오픈프로필 닫기 안내(첫 이미지 트리거)
 
 ### 오픈프로필 닫기 안내
 
-- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id != 0` → 오픈프로필(별도 프로필)로 참여 중
+- 트리거: 신규 입장 후 `welcome.followUp.windowMs` 내 “첫 이미지 업로드”가 감지된 경우에만 실행
+- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id == 0` → 오픈채팅 열린 프로필(닫기 안내 대상)
+  - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdZero`가 기본 운영값
 - 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.openProfileCloseGuide`
-- 가이드 이미지(3장):
+  - 텍스트: `text` (멘션, Talk-API 우선)
+  - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 현재 1장)
+  - 닫힘 확인 멘트: `confirmText` (프로필이 닫힌 것이 감지되면 즉시 1회 멘션 발신)
+  - 폴링: `confirmWindowMs`(최대 대기), `confirmCheckIntervalMs`(체크 주기)
+- 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/02.png`
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/03.png`
 
-### 5분 기본닉 닉네임 변경 리마인더
+### Welcome 후속 Reply(감사합니다)
 
-- 트리거: 신규 입장 시 닉네임이 기본닉으로 판정된 경우에만 “5분 후 재확인”
-- 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.nicknameChangeReminder`
-- 주의(구분 필요):
-  - `welcome.nicknameChangeReminder`: **신규 입장자 기준(5분)** 1회 리마인더 (welcome-worker)
-  - `nickname-reminder-worker`: **방 전체 스캔 기반(24h/48h 등)** 단계적 멘션 (ADR-0041)
+- 오픈프로필이 아닌 경우: 첫 이미지 업로드에 Reply(type=26)로 `welcome.followUp.replies` 중 1개를 1회 발신
+- 오픈프로필인 경우: 감사 Reply는 스킵(가이드 + 닫힘 확인 멘트만)
+
+### 제거된 항목(잔재 금지)
+
+- 5분 기본닉 닉네임 변경 리마인더(`welcome.nicknameChangeReminder`): 사용하지 않음(ADR-0045)
+- 15분 미업로드 경고(`welcome.followUp.timeoutMention`): 사용하지 않음(ADR-0045)
 
 ---
 

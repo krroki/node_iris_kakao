@@ -120,8 +120,9 @@
   - `welcome-worker`는 welcome 발신 성공 이후 entrant를 15분(windowMs, 기본 900000ms) 추적하고,
     **첫 이미지(messageType=2/27/71, 16384 플래그 제거)** 에 `type=26` Reply를 1회 발신한다:
     - `node-iris-app/src/workers/welcome_worker.ts`
-  - 15분이 지나도 첫 이미지가 없으면, 1회 추가 멘션 경고를 발신한다:
-    - `runtime.json.welcome.followUp.timeoutMention.text`
+  - 15분이 지나도 첫 이미지가 없으면 추가 발신 없음(미업로드 경고 제거, ADR-0045).
+  - 첫 이미지 업로드 시 오픈프로필(닫기 안내 대상)로 판별되면 Reply 대신 “닫기 안내 멘션 + 가이드 이미지”를 발신하고,
+    닫힘이 감지되면 1회 확인 멘션을 발신한다(ADR-0045).
   - Reply 메타:
     - `src_linkId`는 IRIS `/query`로 `select link_id from chat_rooms where id=?`를 조회/캐시
     - `type=26` + `replyAttachment(src_*)`로 `/send/talkapi/dispatch_raw` 호출

@@ -45,7 +45,7 @@
 - 2025-12-14: 운영 안정화 보강 — `windows/start_all.ps1`가 bot 빌드 스킵을 “src 변경 없음”일 때만 허용(구버전 dist로 무응답되는 케이스 방지). 로컬 welcome 템플릿/`runtime.json`의 차단 이름(`"1"`, `"2"`, `welcome_default_*`)을 `welcome_kakao_default_*`로 마이그레이션해 ADR-0022 차단 정책을 유지하면서 템플릿 세트가 정상 동작하도록 정리. `windows/kb_task_runner.ps1`는 env 로딩을 dot-source로 단순화해 단독 실행 호환성 개선.
 - 2025-12-14: 오픈채팅 명령 안정화 — `?디하클` 접두어는 `? 디하클` 같은 공백 변형도 허용(문자열 맨 앞 조건은 유지), KB `/ask_llm` 호출은 일시 네트워크/5xx 실패 시 짧은 재시도, `!welcome:test`는 이미지 전송 실패가 있어도 텍스트 발송이 성공했으면 사용자에게 오류 메시지를 추가로 보내지 않음. 또한 `docs/kb_glossary.md`에 신청 게시판 SSOT(무료특강 23 / 정규강의 42)를 명시.
 - 2025-12-14: Welcome 후속 답장(첫 이미지) 도입 — welcome 텍스트 발신 성공 이후 입장자를 windowMs(후속 추적 시간) 동안 추적해 “첫 이미지”에 1회 reply(랜덤 문구)로 “감사/소통 안내”를 자동 발송. 방별로 `features[roomId].welcomeFollowUp=false`로 비활성 가능(기본 ON, ADR-0026).
-- 2025-12-18: Welcome 후속(첫 이미지) 정책 조정 — windowMs 기본값을 15분(900000ms)으로 변경하고, 15분 내 첫 이미지 미업로드 시 1회 추가 멘션 경고를 발신(템플릿: `runtime.json.welcome.followUp.timeoutMention.text`, ADR-0026).
+- 2025-12-18: Welcome 후속(첫 이미지) 정책 조정 — windowMs 기본값을 15분(900000ms)으로 변경하고, 15분 내 첫 이미지 미업로드 시 1회 추가 멘션 경고 발신을 실험. 단, 2025-12-19에 운영 리스크/스팸 우려로 미업로드 경고는 제거함(ADR-0045).
 - 2025-12-14: Talk-API Reply(type=26) 실패(-203) 해결 — Node는 64-bit userId(2^53 초과)를 안전하게 다루기 위해 reply attachment의 `src_userId/src_linkId/src_type`를 문자열로 전달하고, Realtime API(`server/app.py`)에서 `type=26`일 때 숫자형 문자열을 int로 강제 변환(coerce) 후 Talk-API로 전달한다(미변환 시 `INVALID_ARGUMENT(-203)` 가능, ADR-0026).
 - 2025-12-14: Welcome 배치 동작 정렬 — 딜레이 윈도우 내 연속 입장자는 set-mode(기본닉/커스텀닉 세트)에서도 welcome을 **한 번만** 발신하고, 멘션은 입장자 전원을 포함한다. 템플릿 선택은 가능하면 커스텀닉 기준으로 우선 선택해 “기본닉 변경 유도” 문구가 섞이지 않도록 한다(ADR-0022).
 - 2025-12-14: Welcome 템플릿 이미지 발신 복구 — welcome-worker가 템플릿 이미지(`/templates/assets/...`)를 base64로 변환해 Realtime API의 `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달하여 발신한다. SAFE_MODE=true면 서버가 403으로 최종 차단한다(ADR-0030).
@@ -70,7 +70,7 @@
 - 2025-12-14: 일반 상식(웹 검색) 경로에서 유튜브 수익창출(YPP) 질문은 공식 도메인(support.google.com/youtube.com) 근거가 우선 노출되도록 프롬프트 규칙을 강화.
 - 2025-12-14: KB 스케줄러가 작업 lock의 PID 확인에 실패할 때(권한/일시 오류 등) “실행 중”으로 고정되어 재개가 막히지 않도록, 확인 실패 시 재개 우선(False)으로 처리.
 - 2025-12-19: EMFILE 재발 원인 확정 및 핫픽스 — `@tsuki-chat/node-iris` Logger가 인스턴스마다 winston File transport를 생성해 `logs/app.log`/`logs/error*.log` 핸들이 누수되었고, 공유 winstonLogger(transport 단일) 방식으로 핫픽스해 누수를 차단. 재설치 대비로 `patch-package`를 도입해 `postinstall`에서 자동 재적용, `@tsuki-chat/node-iris`는 `1.6.41`로 버전 고정. (ADR-0042)
-- 2025-12-19: Welcome 업그레이드 — 오픈프로필(별도 프로필) 참여자에게 “닫기 안내 + 가이드 이미지 3장”을 발송하고, 기본닉 신규 입장자에 대해 “5분 내 미변경 시 1회 리마인더”를 추가. (ADR-0043)
+- 2025-12-19: Welcome 정책 재정렬 — 오픈프로필 닫기 안내는 “첫 이미지 업로드(15분 내)”에서만 멘션+가이드 1장으로 발신하고, 닫힘이 감지되면 즉시 1회 확인 멘션을 발신. 5분 기본닉 리마인더/미업로드 경고는 제거. (ADR-0045, supersedes ADR-0043)
 
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
@@ -80,7 +80,7 @@
 | 2025-12-18 | 운영 안정화: BRIDGE/LOG 상태 분리 + watchdog 보장(Task Scheduler) + Web 빈 화면 방지 | `docs/reference/bridge-status.md`, `docs/adr/ADR-0023-watchdog-auto-restart.md`, `docs/adr/ADR-0025-web-prod-mode-and-watchdog-web-health.md` |
 | 2025-12-18 | 카카오 기본 닉네임 변경 요청(멘션) 워커 도입 | `docs/adr/ADR-0041-default-nickname-reminder-mentions.md` |
 | 2025-12-19 | node-iris Logger 파일 핸들 누수(EMFILE) 핫픽스 | `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` |
-| 2025-12-19 | Welcome: 오픈프로필 닫기 안내 + 5분 기본닉 닉네임 변경 리마인더 | `docs/adr/ADR-0043-welcome-open-profile-guide-and-5m-nickname-reminder.md` |
+| 2025-12-19 | Welcome: 오픈프로필 닫기 안내(첫 이미지 트리거) + 리마인더 제거 | `docs/adr/ADR-0045-welcome-open-profile-guide-first-image-no-reminders.md` |
 | 2025-12-19 | 운영: Watchdog hung 방지 + UI에서 Watchdog/워커 재시작 | `docs/adr/ADR-0023-watchdog-auto-restart.md`, `docs/agents.md` |
 | 2025-12-19 | 공지: 이미지 전파 “성공 보고/실제 미발신” 핫픽스(에코 확인 + 배치 전송 + 재시도 + 결과 포맷 개선) | `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md` |
 | 2025-12-15 | Talk-API 실패 시 IRIS `/reply` 기반 텍스트 폴백(워커/명령) | `docs/adr/ADR-0034-worker-send-fallback-iris-reply-text.md` |

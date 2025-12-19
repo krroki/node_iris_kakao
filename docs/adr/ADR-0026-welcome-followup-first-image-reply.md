@@ -74,8 +74,8 @@
   - `runtime.json.welcome.followUp.windowMs` (기본 900000)
   - `runtime.json.welcome.followUp.maxPendingPerRoom`
   - `runtime.json.welcome.followUp.replies` (비어 있으면 오류로 처리)
-  - `runtime.json.welcome.followUp.timeoutMention.enabled`
-  - `runtime.json.welcome.followUp.timeoutMention.text`
+  - `runtime.json.welcome.followUp.timeoutMention.enabled` (Deprecated: ADR-0045에서 미업로드 경고를 제거하여 현재 사용하지 않음)
+  - `runtime.json.welcome.followUp.timeoutMention.text` (Deprecated: ADR-0045에서 미업로드 경고를 제거하여 현재 사용하지 않음)
 - 방별 비활성:
   - `runtime.features[roomId].welcomeFollowUp: false`
 

@@ -3,9 +3,9 @@
 ## Meta
 
 - **Date**: 2025-12-19
-- **Status**: Accepted
+- **Status**: Superseded (→ ADR-0045)
 - **Authors**: PM AI, Codex CLI
-- **Related**: ADR-0022(Welcome 템플릿 세트/기본닉 분기), ADR-0026(Welcome 후속 Reply), ADR-0034(Talk-API 실패 폴백), ADR-0041(기본닉 멘션 워커)
+- **Related**: ADR-0045(본 ADR 대체), ADR-0022(Welcome 템플릿 세트/기본닉 분기), ADR-0026(Welcome 후속 Reply), ADR-0034(Talk-API 실패 폴백), ADR-0041(기본닉 멘션 워커)
 
 ---
 

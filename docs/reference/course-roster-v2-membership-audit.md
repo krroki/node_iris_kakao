@@ -61,7 +61,7 @@
   - `notice`(공지방)
   - `premium`(프리미엄방)
 - 스프레드시트: 코스별 1개 문서
-- 등급 규칙: 코스별(강의별) 상이
+- 등급 규칙: 코스별(강의별) 상이 (UI 입력 구분자: 콤마(,), 줄바꿈, 슬래시(/))
 
 ### 4.1) 톡방 타입 자동 추론(운영 전제)
 
@@ -254,7 +254,7 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
   - `clubId`(카페 URL/clubId 입력 → 숫자 clubId로 설정)
   - `spreadsheetId`(URL 또는 ID)
   - 탭 이름(기본값: `CAFE_RAW`/`OPENCHAT_RAW`/`RULES_RAW`/`AUDIT_VIEW`/`AUDIT_LOG`)
-  - 등급 규칙: `premiumGrades`, `staffGrades` (그 외 등급은 일반/새싹 취급)
+  - 등급 규칙: `premiumGrades`, `staffGrades` (입력 구분자: 콤마(,), 줄바꿈, 슬래시(/) / 그 외 등급은 일반/새싹 취급)
 - 하단: **v2 워커 설정(전역)**
   - 워커 ON/OFF(`worker.enabled`)
   - 주기(초반/안정화): `hotIntervalSec`, `hotDays`, `steadyIntervalSec`

@@ -635,8 +635,10 @@ async function dispatchIrisImagesToTargets(
   }
 
   const okFinal = new Set<string>();
+  const failedFinal = new Set<string>();
   const nowMsAtStart = Date.now();
-  const pendingInitial = unique
+
+  const orderedTargets = unique
     .slice()
     .sort((a, b) => {
       const ha = roomHealthAtStart.get(a) || {};
@@ -655,46 +657,53 @@ async function dispatchIrisImagesToTargets(
 
       return String(a).localeCompare(String(b));
     });
-  let pending = pendingInitial;
 
   const gaps = Array.isArray(gapMsList) && gapMsList.length > 0 ? gapMsList : [IRIS_MEDIA_MIN_GAP_MS, IRIS_MEDIA_RETRY_GAP_MS];
   const maxAttempts = Math.max(1, Math.min(IRIS_MEDIA_MAX_ATTEMPTS, gaps.length));
+  const gapBetweenRooms = Math.max(0, Math.floor(gaps[0] ?? 0));
 
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (pending.length === 0) break;
+  // NOTE:
+  // IRIS /reply_media can return HTTP 200 before the actual UI-send completes.
+  // If we spam multiple targets first and only then wait for echoes, IRIS can drop queued sends.
+  // So we serialize by room: send -> wait echo -> next room (retry per-room if needed).
+  let firstRoom = true;
+  for (const roomId of orderedTargets) {
+    if (!roomId) continue;
 
-    const gap = Math.max(0, Math.floor(gaps[attempt]!));
-    const { callOkAttemptAt, callFailed } = await sendIrisImagesOnce(pending, imagesBase64, gap);
-    const echoedOk = await waitForIrisImageEchoBatch(callOkAttemptAt, IRIS_MEDIA_ECHO_TIMEOUT_MS);
+    if (!firstRoom && gapBetweenRooms > 0) {
+      await sleepMs(gapBetweenRooms);
+    }
+    firstRoom = false;
 
-    for (const rid of echoedOk) okFinal.add(rid);
+    const hadRecentFailAtStart = hasRecentIrisMediaFail(roomHealthAtStart.get(roomId) || {}, nowMsAtStart);
+    const roomAttempts = hadRecentFailAtStart ? 1 : maxAttempts;
 
-    const nextPending: string[] = [];
-    for (const rid of pending) {
-      if (okFinal.has(rid)) continue;
-      // callFailed(즉시 실패) + callOk but echo 미관측은 retry 대상으로 유지
-      if (callFailed.has(rid) || callOkAttemptAt.has(rid)) {
-        nextPending.push(rid);
-      } else {
-        // should not happen, but keep retry target to avoid silent drop
-        nextPending.push(rid);
+    let okRoom = false;
+    for (let attempt = 0; attempt < roomAttempts; attempt += 1) {
+      const retryGap = attempt > 0 ? Math.max(0, Math.floor(gaps[Math.min(attempt, gaps.length - 1)] ?? 0)) : 0;
+      if (retryGap > 0) {
+        await sleepMs(retryGap);
+      }
+
+      const attemptAt = Date.now();
+      const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
+      if (!okCall) continue;
+
+      const echoed = await waitForIrisImageEcho(roomId, attemptAt, IRIS_MEDIA_ECHO_TIMEOUT_MS);
+      if (echoed) {
+        okRoom = true;
+        break;
       }
     }
 
-    if (attempt >= maxAttempts - 1) break;
-
-    // 같은 공지 내에서 반복 실패 방의 retry는 체감 속도만 느려질 수 있어,
-    // "최근 실패" 방은 retry 대상에서 제외한다.
-    const nowMs = Date.now();
-    pending = nextPending.filter((rid) => !hasRecentIrisMediaFail(roomHealthAtStart.get(rid) || {}, nowMs));
+    if (okRoom) {
+      okFinal.add(roomId);
+    } else {
+      failedFinal.add(roomId);
+    }
   }
 
-  const failedFinal = new Set<string>();
-  for (const rid of unique) {
-    if (!okFinal.has(rid)) failedFinal.add(rid);
-  }
   await updateIrisMediaHealthBatch(okFinal, failedFinal);
-
   return okFinal;
 }
 

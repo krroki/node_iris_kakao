@@ -47,6 +47,9 @@ type OpenProfileCloseGuideConfig = {
   match: OpenProfileCloseGuideMatch;
   text: string;
   images: string[];
+  confirmText: string;
+  confirmWindowMs: number;
+  confirmCheckIntervalMs: number;
 };
 
 type PendingFollowUp = {
@@ -69,10 +72,22 @@ type PendingNicknameChangeReminder = {
   attempts: number;
 };
 
+type PendingOpenProfileCloseConfirmation = {
+  roomId: string;
+  roomName: string;
+  userId: string;
+  userName: string;
+  guideSentAt: number;
+  nextCheckAt: number;
+  expiresAt: number;
+  attempts: number;
+};
+
 type WorkerState = {
   lastSeenMs: number;
   pending: PendingFollowUp[];
   pendingNicknameChangeReminders?: PendingNicknameChangeReminder[];
+  pendingOpenProfileCloseConfirmations?: PendingOpenProfileCloseConfirmation[];
   roomLinkIds?: Record<string, { linkId: string; at: number }>;
   updatedAt: string;
 };
@@ -111,6 +126,8 @@ const joinBatches = new Map<string, JoinBatch>();
 const pendingByUser = new Map<string, PendingFollowUp>();
 // roomId:userId -> pending nickname-change reminder
 const nicknamePendingByUser = new Map<string, PendingNicknameChangeReminder>();
+// roomId:userId -> pending "open profile close" confirmation polling
+const pendingOpenProfileCloseByUser = new Map<string, PendingOpenProfileCloseConfirmation>();
 
 // roomId -> linkId cache (reply attachment requires src_linkId)
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
@@ -385,15 +402,40 @@ function parseOpenProfileCloseGuideConfig(
   }
 
   const text = safeString((raw as any).text ?? (raw as any).message ?? "");
+  const confirmText = safeString((raw as any).confirmText ?? (raw as any).confirmMessage ?? "");
+  const confirmWindowMsRaw = (raw as any).confirmWindowMs ?? (raw as any).confirmWindow ?? null;
+  const confirmCheckIntervalMsRaw = (raw as any).confirmCheckIntervalMs ?? (raw as any).confirmIntervalMs ?? null;
   const images = Array.isArray((raw as any).images) ? (raw as any).images.map((x: any) => safeString(x)).filter(Boolean) : [];
+
+  const confirmWindowMs =
+    typeof confirmWindowMsRaw === "number" && Number.isFinite(confirmWindowMsRaw)
+      ? Math.max(0, Math.floor(confirmWindowMsRaw))
+      : 15 * 60 * 1000;
+  const confirmCheckIntervalMs =
+    typeof confirmCheckIntervalMsRaw === "number" && Number.isFinite(confirmCheckIntervalMsRaw)
+      ? Math.max(5000, Math.floor(confirmCheckIntervalMsRaw))
+      : 15_000;
 
   if (enabled && !match) {
     return { ok: false, error: "welcome.openProfileCloseGuide.match must be profileLinkIdNonZero|profileLinkIdZero" };
   }
   if (enabled && !text) return { ok: false, error: "welcome.openProfileCloseGuide.text must be non-empty" };
+  if (enabled && !confirmText) return { ok: false, error: "welcome.openProfileCloseGuide.confirmText must be non-empty" };
+  if (enabled && confirmWindowMs <= 0) return { ok: false, error: "welcome.openProfileCloseGuide.confirmWindowMs must be > 0" };
   if (enabled && images.length === 0) return { ok: false, error: "welcome.openProfileCloseGuide.images must be non-empty" };
 
-  return { ok: true, cfg: { enabled, match: match as OpenProfileCloseGuideMatch, text, images } };
+  return {
+    ok: true,
+    cfg: {
+      enabled,
+      match: match as OpenProfileCloseGuideMatch,
+      text,
+      images,
+      confirmText,
+      confirmWindowMs,
+      confirmCheckIntervalMs,
+    },
+  };
 }
 
 function normalizeKakaoMessageType(raw: unknown): number | null {
@@ -432,10 +474,13 @@ async function loadState(): Promise<WorkerState> {
     const pendingNicknameChangeReminders = Array.isArray(parsed.pendingNicknameChangeReminders)
       ? (parsed.pendingNicknameChangeReminders as PendingNicknameChangeReminder[])
       : [];
+    const pendingOpenProfileCloseConfirmations = Array.isArray(parsed.pendingOpenProfileCloseConfirmations)
+      ? (parsed.pendingOpenProfileCloseConfirmations as PendingOpenProfileCloseConfirmation[])
+      : [];
     const roomLinkIds =
       parsed.roomLinkIds && typeof parsed.roomLinkIds === "object" ? (parsed.roomLinkIds as Record<string, { linkId: string; at: number }>) : undefined;
     const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
-    return { lastSeenMs, pending, pendingNicknameChangeReminders, roomLinkIds, updatedAt };
+    return { lastSeenMs, pending, pendingNicknameChangeReminders, pendingOpenProfileCloseConfirmations, roomLinkIds, updatedAt };
   } catch {
     return { lastSeenMs: 0, pending: [], updatedAt: new Date().toISOString() };
   }
@@ -948,6 +993,204 @@ async function queryOpenChatMemberNickname(roomIdRaw: string, userIdRaw: string,
   return null;
 }
 
+function isProfileLinkIdMatch(match: OpenProfileCloseGuideMatch, profileLinkIdRaw: string): boolean {
+  const id = safeString(profileLinkIdRaw);
+  if (!id) return false;
+  const nonZero = id !== "0";
+  return match === "profileLinkIdNonZero" ? nonZero : !nonZero;
+}
+
+async function sendOpenProfileCloseGuideForEntrant(
+  roomId: string,
+  roomName: string,
+  entrant: WelcomeEntrant,
+  cfg: OpenProfileCloseGuideConfig,
+  runtime: RuntimeConfig,
+): Promise<boolean> {
+  // Guardrails
+  if (isSafeModeOn(runtime)) return false;
+
+  const uid = safeString(entrant?.senderId);
+  if (!uid) return false;
+
+  const dedupKey = `${roomId}:${uid}`;
+  if (OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) return false;
+
+  const targets = [entrant];
+  const { text: message, hasMention } = renderWelcomeText(cfg.text, targets, roomName);
+  const mentionees = targets
+    .map((e) => ({ name: e.name, userId: e.senderId }))
+    .filter((m) => m.userId && m.name && message.includes("@" + m.name));
+  const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+
+  let okTalk = false;
+  let okIris = false;
+  try {
+    okTalk = await tryServerTalkApiDispatch(logger, roomId, message, hasMention && capped.length ? capped : [], 12000);
+  } catch (e) {
+    okTalk = false;
+    logger.warn("[welcome-open-profile] dispatch threw", { roomId, err: String(e) });
+  }
+  if (!okTalk) {
+    const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
+    okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+  }
+
+  const imageUrls = resolveWorkerImageUrls(cfg.images || []);
+  if (imageUrls.length > 0) {
+    const limited = imageUrls.slice(0, 6);
+    const imagesBase64: string[] = [];
+    for (const url of limited) {
+      try {
+        imagesBase64.push(await downloadUrlAsBase64(url, 15000));
+      } catch (e) {
+        logger.warn("[welcome-open-profile] image download failed", { roomId, url, err: String(e) });
+      }
+    }
+    if (imagesBase64.length > 0) {
+      const okImg = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
+      if (!okImg) {
+        logger.warn("[welcome-open-profile] image send failed", { roomId, count: imagesBase64.length });
+      }
+    } else {
+      logger.warn("[welcome-open-profile] no images downloaded; skip send", { roomId, count: imageUrls.length });
+    }
+  }
+
+  OPEN_PROFILE_GUIDE_DEDUP.mark(dedupKey);
+
+  const ok = okTalk || okIris;
+  await updateStatus({
+    lastOpenProfileCloseGuideAttemptTs: new Date().toISOString(),
+    lastOpenProfileCloseGuideRoomId: roomId,
+    lastOpenProfileCloseGuideOk: ok,
+    lastOpenProfileCloseGuideCount: 1,
+  });
+  return ok;
+}
+
+function enqueueOpenProfileCloseConfirmation(
+  roomIdRaw: string,
+  roomNameRaw: string,
+  userIdRaw: string,
+  userNameRaw: string,
+  cfg: OpenProfileCloseGuideConfig,
+): void {
+  const roomId = safeString(roomIdRaw);
+  const userId = safeString(userIdRaw);
+  if (!roomId || !userId) return;
+
+  const now = Date.now();
+  const expiresAt = now + Math.max(0, Math.floor(cfg.confirmWindowMs || 0));
+  if (expiresAt <= now) return;
+
+  const key = `${roomId}:${userId}`;
+  pendingOpenProfileCloseByUser.set(key, {
+    roomId,
+    roomName: safeString(roomNameRaw) || roomId,
+    userId,
+    userName: safeString(userNameRaw) || "Guest",
+    guideSentAt: now,
+    nextCheckAt: now + 5000,
+    expiresAt,
+    attempts: 0,
+  });
+}
+
+async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Promise<void> {
+  if (pendingOpenProfileCloseByUser.size === 0) return;
+
+  const cfgRes = parseOpenProfileCloseGuideConfig(runtime);
+  if (!cfgRes.ok) {
+    pendingOpenProfileCloseByUser.clear();
+    return;
+  }
+  const cfg = cfgRes.cfg;
+  if (!cfg.enabled) {
+    pendingOpenProfileCloseByUser.clear();
+    return;
+  }
+
+  // Guardrails: SAFE_MODE이면 나중에 "늦은 발신"이 나갈 수 있어 pending을 제거한다.
+  if (isSafeModeOn(runtime)) {
+    pendingOpenProfileCloseByUser.clear();
+    return;
+  }
+
+  const now = Date.now();
+  const maxPerTick = 25;
+  let processed = 0;
+
+  for (const [key, p] of pendingOpenProfileCloseByUser.entries()) {
+    if (processed >= maxPerTick) break;
+
+    if (!p || !p.roomId || !p.userId) {
+      pendingOpenProfileCloseByUser.delete(key);
+      continue;
+    }
+    if (now >= p.expiresAt) {
+      pendingOpenProfileCloseByUser.delete(key);
+      continue;
+    }
+    if (now < p.nextCheckAt) continue;
+
+    processed += 1;
+
+    const prof = await queryOpenChatMemberProfile(p.roomId, p.userId, 8000);
+    const profileLinkId = safeString(prof?.profileLinkId ?? "");
+    if (!profileLinkId) {
+      p.nextCheckAt = now + cfg.confirmCheckIntervalMs;
+      p.attempts = (Number(p.attempts || 0) || 0) + 1;
+      pendingOpenProfileCloseByUser.set(key, p);
+      continue;
+    }
+
+    const stillOpen = isProfileLinkIdMatch(cfg.match, profileLinkId);
+    if (stillOpen) {
+      p.nextCheckAt = now + cfg.confirmCheckIntervalMs;
+      p.attempts = (Number(p.attempts || 0) || 0) + 1;
+      pendingOpenProfileCloseByUser.set(key, p);
+      continue;
+    }
+
+    const entrant: WelcomeEntrant = {
+      name: safeString(p.userName) || "Guest",
+      senderId: safeString(p.userId),
+      joinedAt: Number(p.guideSentAt || 0) || now,
+    };
+    const { text: message, hasMention } = renderWelcomeText(cfg.confirmText, [entrant], safeString(p.roomName) || p.roomId);
+    const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter((m) => m.userId && m.name && message.includes("@" + m.name));
+
+    let okTalk = false;
+    let okIris = false;
+    try {
+      okTalk = await tryServerTalkApiDispatch(logger, p.roomId, message, hasMention && mentionees.length ? mentionees : [], 12000);
+    } catch (e) {
+      okTalk = false;
+      logger.warn("[welcome-open-profile-confirm] dispatch threw", { roomId: p.roomId, err: String(e) });
+    }
+    if (!okTalk) {
+      const fallbackText = hasMention && mentionees.length ? stripAtMentionsForFallback(message, mentionees) : message;
+      okIris = await tryServerIrisReplyText(logger, p.roomId, fallbackText, 12000);
+    }
+
+    const ok = okTalk || okIris;
+    await updateStatus({
+      lastOpenProfileCloseConfirmAttemptTs: new Date().toISOString(),
+      lastOpenProfileCloseConfirmRoomId: p.roomId,
+      lastOpenProfileCloseConfirmOk: ok,
+    });
+
+    if (ok) {
+      pendingOpenProfileCloseByUser.delete(key);
+    } else {
+      p.nextCheckAt = now + Math.max(cfg.confirmCheckIntervalMs, 30_000);
+      p.attempts = (Number(p.attempts || 0) || 0) + 1;
+      pendingOpenProfileCloseByUser.set(key, p);
+    }
+  }
+}
+
 async function maybeSendOpenProfileCloseGuide(
   roomId: string,
   roomName: string,
@@ -1291,11 +1534,6 @@ async function flushWelcome(roomId: string): Promise<void> {
     }
   }
 
-  try {
-    await maybeSendOpenProfileCloseGuide(roomId, batch.roomName, entrants, runtime);
-  } catch (e) {
-    logger.warn("[welcome-open-profile] unexpected error; skip", { roomId, err: String(e) });
-  }
 }
 
 async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
@@ -1350,6 +1588,46 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
   if (!isRoomAllowed(runtime, roomId)) {
     pendingByUser.delete(key);
     return;
+  }
+
+  // ADR-0045: 첫 이미지가 올라왔을 때, 오픈프로필(프로필 닫기 필요) 사용자는
+  // 감사 Reply 대신 "오픈프로필 닫기" 안내 + 이미지(1장) 발송 + 확인(1회)로 처리한다.
+  const opCfgRes = parseOpenProfileCloseGuideConfig(runtime);
+  if (opCfgRes.ok && opCfgRes.cfg.enabled) {
+    const dedupKey = `${roomId}:${senderId}`;
+    if (!OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) {
+      const prof = await queryOpenChatMemberProfile(roomId, senderId, 8000);
+      const profileLinkId = safeString(prof?.profileLinkId ?? "");
+      if (profileLinkId && isProfileLinkIdMatch(opCfgRes.cfg.match, profileLinkId)) {
+        const roomName = safeString(entry.roomName) || roomId;
+        const entrant: WelcomeEntrant = {
+          name: safeString(entry.senderName) || safeString(pending.userName) || "Guest",
+          senderId,
+          joinedAt: Number(pending.joinedAt || 0) || now,
+        };
+
+        let okGuide = false;
+        try {
+          okGuide = await sendOpenProfileCloseGuideForEntrant(roomId, roomName, entrant, opCfgRes.cfg, runtime);
+        } catch (e) {
+          okGuide = false;
+          logger.warn("[followup-open-profile] guide send threw", { roomId, userId: senderId, err: String(e) });
+        }
+
+        if (okGuide) {
+          enqueueOpenProfileCloseConfirmation(roomId, roomName, senderId, entrant.name, opCfgRes.cfg);
+        }
+
+        pendingByUser.delete(key);
+        await updateStatus({
+          lastFollowUpAttemptTs: new Date().toISOString(),
+          lastFollowUpRoomId: roomId,
+          lastFollowUpOk: okGuide,
+          lastFollowUpReason: "OPEN_PROFILE_CLOSE_GUIDE",
+        });
+        return;
+      }
+    }
   }
 
   const replyText = pickRandom(cfg.replies);
@@ -1720,6 +1998,30 @@ async function connectAndRun(): Promise<void> {
       attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
     });
   }
+  // restore open-profile close confirmations (within TTL)
+  for (const p of state.pendingOpenProfileCloseConfirmations || []) {
+    if (!p || !p.roomId || !p.userId) continue;
+    const roomId = safeString(p.roomId);
+    const userId = safeString(p.userId);
+    if (!roomId || !userId) continue;
+
+    const expiresAt = Number((p as any).expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) continue;
+
+    const nextCheckAt = Number((p as any).nextCheckAt);
+    const guideSentAt = Number((p as any).guideSentAt);
+    const attempts = Number((p as any).attempts);
+    pendingOpenProfileCloseByUser.set(`${roomId}:${userId}`, {
+      roomId,
+      roomName: safeString((p as any).roomName) || roomId,
+      userId,
+      userName: safeString((p as any).userName) || "Guest",
+      guideSentAt: Number.isFinite(guideSentAt) && guideSentAt > 0 ? guideSentAt : now,
+      nextCheckAt: Number.isFinite(nextCheckAt) && nextCheckAt > 0 ? nextCheckAt : now + 5000,
+      expiresAt,
+      attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
+    });
+  }
   // restore link_id cache (best-effort)
   if (state.roomLinkIds && typeof state.roomLinkIds === "object") {
     for (const [rid, v] of Object.entries(state.roomLinkIds)) {
@@ -1743,6 +2045,8 @@ async function connectAndRun(): Promise<void> {
       lastSeenMs: lastSeenMsRef.v,
       pending: pendingByUser.size,
       pendingNicknameChangeReminders: nicknamePendingByUser.size,
+      pendingOpenProfileCloseConfirmations: pendingOpenProfileCloseByUser.size,
+      pendingOpenProfileCloseConfirms: pendingOpenProfileCloseByUser.size,
     });
   }, 30_000);
   try {
@@ -1757,12 +2061,15 @@ async function connectAndRun(): Promise<void> {
     stateTickInFlight = true;
     void (async () => {
       try {
+        const runtime = await loadRuntime();
+        await processOpenProfileCloseConfirmations(runtime);
         await expirePendingFollowUpsAndMaybeNudge();
         await expirePendingNicknameChangeRemindersAndMaybeNudge();
         const snapshot: WorkerState = {
           lastSeenMs: lastSeenMsRef.v,
           pending: Array.from(pendingByUser.values()),
           pendingNicknameChangeReminders: Array.from(nicknamePendingByUser.values()),
+          pendingOpenProfileCloseConfirmations: Array.from(pendingOpenProfileCloseByUser.values()),
           roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
           updatedAt: new Date().toISOString(),
         };

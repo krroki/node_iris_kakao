@@ -48,6 +48,7 @@
 발신(멘션 안내/확인 메시지)은 아래 조건을 **모두** 만족해야 한다.
 
 - `node-iris-app/config/runtime.json.safeMode=false`
+- `runtime.courseOps.sendEnabled=true` (강의 운영 메시지 발송 토글, OFF면 절대 발신하지 않음)
 - `node-iris-app/config/runtime.json.talkApi.enabled=true`
 - `runtime.allowedRoomIds`에 해당 roomId 포함
 - 방별 활성화: `runtime.features[roomId].courseRoster === true`인 방에서만 동작(강의 운영)
@@ -66,6 +67,7 @@ UI(대시보드)에서의 위치:
 - `http://127.0.0.1:3100/course` → **강의 운영** 탭(코스 단위)
   - 코스 자동 감지: 방 이름 접두어 `(사담방)`/`(공지방)`/`(프리미엄방)` 기준으로 3방을 1코스로 묶는다.
   - (레거시 v1) `courseRoster` 런타임 토글: 코스 카드에서 3방을 한 번에 ON/OFF (`runtime.features[roomId].courseRoster`).
+  - (레거시 v1) 강의 메시지 발송 토글: `/course` 상단에서 ON/OFF (`runtime.courseOps.sendEnabled`). OFF면 `courseRoster`가 켜져도 발신하지 않음.
   - v1 roomId별 시트/카페 설정은 파일로 유지: `data/course_roster_worker.json` (CSV(`cafeCsvPath`)는 레거시).
   - 서비스 계정 JSON 업로드: `/course`에서 업로드(파일: `data/gcp_service_account.json`).
 
