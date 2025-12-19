@@ -72,7 +72,9 @@ const IRIS_SENDER_ID = "434886784";
 // IRIS /reply_media 는 HTTP 200으로 빠르게 응답해도 실제 UI 전송이 뒤늦게(또는 실패) 처리될 수 있다.
 // 공지 미러링(여러 방 연속 발신)에서는 속도가 너무 빠르면 “성공으로 보고되는데 실제 미발신”이 발생할 수 있어,
 // 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
-const IRIS_MEDIA_MIN_GAP_MS = 2500;
+const IRIS_MEDIA_MIN_GAP_MS = 1000;
+const IRIS_MEDIA_RETRY_GAP_MS = 2500;
+const IRIS_MEDIA_MAX_ATTEMPTS = 3; // 1회 + retry 2회
 const IRIS_MEDIA_ECHO_TIMEOUT_MS = 15_000;
 const IRIS_MEDIA_ECHO_POLL_MS = 700;
 const IRIS_MEDIA_LOG_SCAN_BYTES = 256 * 1024;
@@ -453,6 +455,119 @@ async function waitForIrisImageEcho(roomId: string, sinceMs: number, timeoutMs: 
   return false;
 }
 
+async function waitForIrisImageEchoBatch(attemptAtByRoom: Map<string, number>, timeoutMs: number): Promise<Set<string>> {
+  const pending = new Map<string, { sinceMs: number; deadlineMs: number }>();
+  for (const [roomId, sinceMs] of attemptAtByRoom.entries()) {
+    const s = Number(sinceMs);
+    if (!Number.isFinite(s) || s <= 0) continue;
+    pending.set(roomId, { sinceMs: s, deadlineMs: s + Math.max(0, Math.floor(timeoutMs)) });
+  }
+  if (pending.size === 0) return new Set();
+
+  const ok = new Set<string>();
+  while (pending.size > 0) {
+    const now = Date.now();
+    for (const [roomId, v] of pending.entries()) {
+      if (now > v.deadlineMs) {
+        pending.delete(roomId);
+        continue;
+      }
+      const echoed = await hasIrisImageEchoSince(roomId, v.sinceMs);
+      if (echoed) {
+        ok.add(roomId);
+        pending.delete(roomId);
+      }
+    }
+    if (pending.size === 0) break;
+
+    const nextDeadline = Math.min(...Array.from(pending.values()).map((v) => v.deadlineMs));
+    const sleepFor = Math.min(IRIS_MEDIA_ECHO_POLL_MS, Math.max(0, nextDeadline - Date.now()));
+    if (sleepFor > 0) {
+      await sleepMs(sleepFor);
+    }
+  }
+  return ok;
+}
+
+async function sendIrisImagesOnce(
+  targetIds: string[],
+  imagesBase64: string[],
+  gapMs: number,
+): Promise<{ callOkAttemptAt: Map<string, number>; callFailed: Set<string> }> {
+  const callOkAttemptAt = new Map<string, number>();
+  const callFailed = new Set<string>();
+
+  const gap = Math.max(0, Math.floor(gapMs));
+  for (let i = 0; i < targetIds.length; i += 1) {
+    const roomId = safeString(targetIds[i]);
+    if (!roomId) continue;
+
+    const attemptAt = Date.now();
+    const okIris = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
+    if (okIris) {
+      callOkAttemptAt.set(roomId, attemptAt);
+    } else {
+      callFailed.add(roomId);
+    }
+
+    if (i < targetIds.length - 1 && gap > 0) {
+      await sleepMs(gap);
+    }
+  }
+
+  return { callOkAttemptAt, callFailed };
+}
+
+async function dispatchIrisImagesToTargets(
+  targetIdsRaw: string[],
+  imagesBase64: string[],
+  gapMsList: number[],
+): Promise<Set<string>> {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const ridRaw of targetIdsRaw) {
+    const rid = safeString(ridRaw);
+    if (!rid) continue;
+    if (seen.has(rid)) continue;
+    seen.add(rid);
+    unique.push(rid);
+  }
+  if (unique.length === 0) return new Set();
+
+  const okFinal = new Set<string>();
+  let pending = unique;
+
+  const gaps = Array.isArray(gapMsList) && gapMsList.length > 0 ? gapMsList : [IRIS_MEDIA_MIN_GAP_MS, IRIS_MEDIA_RETRY_GAP_MS];
+  const maxAttempts = Math.max(1, Math.min(IRIS_MEDIA_MAX_ATTEMPTS, gaps.length));
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (pending.length === 0) break;
+
+    const gap = Math.max(0, Math.floor(gaps[attempt]!));
+    const { callOkAttemptAt, callFailed } = await sendIrisImagesOnce(pending, imagesBase64, gap);
+    const echoedOk = await waitForIrisImageEchoBatch(callOkAttemptAt, IRIS_MEDIA_ECHO_TIMEOUT_MS);
+
+    for (const rid of echoedOk) okFinal.add(rid);
+
+    const nextPending: string[] = [];
+    for (const rid of pending) {
+      if (okFinal.has(rid)) continue;
+      // callFailed(즉시 실패) + callOk but echo 미관측은 retry 대상으로 유지
+      if (callFailed.has(rid) || callOkAttemptAt.has(rid)) {
+        nextPending.push(rid);
+      } else {
+        // should not happen, but keep retry target to avoid silent drop
+        nextPending.push(rid);
+      }
+    }
+
+    // 마지막 attempt가 아니면, retry는 더 느린 gap로만 진행되도록 한다.
+    pending = nextPending;
+  }
+
+  return okFinal;
+}
+
 async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   const dispatcher = String(process.env.ANNOUNCEMENT_DISPATCHER || "worker").trim().toLowerCase();
   if (dispatcher === "bot") return;
@@ -478,6 +593,9 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   if (ANNOUNCE_DEDUP.isDuplicate(`${roomId}:${msgId}`)) return;
 
   const images = normalizeImageUrls((entry as any).imageUrls);
+  const limitedImages = images.slice(0, 6);
+  let imagesBase64Cache: string[] | null = null;
+  let imagesBase64Tried = false;
 
   // 이미지 메시지는 messageText가 "사진"/"photo"로 들어오는 경우가 많다.
   // 공지 미러링에서는 placeholder 텍스트를 그대로 전파하지 않고, 실제 이미지 전송만 수행한다.
@@ -494,8 +612,8 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
 
   // 공지 결과 메시지는 소스방에만 남기고, 타겟으로 재전파되면 안 된다.
   // (senderId 기반 ignore가 누락되는 케이스를 대비해, prefix 기반으로도 차단한다)
-  const RESULT_PREFIX = "[공지 전파 결과]";
-  if (text && text.startsWith(RESULT_PREFIX)) return;
+  const RESULT_PREFIXES = ["[공지 전파 결과]", "📣 공지 전송 결과"];
+  if (text && RESULT_PREFIXES.some((p) => text.startsWith(p))) return;
 
   // loop prevent (legacy marker)
   if (text && hasMirrorMarker(text)) return;
@@ -537,14 +655,30 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
 
   const sourceName = roomNameOnly(roomId);
   const resultLines: string[] = [];
-  resultLines.push(`${RESULT_PREFIX} 📣`);
-  resultLines.push(`🟢 소스: ${sourceName}`);
-  resultLines.push(`📝 내용: ${text ? (text.length > 120 ? `${text.slice(0, 120)}…` : text) : "(텍스트 없음)"}`);
-  if (images.length > 0) {
-    resultLines.push(`🖼️ 이미지: ${images.length}장`);
-  }
+  resultLines.push("📣 공지 전송 결과");
   if (roomNameErr) {
-    resultLines.push(`⚠️ 방 이름 조회 실패로 상세가 일부 생략될 수 있습니다`);
+    resultLines.push("⚠️ 방 이름 조회 실패로 일부 목록이 생략될 수 있어요");
+  }
+
+  const normalizeInfoText = (t: string) => normalizeText(t).replace(/\s+/g, " ").trim();
+  const infoText = text ? normalizeInfoText(text) : "";
+  const infoTextShort = infoText ? (infoText.length > 220 ? `${infoText.slice(0, 220)}…` : infoText) : "(텍스트 없음)";
+
+  async function ensureImagesBase64(): Promise<string[]> {
+    if (imagesBase64Cache) return imagesBase64Cache;
+    if (imagesBase64Tried) return [];
+    imagesBase64Tried = true;
+
+    const out: string[] = [];
+    for (const url of limitedImages) {
+      try {
+        out.push(await downloadUrlAsBase64(url, 15000));
+      } catch (e) {
+        logger.warn("[announce] image download failed", { roomId, url, err: String(e) });
+      }
+    }
+    imagesBase64Cache = out;
+    return out;
   }
 
   for (const route of activeRoutes) {
@@ -585,18 +719,20 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       finalText = `[${senderName}] ${finalText}`;
     }
 
-    let successCount = 0;
-    let failCount = 0;
-    const okNames: string[] = [];
-    const failNames: string[] = [];
+    const textOkByTarget = new Map<string, boolean>();
+    const imageOkByTarget = new Map<string, boolean>();
+    const processedTargets: string[] = [];
+    const irisImageTargets: string[] = [];
+    let canTryTalkApiImage = true;
 
     for (let idx = 0; idx < validTargets.length; idx++) {
       const targetId = validTargets[idx];
       const targetKey = `${roomId}:${msgId}:${targetId}`;
       if (TARGET_DEDUP.isDuplicate(targetKey)) continue;
+      processedTargets.push(targetId);
 
       if (delayMs > 0) {
-        await new Promise((r) => setTimeout(r, delayMs));
+        await sleepMs(delayMs);
       }
 
       // 더 이상 숨김 마커를 텍스트 끝에 붙이지 않는다(일부 환경에서 마커가 그대로 노출됨).
@@ -604,61 +740,60 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
         ? `${finalText}${route.appendTargetIndex ? ` ${startIndex + idx}` : ""}`
         : "";
 
-      let ok = true;
+      let textOk = true;
       if (textToSend) {
         const h = hashTextForDedup(textToSend);
         SENT_TEXT_DEDUP.mark(`sent_txt:${targetId}:${h}`);
         const okTalk = await tryServerTalkApiDispatch(logger, targetId, textToSend, [], 12000);
         const okIris = okTalk ? false : await tryServerIrisReplyText(logger, targetId, textToSend, 12000);
-        ok = (okTalk || okIris) && ok;
+        textOk = okTalk || okIris;
       }
+      textOkByTarget.set(targetId, textOk);
 
       if (includeImages && images.length > 0) {
         const h = hashImageUrls(images);
         // Record "sent image" so when the mirrored image appears in logs we can ignore it.
         // (No visible marker in the message body)
         SENT_IMAGE_DEDUP.mark(`sent_img:${targetId}:${h}`);
-        const okTalk = await tryServerTalkApiDispatchRaw(logger, targetId, "photo", 27, { imageUrls: images }, 15000);
-        if (okTalk) {
-          ok = ok && true;
+        if (canTryTalkApiImage) {
+          const okTalk = await tryServerTalkApiDispatchRaw(logger, targetId, "photo", 27, { imageUrls: images }, 15000);
+          if (okTalk) {
+            imageOkByTarget.set(targetId, true);
+          } else {
+            // Talk-API 이미지 raw가 1회라도 실패하면(환경/버전 의존 -500 등), 이후에는 즉시 IRIS로 폴백한다.
+            canTryTalkApiImage = false;
+            irisImageTargets.push(targetId);
+          }
         } else {
-          const limited = images.slice(0, 6);
-          const imagesBase64: string[] = [];
-          for (const url of limited) {
-            try {
-              imagesBase64.push(await downloadUrlAsBase64(url, 15000));
-            } catch (e) {
-              logger.warn("[announce] image download failed", { roomId: targetId, url, err: String(e) });
-            }
-          }
-          let okIris = false;
-          let usedIris = false;
-          if (imagesBase64.length > 0) {
-            usedIris = true;
-            const attempt1At = Date.now();
-            okIris = await tryServerIrisReplyMedia(logger, targetId, imagesBase64, 30000);
-            if (okIris) {
-              const echoed = await waitForIrisImageEcho(targetId, attempt1At, IRIS_MEDIA_ECHO_TIMEOUT_MS);
-              if (!echoed) {
-                logger.warn("[announce] iris reply_media returned ok but image echo not observed; retry once", { roomId: targetId });
-                await sleepMs(IRIS_MEDIA_MIN_GAP_MS);
-                const attempt2At = Date.now();
-                const ok2 = await tryServerIrisReplyMedia(logger, targetId, imagesBase64, 30000);
-                const echoed2 = ok2 ? await waitForIrisImageEcho(targetId, attempt2At, IRIS_MEDIA_ECHO_TIMEOUT_MS) : false;
-                okIris = ok2 && echoed2;
-              }
-            }
-          }
-
-          ok = okIris && ok;
-
-          // IRIS 이미지 발신은 UI 자동화 지연이 크므로, 다음 타겟으로 넘어가기 전에 최소 간격을 둔다.
-          if (usedIris) {
-            await sleepMs(IRIS_MEDIA_MIN_GAP_MS);
-          }
+          irisImageTargets.push(targetId);
         }
       }
+    }
 
+    if (includeImages && images.length > 0 && irisImageTargets.length > 0) {
+      const imagesBase64 = await ensureImagesBase64();
+      if (imagesBase64.length === 0) {
+        for (const rid of irisImageTargets) imageOkByTarget.set(rid, false);
+      } else {
+        const gapFast = Math.max(delayMs, IRIS_MEDIA_MIN_GAP_MS);
+        const gapRetry = Math.max(delayMs, IRIS_MEDIA_RETRY_GAP_MS);
+        const gapRetry2 = Math.max(delayMs, IRIS_MEDIA_RETRY_GAP_MS * 2);
+        const okSet = await dispatchIrisImagesToTargets(irisImageTargets, imagesBase64, [gapFast, gapRetry, gapRetry2]);
+        for (const rid of irisImageTargets) {
+          imageOkByTarget.set(rid, okSet.has(rid));
+        }
+      }
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    const okNames: string[] = [];
+    const failNames: string[] = [];
+
+    for (const targetId of processedTargets) {
+      const okText = textOkByTarget.get(targetId) !== false;
+      const okImg = includeImages && images.length > 0 ? imageOkByTarget.get(targetId) === true : true;
+      const ok = okText && okImg;
       if (ok) {
         successCount += 1;
         if (!roomNameErr) okNames.push(roomNameOnly(targetId));
@@ -686,28 +821,33 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     });
 
     resultLines.push("");
-    resultLines.push(`📌 ${route.id} (설정:${targetsUniq.length}, 발송:${validTargets.length}, 스킵:${targetsUniq.length - validTargets.length})`);
-    resultLines.push(`✅ 성공: ${successCount} / ❌ 실패: ${failCount}`);
-    if (targetsUniq.length !== validTargets.length) {
-      if (notAllowedTargets.length > 0) {
-        const labels = notAllowedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
-        resultLines.push(`🚫 allowlist 제외: ${labels.join(", ")}${notAllowedTargets.length > 30 ? ` 외 ${notAllowedTargets.length - 30}개` : ""}`);
-      }
-      if (excludedTargets.length > 0) {
-        const labels = excludedTargets.slice(0, 30).map((rid) => roomNameOnly(rid));
-        resultLines.push(`🚫 excludedRoomIds: ${labels.join(", ")}${excludedTargets.length > 30 ? ` 외 ${excludedTargets.length - 30}개` : ""}`);
-      }
-    }
+
+    resultLines.push(`전송 성공 : ${successCount}개`);
+    resultLines.push(`전송 실패 : ${failCount}개`);
+    resultLines.push("ㅡㅡㅡㅡㅡ");
+
     if (!roomNameErr) {
-      const MAX_OK = 80;
-      const MAX_FAIL = 120;
-      const okText = okNames.length > 0 ? okNames.slice(0, MAX_OK).join(", ") : "-";
-      const failText = failNames.length > 0 ? failNames.slice(0, MAX_FAIL).join(", ") : "-";
-      resultLines.push(`✅ 성공방: ${okText}${okNames.length > MAX_OK ? ` 외 ${okNames.length - MAX_OK}개` : ""}`);
-      if (failNames.length > 0) {
-        resultLines.push(`❌ 실패방: ${failText}${failNames.length > MAX_FAIL ? ` 외 ${failNames.length - MAX_FAIL}개` : ""}`);
+      resultLines.push("[ 실패한 방]");
+      if (failNames.length === 0) {
+        resultLines.push("없음");
+      } else {
+        for (const n of failNames) resultLines.push(n);
       }
+
+      resultLines.push("");
+      resultLines.push("[ 성공한 방]");
+      if (okNames.length === 0) {
+        resultLines.push("없음");
+      } else {
+        for (const n of okNames) resultLines.push(n);
+      }
+      resultLines.push("ㅡㅡㅡㅡㅡ");
     }
+
+    resultLines.push("📝 발송 정보");
+    resultLines.push(`출처: ${sourceName}`);
+    if (images.length > 0) resultLines.push(`첨부: 이미지 ${images.length}장`);
+    resultLines.push(`내용: ${infoTextShort}`);
   }
 
   const msg = resultLines.join("\n");

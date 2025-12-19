@@ -105,8 +105,10 @@ if (result === null) {
 
 ### 조치(현재 기본 동작)
 - broadcast-worker는 IRIS 이미지 폴백 시:
-  - 타겟 간 최소 간격을 강제하고
-  - MessageStore 로그 에코를 확인한 뒤에만 성공으로 판정(미관측 시 1회 재시도)
+  - 이미지 URL→base64 다운로드를 **1회 캐시**하고(타겟마다 반복 다운로드 금지)
+  - IRIS `/reply_media`를 **빠른 간격으로 1차 배치 전송**한 뒤 MessageStore 로그 에코를 확인한다.
+  - 에코가 관측되지 않은 방만 **느린 간격으로 재시도(최대 2회)** 하며, 결과는 에코 기준으로 성공/실패를 집계한다.
+  - 공지 결과 메시지 프리픽스는 `📣 공지 전송 결과`(루프 방지 스킵 대상)이다.
 
 ### 운영 복구
 1. `broadcast-worker` 재기동: `windows/start_broadcast_worker.ps1 -Restart`

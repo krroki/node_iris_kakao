@@ -276,6 +276,9 @@
 - 운영 장애(공지 이미지 전파 성공/미발신) 핫픽스:
   - 증상: 공지(이미지 포함) 전파에서 “성공”으로 보고되지만 타겟 방에 이미지가 누락되는 케이스 발생.
   - 원인(대표): Talk-API raw 이미지 발신이 `status=-500`으로 실패 → IRIS `/reply_media` 폴백으로 전환되며, IRIS 응답이 HTTP 200이어도 실제 UI 발신은 비동기/지연 처리라 연속 발신 속도가 빠르면 누락 가능.
-  - 조치: `broadcast-worker`에서 IRIS 이미지 폴백 시 **최소 간격(2.5s)** 강제 + MessageStore 로그 에코 확인 후 성공 판정(미관측 시 1회 재시도).
+  - 조치: `broadcast-worker`에서 IRIS 이미지 폴백 시
+    - 이미지 URL→base64 다운로드를 **1회 캐시**하고,
+    - **빠른 1차 배치 전송(기본 1s 간격)** 후 MessageStore 로그 에코를 확인,
+    - 실패 방만 **느린 간격 재시도(2.5s/5s, 최대 2회)** 하도록 보강 + 결과 메시지 포맷(성공/실패 목록 + 발송 정보) 개선(프리픽스: `📣 공지 전송 결과`).
   - 코드: `node-iris-app/src/workers/broadcast_worker.ts`, `node-iris-app/src/utils/iris.ts`
   - 문서: `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md`, `docs/ssot.md`

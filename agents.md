@@ -262,8 +262,8 @@
     - 동일 공지를 여러 방에 한 번에 뿌릴 때는 route 옵션 `appendTargetIndex=true`(+ `targetIndexStart`)로 끝 번호를 붙여 중복/스팸 판정 리스크를 낮춘다.
     - 공지가 안 나가면 `windows/logs/broadcast_worker.out.log`에서 `[announce] completed`/`[talkapi] dispatch*`를 확인하고, 실패한 `roomId`/`talkStatus`를 근거로 타겟/allowlist 설정을 점검한다.
     - Talk-API 장애 폴백(ADR-0034): Talk-API 502 시 공지/브로드캐스트 텍스트는 `/send/iris/reply_text`, 이미지 발신은(가능하면) URL→base64 후 `/send/iris/reply_media`로 대체 발신한다.
-    - (2025-12-19) 공지 이미지 폴백( IRIS `/reply_media`)은 HTTP 200이어도 실제 UI 발신이 지연/누락될 수 있어,
-      `broadcast-worker`가 타겟 간 최소 간격을 강제하고 MessageStore 에코를 확인한 뒤에만 성공 처리(미관측 시 1회 재시도)하도록 보강했다.
+    - (2025-12-19) 공지 이미지 폴백(IRIS `/reply_media`)은 HTTP 200이어도 실제 UI 발신이 지연/누락될 수 있어,
+      `broadcast-worker`가 이미지 base64를 1회 캐시하고 “빠른 1차 배치 전송 → 에코 확인 → 실패 방만 느린 간격 재시도(최대 2회)” 후 성공 처리하도록 보강했다. (결과 프리픽스: `📣 공지 전송 결과`)
     - **중복 실행 방지(중요)**: `broadcast-worker`는 `node-iris-app/data/locks/broadcast_worker.lock` 싱글톤 락으로 1개만 동작한다. watchdog도 중복 실행 감지 시 자동 재기동으로 정리한다.
   - 기본값: `ANNOUNCEMENT_DISPATCHER=worker`, `BROADCAST_DISPATCHER=worker` (레거시 롤백: 각각 `...=bot`)
   - **중복 실행 방지(코어/bot)**: bot은 `node-iris-app/data/bot.lock` 싱글톤 락으로 1개만 동작한다(잘못된 cwd로 `node dist/index.js`를 실행해도 즉시 종료).
