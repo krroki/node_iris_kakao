@@ -973,10 +973,8 @@ export default function Home() {
     const next = { ...features };
     next[rid] = next[rid] || {};
     const okRuntime = await updateRuntime({ features: next, excludedRoomIds: excluded });
-    const okCourse = courseRosterConfigDirty ? await saveCourseRosterConfig() : true;
-    const okCourseAudit = courseMembershipAuditConfigDirty ? await saveCourseMembershipAuditConfig() : true;
     const okMembersSheets = openchatMembersSheetsConfigDirty ? await saveOpenchatMembersSheetsConfig() : true;
-    const ok = okRuntime && okCourse && okCourseAudit && okMembersSheets;
+    const ok = okRuntime && okMembersSheets;
     setSavingRooms(prev => ({ ...prev, [rid]: ok ? "saved" : "error" }));
     if (ok) {
       setTimeout(() => {
@@ -1032,6 +1030,9 @@ export default function Home() {
     const filtered = withLogs.filter((r) => (showExcluded ? true : !excluded.includes(r.roomId)));
     return filtered;
   }, [rooms, roomLogs, showExcluded, excluded]);
+
+  // 강의 운영 UI는 /course에서 코스 단위로 관리(SSOT). 홈에서는 링크만 유지한다.
+  const showCourseUiInHome = false;
 
   return (
     <div className="dashboard-container">
@@ -1229,6 +1230,22 @@ export default function Home() {
         )}
       </div>
 
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>강의 운영</h3>
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          - 강의 운영(카페/등급/Sheets)은 코스 단위로 <b>/course</b>에서 관리합니다.
+          <br />
+          - 대시보드 홈에서는 강의 설정 입력 UI를 숨겨서(혼선 방지) 링크만 남겨둡니다.
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <a href="/course" className="btn-outline" style={{ padding: '6px 10px', fontSize: 12 }}>
+            강의 운영 탭 열기
+          </a>
+        </div>
+      </div>
+
+      {showCourseUiInHome && (
+        <>
       {/* 강의 운영(roster-worker) 상태/설정 */}
       <div className="pipeline-card" style={{ marginTop: 12 }}>
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>강의 운영 (카페/닉네임 검증)</h3>
@@ -1649,6 +1666,9 @@ export default function Home() {
             })}
         </div>
       </div>
+
+        </>
+      )}
 
       {/* 오픈채팅 멤버(전체) Sheets 동기화 워커 */}
       <div className="pipeline-card" style={{ marginTop: 12 }}>

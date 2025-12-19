@@ -15,7 +15,7 @@ function splitList(raw: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const part of String(raw || "")
-    .split(/[,\n/]/g)
+    .split(/[,\n/.]/g)
     .map((s) => s.trim())
     .filter(Boolean)) {
     if (seen.has(part)) continue;
