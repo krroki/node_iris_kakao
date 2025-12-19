@@ -250,6 +250,27 @@ function Restart-Pipeline {
     Write-Log -Level 'ERROR' -Message "start_all.ps1 없음: $startAllScript (파이프라인 재기동 불가)"
     return
   }
+
+  function Find-StartAllProcs {
+    try {
+      $startAllEsc = [Regex]::Escape((Resolve-Path $startAllScript).Path)
+      return @(
+        Get-CimInstance Win32_Process |
+          Where-Object { $_.Name -in @('powershell.exe','pwsh.exe') } |
+          Where-Object { $_.CommandLine -match $startAllEsc }
+      )
+    } catch {
+      return @()
+    }
+  }
+
+  $runningStartAll = @(Find-StartAllProcs)
+  if ($runningStartAll.Count -gt 0) {
+    $pids = ($runningStartAll | ForEach-Object { $_.ProcessId } | Sort-Object) -join ','
+    Write-Log -Level 'WARN' -Message "start_all.ps1 already running (pids=$pids). 파이프라인 재기동 스킵. 사유: $Reason"
+    return
+  }
+
   $now = Get-Date
   $cooldownUntil = $script:lastPipelineRestartAt.AddSeconds($PipelineRestartCooldownSec)
   if ($now -lt $cooldownUntil) {
@@ -266,13 +287,31 @@ function Restart-Pipeline {
   $apiPort = Get-ApiPort
   Write-Log -Level 'ACTION' -Message "파이프라인 재기동(start_all.ps1) 실행. 사유: $Reason"
   try {
-    # 중요: watchdog가 start_all을 직접 호출할 때, start_all의 pre-clean이 watchdog를 종료시키면
-    # "자가복구 로직 자체가 중단"되는 케이스가 발생한다.
-    # - start_all은 watchdog를 죽이지 않도록 PreserveWatchdog를 켠다.
-    # - start_all은 watchdog를 다시 띄우지 않도록 NoWatchdog를 켠다(현재 watchdog가 계속 실행됨).
-    & $startAllScript -IrisUrl $IrisBase -ApiPort $apiPort -WebPort $WebPort -NoWatchdog -PreserveWatchdog 2>&1 |
-      ForEach-Object { Write-Log -Level 'INFO' -Message "[start_all] $_" }
-    Write-Log -Level 'INFO' -Message "파이프라인 재기동(start_all.ps1) 호출 완료"
+    # 중요:
+    # - watchdog가 start_all을 "&"로 직접 호출하면(동일 프로세스/런스페이스), start_all이 장시간 블록될 때
+    #   watchdog 루프 자체가 멈춰 "자가복구 로직이 중단"될 수 있다.
+    # - 따라서 start_all은 별도 프로세스로 기동하고, watchdog는 즉시 루프를 계속 돈다.
+
+    $logDir = Join-Path $root 'windows\logs'
+    try { New-Item -ItemType Directory -Force -Path $logDir | Out-Null } catch {}
+
+    $ts = Get-Date -Format 'yyyyMMddHHmmss'
+    $outLog = Join-Path $logDir "start_all.from_watchdog.$ts.out.log"
+    $errLog = Join-Path $logDir "start_all.from_watchdog.$ts.err.log"
+
+    $args = @(
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', $startAllScript,
+      '-IrisUrl', $IrisBase,
+      '-ApiPort', "$apiPort",
+      '-WebPort', "$WebPort",
+      '-NoWatchdog',
+      '-PreserveWatchdog'
+    )
+
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    Write-Log -Level 'INFO' -Message ("start_all.ps1 spawned (pid={0}) logs: {1} / {2}" -f $proc.Id, $outLog, $errLog)
   } catch {
     Write-Log -Level 'ERROR' -Message "파이프라인 재기동 실패: $($_.Exception.Message)"
   }

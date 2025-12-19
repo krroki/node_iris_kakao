@@ -4,6 +4,9 @@ param(
   [string]$ApiBase = 'http://127.0.0.1:8650',
   [string]$IrisBase = 'http://127.0.0.1:5050',
   [int]$WebPort = 3100,
+  # watchdog는 정상이라면 주기적으로 windows/watchdog.log를 갱신한다.
+  # 프로세스는 살아있지만 로그가 오래 멈춰있으면 "hung"으로 보고 재기동한다.
+  [int]$MaxLogAgeSec = 900,
   [switch]$Restart
 )
 
@@ -17,6 +20,7 @@ $windowsDir = Join-Path $RepoPath 'windows'
 $watchdogScript = Join-Path $windowsDir 'watchdog.ps1'
 if (-not (Test-Path $watchdogScript)) { throw "watchdog.ps1 not found: $watchdogScript" }
 $watchdogScriptEsc = [Regex]::Escape((Resolve-Path $watchdogScript).Path)
+$watchdogLog = Join-Path $windowsDir 'watchdog.log'
 
 function Find-WatchdogProcs {
   try {
@@ -34,8 +38,23 @@ function Find-WatchdogProcs {
 
 $procs = @(Find-WatchdogProcs)
 if ($procs.Count -gt 0 -and -not $Restart) {
-  Write-Host ("[ensure_watchdog] watchdog already running (count={0})" -f $procs.Count) -ForegroundColor Green
-  exit 0
+  $stale = $false
+  if ($MaxLogAgeSec -gt 0 -and (Test-Path $watchdogLog)) {
+    try {
+      $ageSec = [int]([datetime]::Now - (Get-Item -LiteralPath $watchdogLog).LastWriteTime).TotalSeconds
+      if ($ageSec -ge $MaxLogAgeSec) { $stale = $true }
+    } catch {
+      $stale = $false
+    }
+  }
+
+  if (-not $stale) {
+    Write-Host ("[ensure_watchdog] watchdog already running (count={0})" -f $procs.Count) -ForegroundColor Green
+    exit 0
+  }
+
+  Write-Host ("[ensure_watchdog] watchdog process is running but log is stale (>= {0}s); restarting" -f $MaxLogAgeSec) -ForegroundColor Yellow
+  $Restart = $true
 }
 
 if ($Restart -and $procs.Count -gt 0) {
