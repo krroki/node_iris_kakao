@@ -641,7 +641,9 @@ export default function CourseOpsPage() {
           {roomsError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- rooms: <code>{roomsError}</code></div>)}
           {runtimeError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- runtime: <code>{runtimeError}</code></div>)}
           {auditError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- v2 config: <code>{auditError}</code></div>)}
+          {courseRosterConfigError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- v1 config: <code>{courseRosterConfigError}</code></div>)}
           {auditServiceAccount.error && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- service account: <code>{String(auditServiceAccount.error)}</code></div>)}
+          {rosterWorkerStatusError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- v1 worker status: <code>{rosterWorkerStatusError}</code></div>)}
           {auditWorkerStatusError && (<div style={{ fontSize: 13, color: "var(--text-secondary)" }}>- v2 worker status: <code>{auditWorkerStatusError}</code></div>)}
         </div>
       )}
