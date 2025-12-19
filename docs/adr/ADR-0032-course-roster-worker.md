@@ -1,11 +1,14 @@
 # ADR-0032: 강의 운영(카페/닉네임 검증) 워커 + 15분/24시간 안내 정책
 
+> **주의(업데이트)**: 2025-12-19 기준, 강의 운영 UI는 `/course` 탭으로 이동했습니다(ADR-0044).  
+> 카페 멤버 소스는 `crawler`가 기본이며, CSV 경로(`cafeCsvPath`)는 레거시 옵션입니다. (`docs/reference/course-roster-worker.md` 참고)
+
 ## Meta
 
 - **Date**: 2025-12-14
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0044
 - **Authors**: PM AI, Codex CLI
-- **Related**: ADR-0016(SAFE_MODE), ADR-0019(LogStore), ADR-0024(Talk-API authHeader), ADR-0027(코어/워커 분리), `docs/reference/course-roster-worker.md`
+- **Related**: ADR-0016(SAFE_MODE), ADR-0019(LogStore), ADR-0024(Talk-API authHeader), ADR-0027(코어/워커 분리), ADR-0044(강의 운영 UI /course 통합), `docs/reference/course-roster-worker.md`
 
 ---
 
