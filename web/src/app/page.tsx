@@ -444,10 +444,6 @@ export default function Home() {
       const nextRooms: Record<string, any> = { ...(base.rooms || {}) };
       const cur = (nextRooms[rid] && typeof nextRooms[rid] === "object") ? nextRooms[rid] : {};
       nextRooms[rid] = { ...cur, ...patch };
-      // UX: rosterSheetName 기본값 자동 채움
-      if (!String(nextRooms[rid].rosterSheetName || "").trim()) {
-        nextRooms[rid].rosterSheetName = "ROSTER_RAW";
-      }
       // UX: enabled 기본값
       if (nextRooms[rid].enabled === undefined) nextRooms[rid].enabled = true;
       return { ...base, version: Number(base.version) || 1, rooms: nextRooms };
@@ -1295,7 +1291,7 @@ export default function Home() {
           </div>
         )}
         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          - 방 카드의 <b>강의 운영</b> 섹션에서 roomId별 시트 + 카페 clubId(크롤러) + 가입URL을 설정하고 <b>저장</b>하면, roster-worker가 15분/24시간 정책으로 멘션 안내 + Sheets 업서트를 수행합니다. (CSV는 레거시 옵션)
+          - 상단 <b>강의 운영</b> 탭(코스별) 또는 방 카드의 <b>강의 운영</b> 섹션에서 스프레드시트/카페 URL/가입 URL을 설정하고 <b>저장</b>하면, roster-worker가 신규 입장자 기준으로 입장 후 15분/24시간에 최대 2회 안내(Reply/멘션) + Sheets 업서트를 수행합니다. (SAFE_MODE면 발신 스킵, CSV는 레거시 옵션)
         </div>
       </div>
 
