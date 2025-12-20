@@ -28,7 +28,18 @@ param(
 
   [int]$Scrolls = 200,
 
-  [int]$ScrollPauseMs = 400
+  [int]$ScrollPauseMs = 400,
+
+  # Scan-only mode: do NOT rely on IRIS db2.open_chat_member growth.
+  # Instead, dump UI on the Participants list and collect visible nicknames while scrolling.
+  [switch]$ScanOnly,
+
+  # Output json path for ScanOnly result (optional).
+  # When omitted, a default under logs/openchat_scan_members/ will be used.
+  [string]$ScanOutJsonPath = "",
+
+  # Early-stop when we see no new nicknames for N scrolls.
+  [int]$ScanMaxNoNew = 25
 )
 
 $ErrorActionPreference = "Stop"
@@ -131,6 +142,22 @@ function Get-ResumedPackage() {
   return $null
 }
 
+function Get-ResumedActivityName() {
+  try {
+    $out = (& adb -s $Serial shell dumpsys activity activities) 2>$null
+    if (-not $out) { return $null }
+    $m = ($out | Select-String -Pattern "mResumedActivity:" | Select-Object -First 1)
+    if (-not $m) { return $null }
+    $line = [string]$m.Line
+    if ($line -match 'mResumedActivity:\s+ActivityRecord\{[^}]+\s+u\d+\s+[^/]+/([^\s}]+)') {
+      return [string]$Matches[1]
+    }
+  } catch {
+    return $null
+  }
+  return $null
+}
+
 # 2) Launch OpenChat via kakaoopen://join scheme (reliable on Redroid w/o browser)
 $joinScheme = Resolve-JoinSchemeFromOpenKakao $openUrl
 if (-not $joinScheme) {
@@ -165,17 +192,22 @@ $menuY = [int]($height * 0.08)
 $startY = [int]($height * 0.82)
 $endY = [int]($height * 0.28)
 
-function Try-UiDump([string]$path = "/sdcard/uidump_members.xml", [int]$retries = 4) {
-  for ($t = 1; $t -le [math]::Max(1, $retries); $t++) {
+function Try-UiDump([string]$path = "/sdcard/uidump_members.xml", [int]$retries = 8) {
+  $n = [math]::Max(1, $retries)
+  for ($t = 1; $t -le $n; $t++) {
     try {
-      & adb -s $Serial shell uiautomator dump $path | Out-Null
-      Start-Sleep -Milliseconds 200
+      # uiautomator dump can intermittently fail with:
+      # - "could not get idle state"
+      # - "null root node returned by UiTestAutomationBridge"
+      # so we retry with a longer settle delay.
+      & adb -s $Serial shell uiautomator dump $path 2>$null | Out-Null
+      Start-Sleep -Milliseconds 450
       $xml = (& adb -s $Serial shell cat $path) 2>$null
-      if ($xml) { return [string]$xml }
+      if ($xml -and ($xml -match "<hierarchy")) { return [string]$xml }
     } catch {
       # ignore and retry
     }
-    Start-Sleep -Milliseconds (250 * $t)
+    Start-Sleep -Milliseconds (350 * $t)
   }
   return $null
 }
@@ -229,6 +261,107 @@ function Is-RoomInfoScreen([xml]$doc) {
     if ($doc.SelectSingleNode("//node[@text='$t']")) { return $true }
   }
   return $false
+}
+
+function Is-ParticipantsListScreen([xml]$doc) {
+  if (-not $doc) { return $false }
+  try {
+    # Chat screen false-positive guard: chat bubbles/messages present -> NOT a participants list.
+    $b1 = $doc.SelectNodes("//node[@resource-id='com.kakao.talk:id/bubble']")
+    if ($b1 -and $b1.Count -ge 1) { return $false }
+    $b2 = $doc.SelectNodes("//node[@resource-id='com.kakao.talk:id/message']")
+    if ($b2 -and $b2.Count -ge 1) { return $false }
+  } catch {}
+
+  # Heuristic: Participants list contains many member rows with profile_layout/profile nodes.
+  try {
+    $p1 = $doc.SelectNodes("//node[@resource-id='com.kakao.talk:id/profile_layout']")
+    if ($p1 -and $p1.Count -ge 3) { return $true }
+    $p2 = $doc.SelectNodes("//node[@resource-id='com.kakao.talk:id/profile']")
+    if ($p2 -and $p2.Count -ge 3) { return $true }
+  } catch {}
+  return $false
+}
+
+function Get-ParticipantsListBounds([xml]$doc) {
+  if (-not $doc) { return $null }
+  $all = $doc.SelectNodes("//node")
+  if (-not $all) { return $null }
+  $best = $null
+  $bestArea = 0
+  foreach ($n in $all) {
+    if ([string]$n.GetAttribute("scrollable") -ne "true") { continue }
+    $b = Parse-Bounds ([string]$n.GetAttribute("bounds"))
+    if (-not $b) { continue }
+    $area = Bounds-Area $b
+    if ($best -eq $null -or $area -gt $bestArea) { $best = $b; $bestArea = $area }
+  }
+  return $best
+}
+
+function Get-VisibleNicknamesFromParticipantsList([xml]$doc) {
+  $out = New-Object System.Collections.Generic.List[string]
+  if (-not $doc) { return $out }
+  $all = $doc.SelectNodes("//node")
+  if (-not $all) { return $out }
+
+  # Cache bounds for efficiency.
+  $cache = @()
+  foreach ($n in $all) {
+    $b = Parse-Bounds ([string]$n.GetAttribute("bounds"))
+    if (-not $b) { continue }
+    $cache += ,@($n, $b)
+  }
+
+  foreach ($pair in $cache) {
+    $n = $pair[0]
+    $b = $pair[1]
+
+    $rid = [string]$n.GetAttribute("resource-id")
+    if ($rid -ne "com.kakao.talk:id/profile_layout" -and $rid -ne "com.kakao.talk:id/profile") { continue }
+
+    # Find nearest clickable row that contains this profile bounds.
+    $rowB = $null
+    $rowArea = 0
+    foreach ($p2 in $cache) {
+      $n2 = $p2[0]
+      if ([string]$n2.GetAttribute("clickable") -ne "true") { continue }
+      $b2 = $p2[1]
+      if (-not (Bounds-Contains $b2 $b)) { continue }
+      $area2 = Bounds-Area $b2
+      if ($rowB -eq $null -or $area2 -lt $rowArea) { $rowB = $b2; $rowArea = $area2 }
+    }
+    if (-not $rowB) { continue }
+
+    # Pick the best text within the row bounds (usually 1 TextView = nickname).
+    $bestText = ""
+    $bestLen = 0
+    foreach ($p3 in $cache) {
+      $n3 = $p3[0]
+      if ([string]$n3.GetAttribute("class") -ne "android.widget.TextView") { continue }
+      $b3 = $p3[1]
+      if (-not (Bounds-Contains $rowB $b3)) { continue }
+      $t = [string]$n3.GetAttribute("text")
+      if (-not $t) { continue }
+      $tt = $t.Trim()
+      if (-not $tt) { continue }
+      if ($tt -in @("Block", "Report", "Settings", "Share", "Favorited", "Others")) { continue }
+      if ($tt -match "^\\d{1,5}$") { continue }
+      if ($tt.Length -gt $bestLen) { $bestText = $tt; $bestLen = $tt.Length }
+    }
+
+    if ($bestText) { $out.Add($bestText) }
+  }
+
+  # unique (preserve order)
+  $seen = @{}
+  $uniq = New-Object System.Collections.Generic.List[string]
+  foreach ($t in $out) {
+    if ($seen.ContainsKey($t)) { continue }
+    $seen[$t] = $true
+    $uniq.Add($t)
+  }
+  return $uniq
 }
 
 function Find-ParticipantsRow([xml]$doc) {
@@ -291,14 +424,54 @@ function Ensure-RoomInfoScreen() {
     Start-Sleep -Milliseconds 900
     $doc = Load-UiDoc (Try-UiDump)
     if (Is-RoomInfoScreen $doc) { return $true }
+    # Locale/UI 변동으로 RoomInfo 판정이 흔들릴 수 있어, Participants row 존재로도 RoomInfo 진입을 인정한다.
+    try {
+      $row = Find-ParticipantsRow $doc
+      if ($row) { return $true }
+    } catch {}
     Start-Sleep -Milliseconds (600 * $attempt)
+  }
+  return $false
+}
+
+function Ensure-ChatSideParticipantsList() {
+  # Goal: end up on ChatRoomSideActivity (participants list is visible & scrollable).
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    $act = Get-ResumedActivityName
+    if ($act -and ($act -match "ChatRoomSideActivity")) { return $true }
+
+    if ($act -and ($act -match "ChatRoomHolderActivity|ChatRoomActivity")) {
+      Write-Log "tap menu to open chat side panel attempt=$attempt"
+      & adb -s $Serial shell input tap $menuX $menuY | Out-Null
+      Start-Sleep -Milliseconds 900
+      $doc = Load-UiDoc (Try-UiDump)
+      if (Is-ParticipantsListScreen $doc) { return $true }
+      Start-Sleep -Milliseconds 400
+      continue
+    }
+
+    # Unknown screen (profile/info/settings) -> go back and retry.
+    Write-Log "press BACK to reach chat screen (activity=$act) attempt=$attempt" "WARN"
+    & adb -s $Serial shell input keyevent 4 | Out-Null
+    Start-Sleep -Milliseconds 700
   }
   return $false
 }
 
 function Enter-ParticipantsList([ref]$uiCountOut) {
   $uiCountOut.Value = $null
-  if (-not (Ensure-RoomInfoScreen)) { return $false }
+
+  # Already on Participants list (e.g., ChatRoomSideActivity)
+  try {
+    $doc0 = Load-UiDoc (Try-UiDump)
+    if (Is-ParticipantsListScreen $doc0) { return $true }
+  } catch {}
+
+  if (-not (Ensure-RoomInfoScreen)) {
+    # Fallback: some locales/builds open the chat side panel instead of RoomInfo.
+    if (Ensure-ChatSideParticipantsList) { return $true }
+    return $false
+  }
 
   for ($k = 1; $k -le 14; $k++) {
     $doc = Load-UiDoc (Try-UiDump)
@@ -313,15 +486,18 @@ function Enter-ParticipantsList([ref]$uiCountOut) {
         0,
         [int]($width * 0.18),
         [int]($width * 0.28),
+        [int]($width * 0.38),
+        [int](-1 * $width * 0.28),
         [int](-1 * $width * 0.18)
       )
 
       foreach ($bias in $biases) {
         Tap-BoundsCenter $row.rowBounds $bias
-        Start-Sleep -Milliseconds 850
+        Start-Sleep -Milliseconds 1200
 
-        # Verify we actually navigated away from the RoomInfo screen (no silent fallback).
+        # Verify we actually navigated to Participants list (best-effort).
         $doc2 = Load-UiDoc (Try-UiDump)
+        if (Is-ParticipantsListScreen $doc2) { return $true }
         $stillRoomInfo = $false
         try {
           if (Is-RoomInfoScreen $doc2) { $stillRoomInfo = $true }
@@ -339,7 +515,13 @@ function Enter-ParticipantsList([ref]$uiCountOut) {
 }
 
 function Get-LoadedDistinctUsers() {
-  $r = Invoke-IrisQuery -query "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?" -bind @($RoomId)
+  if ($linkId) {
+    # NOTE: 일부 환경에서 open_chat_member.involved_chat_id가 0으로 들어오는 멤버가 많아,
+    # roomId 기준으로만 세면 loaded가 과소 집계된다. linkId 기준으로 count한다.
+    $r = Invoke-IrisQuery -query "select count(distinct user_id) as cnt from db2.open_chat_member where link_id=?" -bind @($linkId)
+  } else {
+    $r = Invoke-IrisQuery -query "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?" -bind @($RoomId)
+  }
   try { return [int]$r.data[0].cnt } catch { return 0 }
 }
 
@@ -350,9 +532,100 @@ function Get-ActiveMembersCount() {
 
 # 4) Enter participants list (must succeed)
 $uiCount = $null
-if (-not (Enter-ParticipantsList ([ref]$uiCount))) {
-  Write-Log "Failed to find/enter Participants list on RoomInfo screen." "ERROR"
+$entered = Enter-ParticipantsList ([ref]$uiCount)
+if (-not $entered) {
+  Write-Log "Failed to find/enter Participants list." "ERROR"
   exit 3
+}
+
+if ($ScanOnly) {
+  $outDir = Join-Path $PSScriptRoot "..\\logs\\openchat_scan_members"
+  try { New-Item -ItemType Directory -Force -Path $outDir | Out-Null } catch {}
+
+  $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+  $outPath = $ScanOutJsonPath
+  if (-not $outPath) {
+    $outPath = Join-Path $outDir ("scan." + $RoomId + "." + $ts + ".json")
+  }
+
+  Write-Log "ScanOnly=ON. Collecting nicknames from Participants list..."
+
+  $doc0 = Load-UiDoc (Try-UiDump)
+  $listBounds = Get-ParticipantsListBounds $doc0
+  if (-not $listBounds) {
+    Write-Log "ScanOnly failed: cannot detect scrollable list bounds." "ERROR"
+    exit 31
+  }
+
+  $startX = [int](($listBounds.x1 + $listBounds.x2) / 2)
+  $startY2 = [int]($listBounds.y2 - 120)
+  $endY2 = [int]($listBounds.y1 + 180)
+  if ($endY2 -ge $startY2) { $endY2 = [int]($listBounds.y1 + 60) }
+
+  $maxNoNew = [int]$ScanMaxNoNew
+  if ($maxNoNew -lt 5) { $maxNoNew = 5 }
+
+  $seen = @{}
+  $total = 0
+  $noNew = 0
+  $used = 0
+
+  for ($i = 1; $i -le $Scrolls; $i++) {
+    $used = $i
+    $doc = Load-UiDoc (Try-UiDump)
+    $nicks = Get-VisibleNicknamesFromParticipantsList $doc
+    $visible = 0
+    try { $visible = [int]$nicks.Count } catch { $visible = 0 }
+
+    $added = 0
+    foreach ($n in $nicks) {
+      if (-not $seen.ContainsKey($n)) {
+        $seen[$n] = $true
+        $total += 1
+        $added += 1
+      }
+    }
+
+    if ($i % 10 -eq 0) {
+      Write-Log ("scan {0}/{1}: visible={2} uniqueNicknames={3} (+{4})" -f $i, $Scrolls, $visible, $total, $added)
+    }
+
+    # Treat very small/unstable dumps as "unknown" rather than "no new".
+    if ($visible -ge 3 -and $added -eq 0) { $noNew += 1 } else { $noNew = 0 }
+    if ($noNew -ge $maxNoNew) {
+      Write-Log "early stop: no new nicknames observed"
+      break
+    }
+
+    & adb -s $Serial shell input swipe $startX $startY2 $startX $endY2 500 | Out-Null
+    Start-Sleep -Milliseconds $ScrollPauseMs
+  }
+
+  $nickList = @()
+  foreach ($k in $seen.Keys) { $nickList += $k }
+  $nickList = $nickList | Sort-Object
+
+  $result = [ordered]@{
+    ok = $true
+    roomId = $RoomId
+    uiParticipantsCount = $uiCount
+    uniqueNicknames = $nickList.Count
+    scrollsUsed = $used
+    scrollPauseMs = $ScrollPauseMs
+    maxNoNew = $maxNoNew
+    nicknames = $nickList
+  }
+
+  try {
+    ($result | ConvertTo-Json -Depth 6) | Out-File -FilePath $outPath -Encoding utf8
+  } catch {
+    Write-Log "ScanOnly failed to write json: $($_.Exception.Message)" "ERROR"
+    exit 32
+  }
+
+  Write-Host ("OPENCHAT_SCAN_MEMBERS_RESULT roomId={0} uniqueNicknames={1} uiParticipantsCount={2} outJson={3}" -f $RoomId, $nickList.Count, ($uiCount -as [string]), $outPath)
+  Write-Log "OK (ScanOnly)"
+  exit 0
 }
 
 Write-Log "scroll area x=$tapX y=$startY->$endY scrolls=$Scrolls pauseMs=$ScrollPauseMs"

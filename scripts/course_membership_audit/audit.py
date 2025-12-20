@@ -194,12 +194,11 @@ def build_audit_view_rows(
     club_id = str(cafe_snapshot.get("clubId") or "").strip()
     cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
 
-    # room completeness
-    incomplete = False
+    # room completeness(방 단위): requiredRooms에만 적용해야 normal/premium 판정이 과도하게 INCOMPLETE로 굳지 않는다.
+    incomplete_by_room: dict[str, bool] = {}
     for rt in ["chat", "notice", "premium"]:
         info = room_infos.get(rt) if isinstance(room_infos.get(rt), dict) else {}
-        if bool(info.get("incomplete")):
-            incomplete = True
+        incomplete_by_room[rt] = bool(info.get("incomplete"))
 
     # build membership maps: cafeNick -> count
     counts: dict[str, dict[str, int]] = {"chat": {}, "notice": {}, "premium": {}}
@@ -260,18 +259,19 @@ def build_audit_view_rows(
             required = []
 
         missing: list[str] = []
-        if "chat" in required and not in_chat:
+        if "chat" in required and not incomplete_by_room.get("chat", False) and not in_chat:
             missing.append(ROOM_LABEL["chat"])
-        if "notice" in required and not in_notice:
+        if "notice" in required and not incomplete_by_room.get("notice", False) and not in_notice:
             missing.append(ROOM_LABEL["notice"])
-        if "premium" in required and not in_premium:
+        if "premium" in required and not incomplete_by_room.get("premium", False) and not in_premium:
             missing.append(ROOM_LABEL["premium"])
 
         ambiguous = (c_chat > 1) or (c_notice > 1) or (c_premium > 1)
+        required_incomplete = any(incomplete_by_room.get(x, False) for x in required)
 
         if track == "staff":
             audit_status = "STAFF"
-        elif incomplete:
+        elif required_incomplete:
             audit_status = "INCOMPLETE"
         elif ambiguous:
             audit_status = "AMBIGUOUS"
@@ -362,9 +362,11 @@ def build_overview_rows(
             return "일반"
         return x or ""
 
-    def _room_mark(in_room: bool, required: bool) -> str:
+    def _room_mark(in_room: bool, required: bool, incomplete: bool) -> str:
         if in_room:
             return "✅"
+        if required and incomplete:
+            return "⏳"
         if required:
             return "❌"
         return "—"
@@ -551,6 +553,19 @@ def build_overview_rows(
             premium_load,
         ]
     )
+    rows.append(
+        [
+            "톡방 데이터 소스",
+            "",
+            "사담방",
+            "DB(IRIS)",
+            "공지방",
+            "DB(IRIS)",
+            "프리미엄방",
+            "DB(IRIS)",
+        ]
+    )
+    rows.append(["표기", "✅ 참여", "❌ 필수 누락", "— 비대상", "⏳ DB미완전(판정불가)"])
     if any_incomplete:
         rows.append(["주의", "loaded < active 상태면 결과가 DB미완전(INCOMPLETE)로 표시될 수 있어요."])
     elif cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
@@ -568,6 +583,7 @@ def build_overview_rows(
 
     for d in records:
         st = d.get("status", "")
+        st_u = str(st or "").strip().upper()
         required = {
             x.strip()
             for x in str(d.get("requiredRooms", "") or "").split(",")
@@ -578,13 +594,14 @@ def build_overview_rows(
         in_premium = _is_true(d.get("in_premium", ""))
 
         memo = ""
-        if str(st or "").upper() == "AMBIGUOUS":
+        if st_u == "AMBIGUOUS":
             memo = (
                 "중복 매칭 "
                 f"(사담 {d.get('chatCount','')}, 공지 {d.get('noticeCount','')}, 프리미엄 {d.get('premiumCount','')})"
             ).strip()
-        elif str(st or "").upper() == "INCOMPLETE":
+        elif st_u == "INCOMPLETE":
             memo = "톡방 DB 미완전(loaded < active)"
+        missing_display = d.get("missingRooms", "")
 
         rows.append(
             [
@@ -593,10 +610,10 @@ def build_overview_rows(
                 d.get("grade", ""),
                 _track_label(d.get("track", "")),
                 d.get("requiredRooms", ""),
-                _room_mark(in_chat, chat_label in required),
-                _room_mark(in_notice, notice_label in required),
-                _room_mark(in_premium, premium_label in required),
-                d.get("missingRooms", ""),
+                _room_mark(in_chat, chat_label in required, chat_inc),
+                _room_mark(in_notice, notice_label in required, notice_inc),
+                _room_mark(in_premium, premium_label in required, premium_inc),
+                missing_display,
                 memo,
             ]
         )

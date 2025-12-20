@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import audit as audit_mod
-from .config import AuditConfig, CourseConfig, DEFAULT_CONFIG_PATH, load_config, repo_root
+from .config import AuditConfig, CourseConfig, DEFAULT_CONFIG_PATH, OpenchatAutoLoadConfig, load_config, repo_root
 from .crawler import crawl_cafe_members
 from .iris import fetch_loaded_member_count, fetch_openchat_members, fetch_room_meta, fetch_rooms, read_iris_base, read_realtime_base
 from .room_infer import infer_room_type_and_course_key
@@ -478,6 +479,180 @@ class CourseMembershipAuditWorker:
             return s[:160] + "…"
         return s
 
+    def _openchat_auto_load_state(self) -> dict:
+        st = self.state.get("openchatAutoLoad")
+        if not isinstance(st, dict):
+            st = {}
+        by_room = st.get("lastByRoomMs")
+        if not isinstance(by_room, dict):
+            by_room = {}
+        st["lastByRoomMs"] = by_room
+        try:
+            st["lastGlobalMs"] = int(st.get("lastGlobalMs") or 0)
+        except Exception:
+            st["lastGlobalMs"] = 0
+        self.state["openchatAutoLoad"] = st
+        return st
+
+    def _maybe_openchat_auto_load(
+        self,
+        *,
+        course_key: str,
+        room_type: str,
+        room_label: str,
+        room_id: str,
+        active: Optional[int],
+        loaded: int,
+        cfg: OpenchatAutoLoadConfig,
+    ) -> bool:
+        if not cfg.enabled:
+            return False
+
+        if active is None or int(active) <= 0:
+            return False
+        if loaded >= int(active):
+            return False
+
+        now_ms = _now_ms()
+        st = self._openchat_auto_load_state()
+        by_room = st.get("lastByRoomMs") if isinstance(st.get("lastByRoomMs"), dict) else {}
+        last_room_ms = 0
+        try:
+            last_room_ms = int(by_room.get(room_id) or 0)
+        except Exception:
+            last_room_ms = 0
+        last_global_ms = 0
+        try:
+            last_global_ms = int(st.get("lastGlobalMs") or 0)
+        except Exception:
+            last_global_ms = 0
+
+        room_wait_ms = max(0, int(cfg.cooldown_room_sec) * 1000 - (now_ms - last_room_ms))
+        global_wait_ms = max(0, int(cfg.cooldown_global_sec) * 1000 - (now_ms - last_global_ms))
+        wait_ms = max(room_wait_ms, global_wait_ms)
+        if wait_ms > 0:
+            wait_sec = int((wait_ms + 999) / 1000)
+            self._append_course_event(
+                course_key=course_key,
+                level="INFO",
+                stage="OPENCHAT_LOAD",
+                pct=25,
+                message=f"{room_label} 멤버 DB 로딩은 잠시 후 다시 시도돼요(쿨다운 {wait_sec}s)",
+            )
+            self._save_state()
+            return False
+
+        script = (self.root / "scripts" / "openchat_load_members.ps1").resolve()
+        if not script.exists():
+            self._append_course_event(
+                course_key=course_key,
+                level="WARN",
+                stage="OPENCHAT_LOAD",
+                pct=25,
+                message=f"{room_label} 멤버 DB 로딩 스크립트를 찾지 못했어요(자동 로딩 스킵)",
+            )
+            self._save_state()
+            return False
+
+        log_dir = (self.root / "logs" / "course_membership_audit" / "openchat_load_members" / _safe_filename(course_key)).resolve()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        out_path = log_dir / f"{room_type}.{room_id}.{ts}.out.log"
+        err_path = log_dir / f"{room_type}.{room_id}.{ts}.err.log"
+
+        args = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-RoomId",
+            str(room_id),
+            "-Scrolls",
+            str(int(cfg.scrolls)),
+            "-ScrollPauseMs",
+            str(int(cfg.scroll_pause_ms)),
+            "-IrisQueryBase",
+            str(self.iris_base),
+        ]
+        if str(cfg.adb_serial or "").strip():
+            args += ["-Serial", str(cfg.adb_serial).strip()]
+
+        self._set_course_progress(
+            course_key=course_key,
+            stage="OPENCHAT_LOAD",
+            message=f"{room_label} 멤버 DB 로딩 중(loaded {loaded}/{active})",
+            pct=25,
+        )
+
+        code = 999
+        try:
+            with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
+                p = subprocess.Popen(args, cwd=str(self.root), stdout=out_f, stderr=err_f)
+                try:
+                    p.wait(timeout=float(cfg.timeout_sec))
+                except subprocess.TimeoutExpired:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+                    code = 124
+                else:
+                    code = int(p.returncode or 0)
+        except Exception as e:
+            self._append_course_event(
+                course_key=course_key,
+                level="WARN",
+                stage="OPENCHAT_LOAD",
+                pct=25,
+                message=f"{room_label} 멤버 DB 로딩 실행에 실패했어요({e})",
+            )
+            self._save_state()
+            return False
+        finally:
+            # 쿨다운은 '시도' 기준으로 잡아 thrash를 막는다.
+            try:
+                by_room[room_id] = int(now_ms)
+            except Exception:
+                by_room[room_id] = now_ms
+            st["lastByRoomMs"] = by_room
+            st["lastGlobalMs"] = int(now_ms)
+            self.state["openchatAutoLoad"] = st
+            self._save_state()
+
+        if code == 0:
+            self._append_course_event(
+                course_key=course_key,
+                level="INFO",
+                stage="OPENCHAT_LOAD",
+                pct=30,
+                message=f"{room_label} 멤버 DB 로딩 완료(재조회 중)",
+            )
+            self._save_state()
+            return True
+
+        if code == 124:
+            self._append_course_event(
+                course_key=course_key,
+                level="WARN",
+                stage="OPENCHAT_LOAD",
+                pct=30,
+                message=f"{room_label} 멤버 DB 로딩이 시간 초과로 중단됐어요(로그 확인)",
+            )
+            self._save_state()
+            return False
+
+        self._append_course_event(
+            course_key=course_key,
+            level="WARN",
+            stage="OPENCHAT_LOAD",
+            pct=30,
+            message=f"{room_label} 멤버 DB 로딩에 실패했어요(로그 확인)",
+        )
+        self._save_state()
+        return False
+
     def _append_course_event(
         self,
         *,
@@ -675,7 +850,12 @@ class CourseMembershipAuditWorker:
             }, ""
         return self._infer_rooms_for_course(course.course_key, rooms)
 
-    def _fetch_openchat_bundle(self, course_key: str, resolved_rooms: dict) -> Tuple[dict[str, dict], dict[str, list[dict]], str]:
+    def _fetch_openchat_bundle(
+        self,
+        course_key: str,
+        resolved_rooms: dict,
+        openchat_auto_load: OpenchatAutoLoadConfig,
+    ) -> Tuple[dict[str, dict], dict[str, list[dict]], str]:
         fetched_at = _iso_now()
         room_infos: dict[str, dict] = {}
         members_by_room: dict[str, list[dict]] = {}
@@ -690,10 +870,31 @@ class CourseMembershipAuditWorker:
             pct = 20 + i * 10
             self._set_course_progress(course_key=course_key, stage="OPENCHAT", message=f"{rt_label} 멤버를 불러오는 중", pct=pct)
 
-            room_name, active = fetch_room_meta(self.iris_base, room_id)
-            loaded = fetch_loaded_member_count(self.iris_base, room_id)
-            members = fetch_openchat_members(self.iris_base, room_id)
+            room_name, active, link_id = fetch_room_meta(self.iris_base, room_id)
+            loaded = fetch_loaded_member_count(self.iris_base, room_id, link_id)
+            members = fetch_openchat_members(self.iris_base, room_id, link_id)
             incomplete = (active is not None) and (loaded < int(active))
+
+            # DB가 덜 로딩된 방은(대형 방) Redroid UI 스크롤로 DB를 채운 뒤 재조회한다.
+            if incomplete and openchat_auto_load.enabled:
+                attempts = max(1, int(openchat_auto_load.max_attempts or 1))
+                for _ in range(attempts):
+                    did = self._maybe_openchat_auto_load(
+                        course_key=course_key,
+                        room_type=rt,
+                        room_label=rt_label,
+                        room_id=room_id,
+                        active=active,
+                        loaded=loaded,
+                        cfg=openchat_auto_load,
+                    )
+                    if not did:
+                        break
+                    loaded = fetch_loaded_member_count(self.iris_base, room_id, link_id)
+                    members = fetch_openchat_members(self.iris_base, room_id, link_id)
+                    incomplete = (active is not None) and (loaded < int(active))
+                    if not incomplete:
+                        break
 
             room_infos[rt] = {
                 "roomType": rt,
@@ -723,7 +924,11 @@ class CourseMembershipAuditWorker:
 
         # openchat
         self._set_course_progress(course_key=course.course_key, stage="OPENCHAT", message="톡방(3방) 데이터를 불러오는 중", pct=15)
-        room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(course.course_key, resolved_rooms)
+        room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(
+            course.course_key,
+            resolved_rooms,
+            cfg.worker.openchat_auto_load,
+        )
 
         # crawler
         self._set_course_progress(course_key=course.course_key, stage="CAFE", message="카페 멤버를 불러오는 중", pct=55)
@@ -919,6 +1124,21 @@ class CourseMembershipAuditWorker:
                 self.log("INFO", "worker 비활성(worker.enabled=false) → 종료")
                 self._write_status(state="DISABLED", workerEnabled=False)
                 return 0
+
+            # state에 config에 없는 courseKey가 남아있으면 UI에 "???? 코스" 같은 고아 엔트리가 생길 수 있다.
+            # config 기준으로 prune해서 SSOT를 유지한다.
+            try:
+                valid_keys = set(cfg.courses.keys())
+                cs_map = self.state.get("courses")
+                if isinstance(cs_map, dict) and valid_keys:
+                    stale = [k for k in list(cs_map.keys()) if k not in valid_keys]
+                    if stale:
+                        for k in stale:
+                            cs_map.pop(k, None)
+                        self._save_state()
+                        self.log("WARN", "state에서 알 수 없는 courseKey 제거", removed=len(stale))
+            except Exception:
+                pass
 
             interval_sec = self._pick_interval_sec(cfg, now_ms)
 

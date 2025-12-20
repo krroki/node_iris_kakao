@@ -46,8 +46,13 @@
 
 - 소스: IRIS DB `db2.open_chat_member`
 - 주의: 대형 방은 단말 스크롤 로딩이 필요하여 DB가 불완전할 수 있다.
+  - (참고) 일부 환경에서는 `db2.open_chat_member.involved_chat_id`가 `0`으로 들어오는 row가 많아,
+    `loadedMembersCount` 집계를 **roomId(involved_chat_id)만으로 하면 과소 집계**될 수 있다.
+    v2 워커/`openchat_load_members.ps1`는 `chat_rooms.link_id` 기준 집계를 우선한다.
   - `loadedMembersCount < activeMembersCount`이면 점검 결과는 **INCOMPLETE로 표시**하고 확정하지 않는다.
   - 필요 시(송신 없음): `pwsh scripts/openchat_load_members.ps1 -RoomId <ROOM_ID> -Scrolls 600`
+  - (선택) 자동 로딩: `data/course_membership_audit.json`의 `worker.openchatAutoLoad.enabled=true`로 켜면,
+    v2 워커가 **DB 미완전(INCOMPLETE)** 상태에서 `openchat_load_members.ps1`를 **쿨다운/순차 실행**으로 자동 시도한다.
 
 ---
 
@@ -183,7 +188,7 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
 - `OK`: 필수방 참여 충족
 - `MISSING`: 필수방 중 누락 있음(`missingRooms` 확인)
 - `AMBIGUOUS`: 동일 카페 닉네임이 특정 톡방에서 2명 이상 매칭됨(`chatCount`/`noticeCount`/`premiumCount` 확인)
-- `INCOMPLETE`: 톡방 멤버 DB가 미로딩 상태(`loadedMembersCount < activeMembersCount`)
+- `INCOMPLETE`: **해당 멤버의 필수방 중 하나라도** 톡방 멤버 DB가 미로딩 상태(`loadedMembersCount < activeMembersCount`)
   - 조치(송신 없음): `pwsh scripts/openchat_load_members.ps1 -RoomId <ROOM_ID> -Scrolls 600` 후 재점검
 - `STAFF`: 운영진 등급으로 점검 대상 제외
 
@@ -204,6 +209,16 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
     "hotIntervalSec": 600,
     "hotDays": 14,
     "steadyIntervalSec": 10800,
+    "openchatAutoLoad": {
+      "enabled": false,
+      "serial": "",
+      "scrolls": 650,
+      "scrollPauseMs": 400,
+      "timeoutSec": 900,
+      "cooldownRoomSec": 900,
+      "cooldownGlobalSec": 120,
+      "maxAttempts": 1
+    },
     "crawler": {
       "repoPath": "C:\\\\dev\\\\naver-cafe-member-crawler",
       "pythonExe": "C:\\\\dev\\\\naver-cafe-member-crawler\\\\venv\\\\Scripts\\\\python.exe",

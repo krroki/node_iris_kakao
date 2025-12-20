@@ -42,7 +42,25 @@ export async function POST(req: Request) {
   }
 
   const root = repoRoot();
+  const configPath = path.join(root, "data", "course_membership_audit.json");
   const statePath = path.join(root, "node-iris-app", "data", "course_membership_audit_worker_state.json");
+
+  const cfgRead = await readJsonIfExists(configPath);
+  if (cfgRead.error) {
+    return NextResponse.json({ ok: false, error: `config 읽기 실패: ${cfgRead.error}`, path: configPath }, { status: 500 });
+  }
+  const cfg = (cfgRead.json && typeof cfgRead.json === "object") ? cfgRead.json : {};
+  const cfgCoursesObj = (cfg && typeof cfg === "object" && (cfg as any).courses && typeof (cfg as any).courses === "object")
+    ? (cfg as any).courses
+    : {};
+  const validCourseKeys = new Set<string>(Object.keys(cfgCoursesObj || {}));
+  const invalid = courseKeys.filter((k) => !validCourseKeys.has(k));
+  if (invalid.length) {
+    return NextResponse.json(
+      { ok: false, error: "invalid courseKey", invalid, valid: [...validCourseKeys].slice(0, 50) },
+      { status: 400 },
+    );
+  }
 
   const stateRead = await readJsonIfExists(statePath);
   if (stateRead.error) {

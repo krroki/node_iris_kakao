@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -127,6 +128,17 @@ def decode_nickname_from_db(raw: object) -> str:
             return decoded
     except Exception:
         pass
+
+    # Some builds return nickname as base64 string (selecting `enc` can change server-side decoding behavior).
+    # Decode only when it *clearly* yields Korean text to avoid mangling normal ASCII nicknames.
+    try:
+        if len(s) >= 16 and (len(s) % 4 == 0) and re.fullmatch(r"[A-Za-z0-9+/=]+", s or ""):
+            raw_b = base64.b64decode(s, validate=True)
+            decoded_b64 = raw_b.decode("utf-8", errors="ignore").strip()
+            if decoded_b64 and _KOREAN_RE.search(decoded_b64):
+                return decoded_b64
+    except Exception:
+        pass
     return s
 
 
@@ -151,37 +163,72 @@ def fetch_rooms(realtime_base: str, timeout: float = 10.0) -> list[dict]:
     return out
 
 
-def fetch_room_meta(iris_base: str, room_id: str) -> tuple[str, Optional[int]]:
-    rows = iris_query(iris_base, "select active_members_count, meta from chat_rooms where id=?", [room_id], timeout=10.0)
-    if not rows:
-        return room_id, None
-    row = rows[0] if isinstance(rows[0], dict) else {}
-    name = _parse_room_name_from_meta(row.get("meta")) or room_id
-    active = _safe_int(row.get("active_members_count"))
-    return name, active
-
-
-def fetch_loaded_member_count(iris_base: str, room_id: str) -> int:
+def fetch_room_meta(iris_base: str, room_id: str) -> tuple[str, Optional[int], Optional[int]]:
     rows = iris_query(
         iris_base,
-        "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
+        "select active_members_count, meta, link_id from chat_rooms where id=?",
         [room_id],
-        timeout=20.0,
+        timeout=10.0,
     )
+    if not rows:
+        return room_id, None, None
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    name = _parse_room_name_from_meta(row.get("meta"))
+    link_id = _safe_int(row.get("link_id"))
+    if not name:
+        link_id_str = str(link_id if link_id is not None else "").strip()
+        if link_id_str:
+            try:
+                r2 = iris_query(iris_base, "select name from db2.open_link where id=?", [link_id_str], timeout=10.0)
+                if r2 and isinstance(r2[0], dict):
+                    name2 = str(r2[0].get("name") or "").strip()
+                    if name2:
+                        name = name2
+            except Exception:
+                name = name or None
+    name = name or room_id
+    active = _safe_int(row.get("active_members_count"))
+    return name, active, link_id
+
+
+def fetch_loaded_member_count(iris_base: str, room_id: str, link_id: Optional[int]) -> int:
+    # NOTE: 일부 환경에서 open_chat_member.involved_chat_id가 0으로 들어오는 케이스가 많다.
+    # membership list는 link_id 기준으로 조회하는 것이 더 안정적이다.
+    if link_id is not None:
+        rows = iris_query(
+            iris_base,
+            "select count(distinct user_id) as cnt from db2.open_chat_member where link_id=?",
+            [int(link_id)],
+            timeout=20.0,
+        )
+    else:
+        rows = iris_query(
+            iris_base,
+            "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
+            [room_id],
+            timeout=20.0,
+        )
     if not rows:
         return 0
     row = rows[0] if isinstance(rows[0], dict) else {}
     return _safe_int(row.get("cnt")) or 0
 
 
-def fetch_openchat_members(iris_base: str, room_id: str, page_size: int = 500) -> list[dict]:
+def fetch_openchat_members(iris_base: str, room_id: str, link_id: Optional[int], page_size: int = 500) -> list[dict]:
     out: dict[str, dict] = {}
     offset = 0
+    if link_id is not None:
+        where = "where link_id=?"
+        bind_prefix: list = [int(link_id)]
+    else:
+        where = "where involved_chat_id=?"
+        bind_prefix = [room_id]
     while True:
         rows = iris_query(
             iris_base,
-            "select user_id, nickname from db2.open_chat_member where involved_chat_id=? order by nickname limit ? offset ?",
-            [room_id, page_size, offset],
+            # NOTE: IRIS /query can return open_chat_member.nickname as base64 unless we also select `enc`.
+            f"select user_id, nickname, enc from db2.open_chat_member {where} order by nickname limit ? offset ?",
+            bind_prefix + [page_size, offset],
             timeout=30.0,
         )
         if not rows:

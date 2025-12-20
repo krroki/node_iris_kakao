@@ -221,38 +221,64 @@ def _parse_room_name_from_meta(meta_raw: object) -> Optional[str]:
     return None
 
 
-def fetch_room_meta(room_id: str) -> tuple[str, Optional[int]]:
+def fetch_room_meta(room_id: str) -> tuple[str, Optional[int], Optional[int]]:
     # chat_rooms에는 name 컬럼이 없고, meta(JSON)에 room name이 들어오는 케이스가 관측된다.
-    rows = iris_query("select active_members_count, meta from chat_rooms where id=?", [room_id], timeout=10.0)
+    rows = iris_query("select active_members_count, meta, link_id from chat_rooms where id=?", [room_id], timeout=10.0)
     if not rows:
-        return room_id, None
+        return room_id, None, None
     row = rows[0] if isinstance(rows[0], dict) else {}
-    name = _parse_room_name_from_meta(row.get("meta")) or room_id
+    name = _parse_room_name_from_meta(row.get("meta"))
+    link_id = _safe_int(row.get("link_id"))
+    if not name and link_id is not None:
+        try:
+            r2 = iris_query("select name from db2.open_link where id=?", [int(link_id)], timeout=10.0)
+            if r2 and isinstance(r2[0], dict):
+                name2 = str(r2[0].get("name") or "").strip()
+                if name2:
+                    name = name2
+        except Exception:
+            name = name or None
+    name = name or room_id
     active = _safe_int(row.get("active_members_count"))
-    return name, active
+    return name, active, link_id
 
 
-def fetch_loaded_member_count(room_id: str) -> int:
-    rows = iris_query(
-        "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
-        [room_id],
-        timeout=20.0,
-    )
+def fetch_loaded_member_count(room_id: str, link_id: Optional[int]) -> int:
+    # NOTE: 일부 환경에서 open_chat_member.involved_chat_id가 0으로 들어오는 케이스가 많다.
+    # membership list는 link_id 기준으로 조회하는 것이 더 안정적이다.
+    if link_id is not None:
+        rows = iris_query(
+            "select count(distinct user_id) as cnt from db2.open_chat_member where link_id=?",
+            [int(link_id)],
+            timeout=20.0,
+        )
+    else:
+        rows = iris_query(
+            "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
+            [room_id],
+            timeout=20.0,
+        )
     if not rows:
         return 0
     row = rows[0] if isinstance(rows[0], dict) else {}
     return _safe_int(row.get("cnt")) or 0
 
 
-def fetch_members(room_id: str, page_size: int = 500) -> list[dict]:
+def fetch_members(room_id: str, link_id: Optional[int], page_size: int = 500) -> list[dict]:
     out: dict[str, dict] = {}
     offset = 0
+    if link_id is not None:
+        where = "where link_id=?"
+        bind_prefix: list = [int(link_id)]
+    else:
+        where = "where involved_chat_id=?"
+        bind_prefix = [room_id]
     while True:
         rows = iris_query(
             "select user_id, nickname, link_id, type, profile_type, link_member_type, profile_link_id, "
             "privilege, report, enc, profile_image_url, full_profile_image_url, original_profile_image_url "
-            "from db2.open_chat_member where involved_chat_id=? order by nickname limit ? offset ?",
-            [room_id, page_size, offset],
+            f"from db2.open_chat_member {where} order by nickname limit ? offset ?",
+            bind_prefix + [page_size, offset],
             timeout=30.0,
         )
         if not rows:
@@ -487,9 +513,9 @@ def main() -> int:
 
     room_cfg = _room_cfg(room_id)
 
-    room_name, active_cnt = fetch_room_meta(room_id)
-    loaded_cnt = fetch_loaded_member_count(room_id)
-    members = fetch_members(room_id)
+    room_name, active_cnt, link_id = fetch_room_meta(room_id)
+    loaded_cnt = fetch_loaded_member_count(room_id, link_id)
+    members = fetch_members(room_id, link_id)
 
     print(f"[room] id={room_id}, name={room_name}")
     print(f"[count] activeMembersCount={active_cnt if active_cnt is not None else 'N/A'} / loadedMembersCount={loaded_cnt} / fetched={len(members)}")

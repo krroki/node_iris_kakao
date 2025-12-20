@@ -796,6 +796,19 @@ def _iris_query_strict(query: str, bind: list, timeout_sec: float = 3.0) -> list
     return data
 
 
+def _resolve_room_link_id(room_id: str) -> int | None:
+    rid = str(room_id or "").strip()
+    if not rid:
+        return None
+    try:
+        rows = _iris_query_strict("select link_id from chat_rooms where id=? limit 1", [rid], timeout_sec=6.0)
+    except Exception:
+        return None
+    if rows and isinstance(rows[0], dict):
+        return _safe_int(rows[0].get("link_id"))
+    return None
+
+
 def _fetch_room_admins_from_iris(room_id: str) -> dict:
     rid = str(room_id or "").strip()
     if not rid:
@@ -803,23 +816,39 @@ def _fetch_room_admins_from_iris(room_id: str) -> dict:
 
     # open_chat_member가 비어있을 수 있으므로, 호스트는 open_link로도 보강한다.
     # 1) loadedMembersCount / activeMembersCount
-    cnt_rows = _iris_query_strict(
-        "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
-        [rid],
-        timeout_sec=6.0,
-    )
+    link_id = _resolve_room_link_id(rid)
+    if link_id is not None:
+        cnt_rows = _iris_query_strict(
+            "select count(distinct user_id) as cnt from db2.open_chat_member where link_id=?",
+            [link_id],
+            timeout_sec=6.0,
+        )
+    else:
+        cnt_rows = _iris_query_strict(
+            "select count(distinct user_id) as cnt from db2.open_chat_member where involved_chat_id=?",
+            [rid],
+            timeout_sec=6.0,
+        )
     loaded_cnt = 0
     if cnt_rows and isinstance(cnt_rows[0], dict):
         loaded_cnt = _safe_int(cnt_rows[0].get("cnt")) or 0
     active = _fetch_active_member_counts([rid]).get(rid)
 
     # 2) 운영진 목록(최신 rowid 기준)
-    rows = _iris_query_strict(
-        "select user_id, nickname, link_member_type from db2.open_chat_member "
-        "where involved_chat_id=? and link_member_type in (8,4,1) order by rowid desc limit 3000",
-        [rid],
-        timeout_sec=8.0,
-    )
+    if link_id is not None:
+        rows = _iris_query_strict(
+            "select user_id, nickname, link_member_type from db2.open_chat_member "
+            "where link_id=? and link_member_type in (8,4,1) order by rowid desc limit 3000",
+            [link_id],
+            timeout_sec=8.0,
+        )
+    else:
+        rows = _iris_query_strict(
+            "select user_id, nickname, link_member_type from db2.open_chat_member "
+            "where involved_chat_id=? and link_member_type in (8,4,1) order by rowid desc limit 3000",
+            [rid],
+            timeout_sec=8.0,
+        )
 
     seen: set[str] = set()
     host: list[dict] = []
@@ -890,8 +919,13 @@ async def room_members(room_id: str, q: str | None = None, limit: int = 200, off
     offset2 = _clamp_int(offset, 0, 2_000_000_000, 0)
     q2 = str(q or "").strip()
 
-    where = "where involved_chat_id=?"
-    bind: list[object] = [rid]
+    link_id = _resolve_room_link_id(rid)
+    if link_id is not None:
+        where = "where (involved_chat_id=? or link_id=?)"
+        bind: list[object] = [rid, link_id]
+    else:
+        where = "where involved_chat_id=?"
+        bind = [rid]
     if q2:
         where += " and nickname like ?"
         bind.append(f"%{q2}%")

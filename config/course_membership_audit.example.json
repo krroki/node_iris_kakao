@@ -5,6 +5,16 @@
     "hotIntervalSec": 600,
     "hotDays": 14,
     "steadyIntervalSec": 10800,
+    "openchatAutoLoad": {
+      "enabled": false,
+      "serial": "",
+      "scrolls": 650,
+      "scrollPauseMs": 400,
+      "timeoutSec": 900,
+      "cooldownRoomSec": 900,
+      "cooldownGlobalSec": 120,
+      "maxAttempts": 1
+    },
     "crawler": {
       "repoPath": "C:\\\\dev\\\\naver-cafe-member-crawler",
       "pythonExe": "C:\\\\dev\\\\naver-cafe-member-crawler\\\\venv\\\\Scripts\\\\python.exe",
@@ -30,3 +40,4 @@
     }
   }
 }
+

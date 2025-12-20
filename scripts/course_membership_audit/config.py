@@ -81,12 +81,25 @@ class CrawlerConfig:
 
 
 @dataclass(frozen=True)
+class OpenchatAutoLoadConfig:
+    enabled: bool
+    adb_serial: str
+    scrolls: int
+    scroll_pause_ms: int
+    timeout_sec: int
+    cooldown_room_sec: int
+    cooldown_global_sec: int
+    max_attempts: int
+
+
+@dataclass(frozen=True)
 class WorkerConfig:
     enabled: bool
     hot_interval_sec: int
     hot_days: int
     steady_interval_sec: int
     crawler: CrawlerConfig
+    openchat_auto_load: OpenchatAutoLoadConfig
 
 
 @dataclass(frozen=True)
@@ -158,12 +171,36 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
     crawler_settings = _safe_str(crawler_raw.get("settingsPath")) or str(os.getenv("NAVER_CAFE_CRAWLER_SETTINGS") or "").strip()
     crawler = CrawlerConfig(repo_path=crawler_repo, python_exe=crawler_py, settings_path=crawler_settings)
 
+    openchat_raw = worker_raw.get("openchatAutoLoad") if isinstance(worker_raw.get("openchatAutoLoad"), dict) else {}
+    openchat_enabled = bool(openchat_raw.get("enabled"))
+    openchat_serial = (
+        _safe_str(openchat_raw.get("serial") or openchat_raw.get("adbSerial") or "")
+        or str(os.getenv("REDROID_ADB_SERIAL") or "").strip()
+    )
+    openchat_scrolls = max(50, min(_safe_int(openchat_raw.get("scrolls"), 600), 3000))
+    openchat_pause = max(150, min(_safe_int(openchat_raw.get("scrollPauseMs") or openchat_raw.get("scroll_pause_ms"), 400), 2000))
+    openchat_timeout_sec = max(60, min(_safe_int(openchat_raw.get("timeoutSec") or openchat_raw.get("timeout_sec"), 900), 3600))
+    openchat_cd_room = max(0, min(_safe_int(openchat_raw.get("cooldownRoomSec"), 900), 86400))
+    openchat_cd_global = max(0, min(_safe_int(openchat_raw.get("cooldownGlobalSec"), 120), 86400))
+    openchat_max_attempts = max(1, min(_safe_int(openchat_raw.get("maxAttempts"), 1), 5))
+    openchat_auto_load = OpenchatAutoLoadConfig(
+        enabled=openchat_enabled,
+        adb_serial=openchat_serial,
+        scrolls=openchat_scrolls,
+        scroll_pause_ms=openchat_pause,
+        timeout_sec=openchat_timeout_sec,
+        cooldown_room_sec=openchat_cd_room,
+        cooldown_global_sec=openchat_cd_global,
+        max_attempts=openchat_max_attempts,
+    )
+
     worker = WorkerConfig(
         enabled=enabled,
         hot_interval_sec=hot_interval_sec,
         hot_days=hot_days,
         steady_interval_sec=steady_interval_sec,
         crawler=crawler,
+        openchat_auto_load=openchat_auto_load,
     )
 
     courses_raw = raw.get("courses") if isinstance(raw.get("courses"), dict) else {}
