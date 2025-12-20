@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -451,6 +452,12 @@ class CourseMembershipAuditWorker:
 
         self.state: dict = {}
 
+        # watchdog는 status.heartbeatTs가 300초 이상 stale이면 워커를 재기동한다.
+        # 크롤링/시트 업서트처럼 오래 걸리는 작업 중에도 heartbeat를 주기적으로 갱신해야
+        # 정상 동작 중인 워커가 "heartbeat stale"로 오판되어 중복 실행되는 문제(카페 창 다중 생성)를 막을 수 있다.
+        self._status_extra: dict[str, Any] = {}
+        self._status_lock = threading.Lock()
+
     def _friendly_error(self, raw_err: str) -> str:
         s = str(raw_err or "").strip()
         if not s:
@@ -717,9 +724,12 @@ class CourseMembershipAuditWorker:
         print(f"[{ts}][{level}] {msg}{payload}", flush=True)
 
     def _write_status(self, **extra: Any) -> None:
-        payload = {"pid": os.getpid(), "heartbeatTs": _iso_now(), "configPath": str(self.config_path)}
-        payload.update(extra)
-        _write_json_atomic(self.status_path, payload)
+        with self._status_lock:
+            if extra:
+                self._status_extra.update(extra)
+            payload = {"pid": os.getpid(), "heartbeatTs": _iso_now(), "configPath": str(self.config_path)}
+            payload.update(self._status_extra)
+            _write_json_atomic(self.status_path, payload)
 
     def _load_state(self) -> None:
         try:
@@ -1106,6 +1116,18 @@ class CourseMembershipAuditWorker:
 
         self.log("INFO", "course-membership-audit-worker 시작", config=str(self.config_path))
         self._write_status(state="STARTING", realtimeBase=self.realtime_base, irisBase=self.iris_base)
+
+        def _hb_loop() -> None:
+            # watchdog(Test-CourseMembershipAuditWorkerOk)은 heartbeatTs가 300초 초과로 stale이면 재시작한다.
+            # 작업이 길어도(오픈채팅 멤버 로딩/카페 크롤링/시트 업서트) heartbeat는 살아있어야 한다.
+            while True:
+                try:
+                    self._write_status()
+                except Exception:
+                    pass
+                time.sleep(30)
+
+        threading.Thread(target=_hb_loop, name="course-membership-audit-heartbeat", daemon=True).start()
 
         last_hb_ms = 0
         while True:
