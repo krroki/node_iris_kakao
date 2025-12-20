@@ -977,9 +977,15 @@ async function queryOpenChatMemberNickname(roomIdRaw: string, userIdRaw: string,
   return null;
 }
 
-function isProfileLinkIdMatch(match: OpenProfileCloseGuideMatch, profileLinkIdRaw: string): boolean {
+function isProfileLinkIdMatch(match: OpenProfileCloseGuideMatch, profileLinkIdRaw: string, profileTypeRaw: string): boolean {
   const id = safeString(profileLinkIdRaw);
   if (!id) return false;
+
+  const t = safeString(profileTypeRaw);
+  const tn = Number(t);
+  if (!Number.isFinite(tn)) return false;
+  if (tn !== 16) return false;
+
   const nonZero = id !== "0";
   return match === "profileLinkIdNonZero" ? nonZero : !nonZero;
 }
@@ -1122,14 +1128,15 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
 
     const prof = await queryOpenChatMemberProfile(p.roomId, p.userId, 8000);
     const profileLinkId = safeString(prof?.profileLinkId ?? "");
-    if (!profileLinkId) {
+    const profileType = safeString(prof?.profileType ?? "");
+    if (!profileLinkId || !profileType) {
       p.nextCheckAt = now + cfg.confirmCheckIntervalMs;
       p.attempts = (Number(p.attempts || 0) || 0) + 1;
       pendingOpenProfileCloseByUser.set(key, p);
       continue;
     }
 
-    const stillOpen = isProfileLinkIdMatch(cfg.match, profileLinkId);
+    const stillOpen = isProfileLinkIdMatch(cfg.match, profileLinkId, profileType);
     if (stillOpen) {
       p.nextCheckAt = now + cfg.confirmCheckIntervalMs;
       p.attempts = (Number(p.attempts || 0) || 0) + 1;
@@ -1200,11 +1207,10 @@ async function maybeSendOpenProfileCloseGuide(
     if (!prof) continue;
 
     const profileLinkId = safeString(prof.profileLinkId);
-    if (!profileLinkId) continue; // unknown
+    const profileType = safeString(prof.profileType);
+    if (!profileLinkId || !profileType) continue; // unknown
 
-    const nonZero = profileLinkId !== "0";
-    const match = cfg.match === "profileLinkIdNonZero" ? nonZero : !nonZero;
-    if (match) targets.push(e);
+    if (isProfileLinkIdMatch(cfg.match, profileLinkId, profileType)) targets.push(e);
   }
 
   if (!targets.length) return;
@@ -1576,7 +1582,8 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
     if (!OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) {
       const prof = await queryOpenChatMemberProfile(roomId, senderId, 8000);
       const profileLinkId = safeString(prof?.profileLinkId ?? "");
-      if (profileLinkId && isProfileLinkIdMatch(opCfgRes.cfg.match, profileLinkId)) {
+      const profileType = safeString(prof?.profileType ?? "");
+      if (profileLinkId && profileType && isProfileLinkIdMatch(opCfgRes.cfg.match, profileLinkId, profileType)) {
         const roomName = safeString(entry.roomName) || roomId;
         const entrant: WelcomeEntrant = {
           name: safeString(entry.senderName) || safeString(pending.userName) || "Guest",

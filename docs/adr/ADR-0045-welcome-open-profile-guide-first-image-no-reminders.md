@@ -62,9 +62,10 @@
 
 ### 오픈프로필 판별(SSOT)
 
-- 판별 기준: `db2.open_chat_member.profile_link_id`
-  - **운영 기준**: `profile_link_id == "0"` 이면 “오픈채팅 열린 프로필(닫기 안내 대상)”로 본다.
-  - 런타임 설정에서 `match`로 반전 가능하지만, 기본 운영값은 `profileLinkIdZero`를 사용한다.
+- 판별 기준: IRIS DB `db2.open_chat_member`
+  - `profile_type == 16` → 오픈프로필(오픈채팅 프로필)
+  - **운영 기준**: `profile_link_id != "0"` 이면 “오픈채팅방 열려있음(닫기 안내 대상)”로 본다.
+  - 런타임 설정에서 `match`로 반전 가능하지만, 기본 운영값은 `profileLinkIdNonZero`를 사용한다.
 
 ### Invariants (불변식)
 
@@ -90,6 +91,10 @@
   - `node-iris-app/config/runtime.json`
     - `welcome.openProfileCloseGuide`:
       - `enabled`, `match`, `text`, `confirmText`
+      - 판별(SSOT): IRIS DB `db2.open_chat_member`
+        - `profile_type == 16` → 오픈프로필(오픈채팅 프로필)
+        - `profile_link_id != 0` → “오픈채팅방 열려있음”(닫기 안내 대상)
+        - 운영값: `match=profileLinkIdNonZero`
       - `confirmWindowMs`, `confirmCheckIntervalMs`
       - `images` (1장)
     - `welcome.followUp`:
