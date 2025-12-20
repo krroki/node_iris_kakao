@@ -66,6 +66,9 @@ export default function RoomCard({
         features.courseRoster === true ||
         (features.courseRoom !== false && inferredCourseRoom);
 
+    // 방 단위 멤버/Sheets 업서트 UI는 강의 운영 탭(/course)으로 이관. (대시보드 과밀/혼선 방지)
+    const showRoomMemberTools = false;
+
     const [membersOpen, setMembersOpen] = useState(false);
     const [membersQuery, setMembersQuery] = useState("");
     const [membersOffset, setMembersOffset] = useState(0);
@@ -545,7 +548,7 @@ export default function RoomCard({
                 </div>
             </div>
 
-            {!isCourseRoom && (
+            {showRoomMemberTools && !isCourseRoom && (
             <div style={{ marginTop: 10, borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

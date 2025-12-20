@@ -42,8 +42,8 @@
 ## Implementation
 
 - UI
-  - `web/src/app/course/page.tsx`: 코스 자동 감지 + v2 설정/워커 관리 UI
-  - `web/src/components/RoomCard.tsx`: 강의 운영 입력 UI 제거, `/course` 링크로 대체
+  - `web/src/app/course/page.tsx`: 워크플로우 중심 UI(빠른 사용법, v2 자동 갱신 토글+주기 표시, 코스별 1회 업서트, roomId 매핑 입력, 카카오 안내(레거시) 토글)
+  - `web/src/components/RoomCard.tsx`: 강의 운영 입력 UI 제거 + 방 단위 멤버/Sheets 도구 숨김, `/course` 링크로 대체
   - `web/src/app/page.tsx`: RoomCard props 정리(강의 운영 입력 제거 후 반영)
 - 워커/추론
   - `scripts/course_membership_audit/room_infer.py`: 괄호/대괄호/번호 접두어 패턴 지원
@@ -73,4 +73,3 @@
 
 - 방 이름 규칙이 깨지면(접두어 누락/불일치/중복) 자동 감지가 실패할 수 있으며, 이 경우 운영자가 코스 매핑을 명시적으로 보정해야 한다.
 - v1(roster-worker)은 레거시로 남아 있어, v2 중심 운영으로 점진적 전환이 필요하다.
-

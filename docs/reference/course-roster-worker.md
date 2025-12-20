@@ -66,8 +66,8 @@ UI(대시보드)에서의 위치:
 
 - `http://127.0.0.1:3100/course` → **강의 운영** 탭(코스 단위)
   - 코스 자동 감지: 방 이름 접두어 `(사담방)`/`(공지방)`/`(프리미엄방)` 기준으로 3방을 1코스로 묶는다.
-  - (레거시 v1) `courseRoster` 런타임 토글: 코스 카드에서 3방을 한 번에 ON/OFF (`runtime.features[roomId].courseRoster`).
-  - (레거시 v1) 강의 메시지 발송 토글: `/course` 상단에서 ON/OFF (`runtime.courseOps.sendEnabled`). OFF면 `courseRoster`가 켜져도 발신하지 않음.
+  - (레거시 v1) **입장자 안내** 토글: 코스 카드의 `카카오 안내(레거시)`에서 ON/OFF (내부 플래그: `runtime.features[roomId].courseRoster`).
+  - (레거시 v1) **강의 메시지 발송** 토글: `/course` 상단 `카카오 안내(레거시)`에서 ON/OFF (`runtime.courseOps.sendEnabled`). OFF면 입장자 안내가 켜져 있어도 절대 발신하지 않음.
   - v1 roomId별 시트/카페 설정은 파일로 유지: `data/course_roster_worker.json` (CSV(`cafeCsvPath`)는 레거시).
   - 서비스 계정 JSON 업로드: `/course`에서 업로드(파일: `data/gcp_service_account.json`).
 

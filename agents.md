@@ -142,10 +142,12 @@
     - watchdog는 이제 `/api/ping`뿐 아니라 **`/` + `/_next/static`**까지 체크해 빈 화면 상태를 자동 감지/복구한다.
     - `start_web.ps1`도 READY 전에 **정적 자산 1개를 추가로 검증**해(실패 시 CleanBuild로 1회 자가복구) 빈 화면 재발을 줄인다.
 
-- **오픈채팅 멤버 Sheets 자동 동기화(새 기능)**:
-  - UI(3100) `/course` 탭의 “톡방 멤버 Sheets(선택)”에서 `worker.enabled=true`로 켜고,
-    `/course` 코스 카드 “톡방 멤버 Sheets”에서 (사담/공지/프리미엄) 방별 `enabled=true`로 설정 후 저장하면 자동 업서트가 돈다.
-    - 강의톡방이 아닌 일반 방은 RoomCard “멤버 Sheets 자동”에서 roomId별 설정 가능(레거시 UI 유지)
+- **오픈채팅 멤버 Sheets 자동 동기화(선택 기능, UI 숨김)**:
+  - 강의 운영 UI 단순화를 위해 현재 대시보드 UI에서는 노출하지 않는다(혼선 방지).
+  - 설정/운영은 파일 기반으로 수행한다:
+    - 설정(SSOT): `data/openchat_members_sheets.json`
+    - 워커 재기동: `windows/start_openchat_members_sheets_worker.ps1 -Restart`
+    - 상세: `docs/reference/openchat-members-google-sheets.md`
   - 스케줄:
     - **ON이면 10분마다 업서트(고정)** (`intervalSec` 설정으로 변경 불가)
     - 방/워커를 켜도 **즉시 실행하지 않고 다음 주기(10분 후)** 부터 실행

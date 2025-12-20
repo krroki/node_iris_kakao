@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "../dashboard.css";
 import { CourseMembershipAuditConfig, CourseMembershipAuditCourse, CourseRosterConfig, OpenchatMembersSheetsConfig, OpenchatMembersSheetsRoomConfig, RoomInfo } from "../../types";
 
@@ -9,6 +9,18 @@ type RoomType = "chat" | "notice" | "premium";
 
 function normStr(v: unknown): string {
   return String(v ?? "").trim();
+}
+
+function formatIntervalSec(secRaw: unknown): string {
+  const sec = Number(secRaw);
+  if (!Number.isFinite(sec) || sec <= 0) return "";
+  if (sec < 60) return `${Math.round(sec)}초`;
+  const min = sec / 60;
+  if (min < 60) return `${Math.round(min)}분`;
+  const hour = min / 60;
+  if (hour < 48) return `${Math.round(hour)}시간`;
+  const day = hour / 24;
+  return `${Math.round(day)}일`;
 }
 
 function splitList(raw: string): string[] {
@@ -107,6 +119,16 @@ export default function CourseOpsPage() {
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
   const [roomsError, setRoomsError] = useState<string | null>(null);
 
+  const roomById = useMemo(() => {
+    const m = new Map<string, RoomInfo>();
+    for (const r of rooms || []) {
+      const rid = String((r as any)?.roomId || "").trim();
+      if (!rid) continue;
+      m.set(rid, r);
+    }
+    return m;
+  }, [rooms]);
+
   const [runtime, setRuntime] = useState<any | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [runtimeSaving, setRuntimeSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -125,6 +147,7 @@ export default function CourseOpsPage() {
   const [auditDirty, setAuditDirty] = useState(false);
   const [auditSaving, setAuditSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditLoaded, setAuditLoaded] = useState(false);
   const [auditServiceAccount, setAuditServiceAccount] = useState<{ exists: boolean; path?: string; clientEmail?: string | null; error?: string | null }>({ exists: false });
   const [gradeTextByCourse, setGradeTextByCourse] = useState<Record<string, { premiumText: string; staffText: string }>>({});
 
@@ -145,6 +168,8 @@ export default function CourseOpsPage() {
   const [openchatMembersSheetsSyncErrByRoom, setOpenchatMembersSheetsSyncErrByRoom] = useState<Record<string, string>>({});
 
   const [pendingV2OneOff, setPendingV2OneOff] = useState<Record<string, { startedAtMs: number; originalWorkerEnabled: boolean; originalCourseEnabled: boolean }>>({});
+  const autoSeededRef = useRef(false);
+  const showOpenchatMembersSheetsUi = false;
 
   const inferredCourses = useMemo(() => {
     const grouped: Record<string, Record<RoomType, RoomInfo[]>> = {};
@@ -164,6 +189,16 @@ export default function CourseOpsPage() {
     for (const k of Object.keys(auditConfig?.courses || {})) keys.add(k);
     return Array.from(keys).sort();
   }, [inferredCourses, auditConfig]);
+
+  const v2ScheduleLabel = useMemo(() => {
+    const hotSec = Number(auditConfig?.worker?.hotIntervalSec ?? 600);
+    const hotDays = Number(auditConfig?.worker?.hotDays ?? 14);
+    const steadySec = Number(auditConfig?.worker?.steadyIntervalSec ?? 10800);
+    const hot = formatIntervalSec(hotSec) || `${hotSec}s`;
+    const steady = formatIntervalSec(steadySec) || `${steadySec}s`;
+    const dayStr = Number.isFinite(hotDays) ? `${hotDays}일` : "N일";
+    return `초기 ${dayStr}: ${hot}마다 · 이후: ${steady}마다`;
+  }, [auditConfig]);
 
   const courseOpsSendEnabled = useMemo(() => {
     const co = runtime && typeof runtime === "object" ? (runtime as any).courseOps : null;
@@ -237,6 +272,7 @@ export default function CourseOpsPage() {
   }, [loadRosterWorkerStatus]);
 
   const loadAuditConfig = useCallback(async () => {
+    setAuditLoaded(false);
     try {
       setAuditError(null);
       const r = await fetch(`/api/course-membership-audit/config`, { cache: "no-store" });
@@ -268,6 +304,8 @@ export default function CourseOpsPage() {
       setAuditError(String(e?.message || e));
       setAuditConfig(null);
       setGradeTextByCourse({});
+    } finally {
+      setAuditLoaded(true);
     }
   }, []);
 
@@ -677,6 +715,24 @@ export default function CourseOpsPage() {
     }
   }, [auditConfig, saveAuditConfig, restartAuditWorker]);
 
+  const setV2AutoRunEnabled = useCallback(async (enabled: boolean): Promise<void> => {
+    // UI 반응성: 먼저 토글만 반영(저장은 비동기)
+    setAuditConfig((prev) => {
+      const base = ensureAuditConfigBase(prev);
+      return { ...base, worker: { ...(base.worker || {}), enabled } };
+    });
+    setAuditDirty(true);
+
+    const ok = await saveAuditConfig({ workerEnabled: enabled });
+    if (!ok) {
+      // 저장 실패 시 원복(서버 기준으로 다시 로드)
+      await loadAuditConfig();
+      return;
+    }
+    await restartAuditWorker();
+    await loadAuditWorkerStatus();
+  }, [saveAuditConfig, loadAuditConfig, restartAuditWorker, loadAuditWorkerStatus]);
+
   const setCourseOpsSendEnabled = useCallback(async (enabled: boolean) => {
     try {
       setRuntimeSaving("saving");
@@ -737,15 +793,28 @@ export default function CourseOpsPage() {
     if (!base) return;
     const features: Record<string, any> = (base.features && typeof base.features === "object") ? base.features : {};
 
-    const inferred = inferredCourses.find((c) => c.courseKey === courseKey);
-    if (!inferred) return;
+    const ck = normStr(courseKey);
+    if (!ck) return;
 
-    const pickOne = (rt: RoomType): string | null => {
-      const arr = inferred.rooms[rt] || [];
-      if (arr.length !== 1) return null;
-      return normStr(arr[0]?.roomId) || null;
+    // 1) v2 rooms 매핑이 있으면 그 값을 우선 사용(가장 명시적)
+    const v2Rooms: any = (auditConfig?.courses && (auditConfig.courses as any)[ck] && typeof (auditConfig.courses as any)[ck] === "object")
+      ? ((auditConfig.courses as any)[ck] as any).rooms
+      : null;
+    const pickCfg = (rt: RoomType): string | null => {
+      const rid = v2Rooms && typeof v2Rooms === "object" ? normStr((v2Rooms as any)[rt]) : "";
+      return rid || null;
     };
-    const targets = [pickOne("chat"), pickOne("notice"), pickOne("premium")].filter(Boolean) as string[];
+    let targets = [pickCfg("chat"), pickCfg("notice"), pickCfg("premium")].filter(Boolean) as string[];
+    if (targets.length !== 3 || new Set(targets).size !== 3) {
+      // 2) fallback: 감지된 코스에서 유일 매칭되는 방을 사용
+      const inferred = inferredCourses.find((c) => c.courseKey === ck);
+      const pickOne = (rt: RoomType): string | null => {
+        const arr = inferred?.rooms?.[rt] || [];
+        if (arr.length !== 1) return null;
+        return normStr(arr[0]?.roomId) || null;
+      };
+      targets = [pickOne("chat"), pickOne("notice"), pickOne("premium")].filter(Boolean) as string[];
+    }
     if (!targets.length) return;
 
     const next: Record<string, any> = { ...features };
@@ -754,7 +823,7 @@ export default function CourseOpsPage() {
     }
     setRuntime((prev: any) => ({ ...(prev || {}), features: next }));
     await updateRuntime(next);
-  }, [runtime, inferredCourses, updateRuntime]);
+  }, [runtime, auditConfig, inferredCourses, updateRuntime]);
 
   const addAllDetectedCourses = useCallback(() => {
     setAuditConfig((prev) => {
@@ -802,7 +871,8 @@ export default function CourseOpsPage() {
     if (!inferred) return;
     setAuditConfig((prev) => {
       const base = ensureAuditConfigBase(prev);
-      const cur = ensureAuditCourseBase((base.courses || {})[courseKey]);
+      const existed = !!((base.courses || {})[courseKey]);
+      const cur = existed ? ensureAuditCourseBase((base.courses || {})[courseKey]) : { ...ensureAuditCourseBase(null), enabled: false };
       const pick = (rt: RoomType): string => {
         const arr = inferred.rooms[rt] || [];
         if (arr.length !== 1) return (cur.rooms as any)?.[rt] || "";
@@ -817,7 +887,8 @@ export default function CourseOpsPage() {
   const updateCourseField = useCallback((courseKey: string, patch: Partial<CourseMembershipAuditCourse>) => {
     setAuditConfig((prev) => {
       const base = ensureAuditConfigBase(prev);
-      const cur = ensureAuditCourseBase((base.courses || {})[courseKey]);
+      const existed = !!((base.courses || {})[courseKey]);
+      const cur = existed ? ensureAuditCourseBase((base.courses || {})[courseKey]) : { ...ensureAuditCourseBase(null), enabled: false };
       const nextCourse: CourseMembershipAuditCourse = {
         ...cur,
         ...patch,
@@ -843,6 +914,38 @@ export default function CourseOpsPage() {
     }, 5000);
     return () => clearInterval(t);
   }, [loadRooms, loadRuntime, loadAuditConfig, loadAuditWorkerStatus, loadOpenchatMembersSheetsConfig, loadOpenchatMembersSheetsWorkerStatus]);
+
+  // /course 첫 진입 UX: 설정이 비어 있으면(또는 설정파일이 없으면) 감지된 코스를 UI 상태에 미리 채운다. (저장은 사용자가 명시적으로 수행)
+  useEffect(() => {
+    if (!auditLoaded) return;
+    if (autoSeededRef.current) return;
+    if (!inferredCourses.length) return;
+
+    const curKeys = Object.keys((auditConfig && typeof auditConfig === "object" ? auditConfig.courses : null) || {});
+    if (curKeys.length) {
+      autoSeededRef.current = true;
+      return;
+    }
+
+    setAuditConfig((prev) => {
+      const base = ensureAuditConfigBase(prev);
+      const nextCourses: Record<string, CourseMembershipAuditCourse> = { ...(base.courses || {}) };
+      for (const c of inferredCourses) {
+        const cc = ensureAuditCourseBase(null);
+        cc.enabled = false;
+        const pick = (rt: RoomType): string => {
+          const arr = c.rooms[rt] || [];
+          if (arr.length !== 1) return "";
+          return normStr(arr[0]?.roomId);
+        };
+        cc.rooms = { chat: pick("chat"), notice: pick("notice"), premium: pick("premium") };
+        nextCourses[c.courseKey] = cc;
+      }
+      return { ...base, courses: nextCourses };
+    });
+    setAuditDirty(true);
+    autoSeededRef.current = true;
+  }, [auditLoaded, auditConfig, inferredCourses]);
 
   // 1회 실행(임시 ON) 완료 후 원래 상태로 복구
   useEffect(() => {
@@ -896,7 +999,7 @@ export default function CourseOpsPage() {
             새로고침
           </button>
           <button className="btn-save" disabled={!auditDirty || auditSaving === "saving"} onClick={() => void saveAuditConfig()}>
-            {auditSaving === "saving" ? "저장 중…" : "v2 설정 저장"}
+            {auditSaving === "saving" ? "저장 중…" : "설정 저장"}
           </button>
         </div>
       </div>
@@ -922,18 +1025,35 @@ export default function CourseOpsPage() {
       )}
 
       <div className="pipeline-card" style={{ marginTop: 12 }}>
-        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>강의톡방 자동 감지</h3>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-          - 방 이름 접두어 규칙: <code>(사담방)</code> / <code>(공지방)</code> / <code>(프리미엄방)</code>
-          <br />
-          - 접두어 뒤 나머지 이름이 같으면 같은 코스로 묶습니다.
+        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>빠른 사용법</h3>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.75 }}>
+          <div>1) 방 이름이 <code>(사담방)</code> / <code>(공지방)</code> / <code>(프리미엄방)</code> 접두어 규칙을 따르는지 확인합니다.</div>
+          <div>2) 아래 코스 카드에서 <b>스프레드시트 URL/ID</b> + <b>카페 clubId</b> + <b>프리미엄/운영진 등급</b>만 입력합니다.</div>
+          <div>3) 코스 카드의 <b>지금 1회 업서트</b>로 RAW/VIEW/LOG를 한 번 갱신합니다. (v2는 clear 없이 upsert)</div>
+          <div>4) 초반에 자주 확인이 필요하면 <b>자동 갱신</b>을 켭니다. (주기는 아래에 표시)</div>
+          <div>5) 카카오 안내(레거시)는 <b>강의 메시지 발송</b>이 ON일 때만 나가며, OFF면 절대 발송되지 않습니다.</div>
         </div>
-        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <span className="tag tag-excluded">감지 코스 {inferredCourses.length}개</span>
-          <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={addAllDetectedCourses}>
-            감지 코스 전체를 v2 설정에 추가
-          </button>
-          <span className={`tag ${auditDirty ? "tag-inactive" : "tag-active"}`}>v2 설정 {auditDirty ? "저장 필요" : "OK"}</span>
+      </div>
+
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>v2 자동 갱신</h3>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <label className="control-label" style={{ display: "flex", gap: 8, alignItems: "center" }} title="ON이면 enabled 코스만 주기적으로 Sheets를 갱신합니다.">
+            <input
+              type="checkbox"
+              checked={!!auditConfig?.worker?.enabled}
+              onChange={(e) => void setV2AutoRunEnabled(e.target.checked)}
+              disabled={auditSaving === "saving"}
+            />
+            자동 갱신
+          </label>
+          <span className="tag tag-excluded" title="초반/안정기 주기">
+            {v2ScheduleLabel}
+          </span>
+          <span className={`tag ${auditConfig?.worker?.enabled ? "tag-active" : "tag-inactive"}`}>
+            {auditConfig?.worker?.enabled ? "ON" : "OFF"}
+          </span>
+          <span className={`tag ${auditDirty ? "tag-inactive" : "tag-active"}`}>설정 {auditDirty ? "저장 필요" : "OK"}</span>
           <span className="tag tag-excluded" title={auditPath || ""}>설정파일 {auditExists ? "OK" : "없음"}</span>
           <span className="tag tag-excluded" title={auditServiceAccount.path || ""}>서비스계정 {auditServiceAccount.exists ? "OK" : "없음"}</span>
           {auditServiceAccount.clientEmail && (
@@ -942,17 +1062,13 @@ export default function CourseOpsPage() {
           <span className="tag tag-excluded" title="course-membership-audit-worker status">
             워커 {auditWorkerStatus?.status?.pid ? `RUN(pid=${auditWorkerStatus.status.pid})` : "N/A"}
           </span>
-          <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => void restartAuditWorker()}>
-            워커 재시작
-          </button>
           <button
-            className="btn-save"
+            className="btn-outline"
             style={{ padding: "6px 10px", fontSize: 12 }}
-            disabled={!auditDirty || auditSaving === "saving"}
-            onClick={() => void saveAuditConfig()}
-            title="data/course_membership_audit.json 저장"
+            onClick={() => void restartAuditWorker()}
+            title="windows/start_course_membership_audit_worker.ps1 -Restart"
           >
-            {auditSaving === "saving" ? "저장 중…" : "v2 설정 저장"}
+            워커 재시작
           </button>
           <label className="btn-outline" style={{ padding: "6px 10px", fontSize: 12, cursor: "pointer" }} title="data/gcp_service_account.json 업로드">
             서비스계정 업로드
@@ -966,17 +1082,82 @@ export default function CourseOpsPage() {
               }}
             />
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)" }}>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          - Sheets upsert 권한은 <b>Chrome 로그인</b>이 아니라 <b>서비스계정(Editor 공유)</b> 기준입니다.
+          <br />
+          - 자동 갱신은 <b>코스별 enabled</b>가 ON인 코스만 실행합니다.
+        </div>
+      </div>
+
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>강의톡방 자동 감지</h3>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          - 방 이름 접두어 규칙: <code>(사담방)</code> / <code>(공지방)</code> / <code>(프리미엄방)</code>
+          <br />
+          - 접두어 뒤 나머지 이름이 같으면 같은 코스로 묶습니다.
+        </div>
+        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span className="tag tag-excluded">감지 코스 {inferredCourses.length}개</span>
+          <span className="tag tag-excluded">코스 카드 {courseKeys.length}개</span>
+          <button
+            className="btn-outline"
+            style={{ padding: "6px 10px", fontSize: 12 }}
+            onClick={addAllDetectedCourses}
+            disabled={!inferredCourses.length}
+            title="감지된 코스를 v2 설정에 추가합니다(기본: enabled=OFF)."
+          >
+            감지 코스 채우기(기본 OFF)
+          </button>
+          {!inferredCourses.length && (
+            <span className="tag tag-inactive" title="방 이름 접두어 규칙을 확인하세요">
+              감지 없음
+            </span>
+          )}
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          - 감지된 코스/방 매핑은 아래 코스 카드에 자동 반영됩니다.
+          <br />
+          - 감지가 안 되면 <b>방 이름 접두어</b>가 정확한지 먼저 확인해주세요.
+        </div>
+      </div>
+
+      <div className="pipeline-card" style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>카카오 안내(레거시)</h3>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)" }}>
             강의 메시지 발송
             <input
               type="checkbox"
               checked={courseOpsSendEnabled}
-              onChange={(e) => void setCourseOpsSendEnabled(e.target.checked)}
+              onChange={(e) => {
+                const next = e.target.checked;
+                if (next) {
+                  const ok = confirm(
+                    "강의 메시지 발송을 켤까요?\n\n" +
+                    "- SAFE_MODE가 OFF이고\n" +
+                    "- Talk-API가 ON이며\n" +
+                    "- 코스별 '입장자 안내'가 ON인 방이 있으면\n" +
+                    "안내 메시지가 자동 발송될 수 있습니다.\n\n" +
+                    "※ 마음의 준비가 됐을 때만 켜주세요.",
+                  );
+                  if (!ok) return;
+                }
+                void setCourseOpsSendEnabled(next);
+              }}
               disabled={runtimeSaving === "saving"}
             />
           </label>
-          <span className={`tag ${courseOpsSendEnabled ? "tag-active" : "tag-inactive"}`} title="OFF이면 courseRoster가 켜져도 발송하지 않습니다">
+          <span className={`tag ${courseOpsSendEnabled ? "tag-active" : "tag-inactive"}`} title="OFF면 어떤 코스/방 설정이 켜져 있어도 발송되지 않습니다.">
             발송 {courseOpsSendEnabled ? "ON" : "OFF"}
+          </span>
+          <span className={`tag ${(runtime && (runtime as any).safeMode === true) ? "tag-inactive" : "tag-active"}`} title="SAFE_MODE=true면 모든 발신이 차단됩니다.">
+            SAFE_MODE {(runtime && (runtime as any).safeMode === true) ? "ON" : "OFF"}
+          </span>
+          <span className={`tag ${(runtime && (runtime as any).talkApi?.enabled === true) ? "tag-active" : "tag-inactive"}`} title="Talk-API가 꺼져 있으면 멘션/Reply 발송이 불가합니다.">
+            Talk-API {(runtime && (runtime as any).talkApi?.enabled === true) ? "ON" : "OFF"}
           </span>
           <span className={`tag ${runtimeSaving === "error" ? "tag-excluded" : runtimeSaving === "saving" ? "tag-inactive" : "tag-active"}`}>
             런타임 {runtimeSaving === "saving" ? "저장 중" : runtimeSaving === "error" ? "오류" : "OK"}
@@ -984,14 +1165,17 @@ export default function CourseOpsPage() {
         </div>
 
         <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-          - Sheets upsert 권한은 <b>Chrome 로그인</b>이 아니라 <b>서비스계정(Editor 공유)</b> 기준입니다.
+          - 이 토글이 <b>OFF</b>이면 <b>절대 발송되지 않습니다.</b>
           <br />
-          - 등급 규칙: <b>프리미엄 등급 목록</b>에 포함되면 프리미엄, 그 외(새싹/일반 포함)는 일반으로 취급합니다. 운영진은 <b>운영진 등급 목록</b>으로 별도 분리합니다.
+          - 발송은 코스 카드의 <b>입장자 안내(레거시)</b>가 ON인 방에서만 동작합니다.
           <br />
-          - <code>courseRoster</code> 토글은 v1(레거시: 입장자 안내/닉네임 검증)용 런타임 플래그입니다.
+          - (v1 동작) 신규 입장자 기준으로 <b>입장 후 15분</b>, <b>24시간</b>에 최대 2회 안내(멘션/Reply)를 보냅니다.
+          <br />
+          - v2 Sheets 업서트는 메시지 발송과 무관합니다.
         </div>
       </div>
 
+      {showOpenchatMembersSheetsUi && (
       <div className="pipeline-card" style={{ marginTop: 12 }}>
         <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>톡방 멤버 Sheets(선택)</h3>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 10 }}>
@@ -1081,6 +1265,7 @@ export default function CourseOpsPage() {
           - 시트 탭 기본값(자동 추론): <code>(사담방)=MEMBERS_CHAT</code>, <code>(공지방)=MEMBERS_NOTICE</code>, <code>(프리미엄방)=MEMBERS_PREMIUM</code>
         </div>
       </div>
+      )}
 
       <div style={{ marginTop: 16 }}>
         <div className="section-title">
@@ -1098,24 +1283,54 @@ export default function CourseOpsPage() {
 
         {courseKeys.map((courseKey) => {
           const inferred = inferredCourses.find((c) => c.courseKey === courseKey);
-          const cur = ensureAuditCourseBase((auditConfig?.courses || {})[courseKey]);
+          const hasConfig = !!(auditConfig?.courses && (auditConfig.courses as any)[courseKey]);
+          const curBase = ensureAuditCourseBase(hasConfig ? (auditConfig?.courses || {})[courseKey] : null);
+          const cur: CourseMembershipAuditCourse = hasConfig ? curBase : { ...curBase, enabled: false };
 
           const resolveOne = (rt: RoomType): RoomInfo | null => {
             const arr = inferred?.rooms?.[rt] || [];
             return arr.length === 1 ? arr[0] : null;
           };
 
-          const rChat = resolveOne("chat");
-          const rNotice = resolveOne("notice");
-          const rPremium = resolveOne("premium");
-          const inferredOk = !!(rChat && rNotice && rPremium);
-          const hasConfig = !!(auditConfig?.courses && (auditConfig.courses as any)[courseKey]);
+          const inferredChat = resolveOne("chat");
+          const inferredNotice = resolveOne("notice");
+          const inferredPremium = resolveOne("premium");
+          const inferredOk = !!(inferredChat && inferredNotice && inferredPremium);
+
+          const ridChat = normStr((cur.rooms as any)?.chat);
+          const ridNotice = normStr((cur.rooms as any)?.notice);
+          const ridPremium = normStr((cur.rooms as any)?.premium);
+          const mappingOk = !!(ridChat && ridNotice && ridPremium && new Set([ridChat, ridNotice, ridPremium]).size === 3);
+
+          const rChat = (ridChat ? (roomById.get(ridChat) || null) : null) || inferredChat;
+          const rNotice = (ridNotice ? (roomById.get(ridNotice) || null) : null) || inferredNotice;
+          const rPremium = (ridPremium ? (roomById.get(ridPremium) || null) : null) || inferredPremium;
 
           const clubIdInput = String(cur.clubId || "").trim();
           const spreadsheetInput = String(cur.spreadsheetId || "").trim();
           const joinUrlInput = String((cur as any).joinUrl || "").trim();
           const premiumGradeText = gradeTextByCourse[courseKey]?.premiumText ?? (cur.gradeRules?.premiumGrades || []).join(", ");
           const staffGradeText = gradeTextByCourse[courseKey]?.staffText ?? (cur.gradeRules?.staffGrades || []).join(", ");
+          const pendingOneOff = !!(pendingV2OneOff && (pendingV2OneOff as any)[courseKey]);
+          const v2CoursesState = (auditWorkerStatus && typeof auditWorkerStatus === "object") ? (auditWorkerStatus as any).state?.courses : null;
+          const v2CourseState = (v2CoursesState && typeof v2CoursesState === "object") ? (v2CoursesState as any)[courseKey] : null;
+          const v2LastResult = normStr(v2CourseState?.lastResult || "");
+          const v2LastRunTs = normStr(v2CourseState?.lastRunTs || "");
+          const v2NextRunTs = normStr(v2CourseState?.nextRunTs || "");
+          const courseKeySlug = String(courseKey || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+
+          const missingForRunOnce: string[] = [];
+          if (!auditServiceAccount.exists) missingForRunOnce.push("서비스계정");
+          if (!/^\d+$/.test(clubIdInput)) missingForRunOnce.push("clubId(숫자)");
+          if (!spreadsheetInput) missingForRunOnce.push("스프레드시트");
+          if (!mappingOk) missingForRunOnce.push("방 매핑");
+          const canRunOnce = missingForRunOnce.length === 0;
+          const runtimeFeatures = (runtime && typeof runtime === "object") ? (runtime as any).features : null;
+          const courseRosterEnabled = !!(
+            ridChat && runtimeFeatures && typeof runtimeFeatures === "object" && (runtimeFeatures as any)[ridChat]?.courseRoster === true &&
+            ridNotice && runtimeFeatures && typeof runtimeFeatures === "object" && (runtimeFeatures as any)[ridNotice]?.courseRoster === true &&
+            ridPremium && runtimeFeatures && typeof runtimeFeatures === "object" && (runtimeFeatures as any)[ridPremium]?.courseRoster === true
+          );
 
           const openchatCfgRooms: Record<string, any> =
             (openchatMembersSheetsConfig && typeof openchatMembersSheetsConfig === "object" && typeof (openchatMembersSheetsConfig as any).rooms === "object" && (openchatMembersSheetsConfig as any).rooms)
@@ -1164,43 +1379,56 @@ export default function CourseOpsPage() {
                     {courseKey}
                   </div>
                   <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span className={`tag ${inferredOk ? "tag-active" : "tag-inactive"}`}>
-                      방 감지 {inferredOk ? "OK" : "미완성"}
-                    </span>
-                    <span className={`tag ${hasConfig ? "tag-active" : "tag-excluded"}`}>
-                      v2 설정 {hasConfig ? "등록됨" : "없음"}
-                    </span>
-                    <span className={`tag ${cur.enabled !== false ? "tag-active" : "tag-inactive"}`}>
-                      {cur.enabled !== false ? "ENABLED" : "DISABLED"}
-                    </span>
-                    <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => ensureCourseEntry(courseKey)}>
-                      v2 설정 추가/복구
-                    </button>
-                    <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => applyInferredRooms(courseKey)} disabled={!inferred}>
-                      방 매핑 자동 적용
+                    <span className={`tag ${mappingOk ? "tag-active" : "tag-inactive"}`}>방 매핑 {mappingOk ? "OK" : "필요"}</span>
+                    <span className={`tag ${inferredOk ? "tag-active" : "tag-inactive"}`}>자동 감지 {inferredOk ? "OK" : "미완성"}</span>
+                    <span className={`tag ${hasConfig ? "tag-active" : "tag-excluded"}`}>설정 {hasConfig ? "OK" : "없음"}</span>
+                    {v2LastResult && (
+                      <span className={`tag ${v2LastResult === "OK" ? "tag-active" : "tag-excluded"}`}>
+                        최근 {v2LastResult}
+                      </span>
+                    )}
+                    {pendingOneOff && (
+                      <span className="tag tag-inactive" title="1회 업서트 실행을 위해 잠시 워커를 켠 상태일 수 있습니다.">
+                        1회 실행 대기
+                      </span>
+                    )}
+                    {v2LastRunTs && (
+                      <span className="tag tag-excluded" title="최근 실행">
+                        최근 {v2LastRunTs}
+                      </span>
+                    )}
+                    {v2NextRunTs && auditConfig?.worker?.enabled && cur.enabled !== false && (
+                      <span className="tag tag-excluded" title="다음 자동 실행 예정">
+                        다음 {v2NextRunTs}
+                      </span>
+                    )}
+                    <button
+                      className="btn-save"
+                      style={{ padding: "6px 10px", fontSize: 12 }}
+                      disabled={!canRunOnce || auditSaving === "saving"}
+                      onClick={() => void runV2UpsertOnce(courseKey)}
+                      title={canRunOnce ? "카페 + 3방 취합 → Sheets(AUDIT_VIEW/AUDIT_LOG) 1회 업서트" : `필수값 누락: ${missingForRunOnce.join(", ")}`}
+                    >
+                      {pendingOneOff ? "업서트 대기…" : "지금 1회 업서트"}
                     </button>
                     <button
                       className="btn-outline"
                       style={{ padding: "6px 10px", fontSize: 12 }}
-                      onClick={() => void setCourseRosterEnabledForCourse(courseKey, true)}
-                      title="runtime.features[*].courseRoster=true (v1 레거시용)"
-                      disabled={!inferredOk || runtimeSaving === "saving"}
+                      onClick={() => applyInferredRooms(courseKey)}
+                      disabled={!inferred || auditSaving === "saving"}
+                      title="감지된 방 매핑(사담/공지/프리미엄)을 rooms에 반영합니다."
                     >
-                      (레거시) courseRoster ON
+                      방 매핑 자동
                     </button>
-                    <button
-                      className="btn-outline"
-                      style={{ padding: "6px 10px", fontSize: 12 }}
-                      onClick={() => void setCourseRosterEnabledForCourse(courseKey, false)}
-                      title="runtime.features[*].courseRoster=false (v1 레거시용)"
-                      disabled={!inferredOk || runtimeSaving === "saving"}
-                    >
-                      (레거시) courseRoster OFF
-                    </button>
+                    {!hasConfig && (
+                      <button className="btn-outline" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => ensureCourseEntry(courseKey)}>
+                        설정 추가
+                      </button>
+                    )}
                   </div>
                 </div>
                 <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-secondary)" }}>
-                  사용
+                  자동 갱신 포함
                   <input
                     type="checkbox"
                     checked={cur.enabled !== false}
@@ -1259,7 +1487,7 @@ export default function CourseOpsPage() {
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>등급 규칙</div>
                     <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                      프리미엄 등급(콤마/줄바꿈)
+                      프리미엄 등급(구분자: 줄바꿈 / , / . / /)
                       <textarea
                         className="filter-input"
                         style={{ width: "100%", height: 76, marginTop: 6, paddingTop: 8 }}
@@ -1273,7 +1501,7 @@ export default function CourseOpsPage() {
                       />
                     </label>
                     <label style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10 }}>
-                      운영진 등급(콤마/줄바꿈)
+                      운영진 등급(구분자: 줄바꿈 / , / . / /)
                       <textarea
                         className="filter-input"
                         style={{ width: "100%", height: 66, marginTop: 6, paddingTop: 8 }}
@@ -1287,6 +1515,8 @@ export default function CourseOpsPage() {
                       />
                     </label>
                     <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                      - 등급명은 <b>정확히 일치</b>로만 판별합니다. (포함/정규식 X)
+                      <br />
                       - 위 목록에 없는 등급은 자동으로 일반(새싹 포함) 취급합니다.
                     </div>
                   </div>
@@ -1321,67 +1551,124 @@ export default function CourseOpsPage() {
                     </div>
                   </div>
 
-                  <div style={{ marginTop: 14 }}>
-                    <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>탭 이름(기본값)</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                        CAFE_RAW
-                        <input
-                          className="filter-input"
-                          style={{ width: "100%", height: 36, marginTop: 6 }}
-                          value={normStr(cur.tabs?.cafeRaw || "CAFE_RAW")}
-                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), cafeRaw: e.target.value } })}
-                        />
-                      </label>
-                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                        OPENCHAT_RAW
-                        <input
-                          className="filter-input"
-                          style={{ width: "100%", height: 36, marginTop: 6 }}
-                          value={normStr(cur.tabs?.openchatRaw || "OPENCHAT_RAW")}
-                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), openchatRaw: e.target.value } })}
-                        />
-                      </label>
-                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                        RULES_RAW
-                        <input
-                          className="filter-input"
-                          style={{ width: "100%", height: 36, marginTop: 6 }}
-                          value={normStr(cur.tabs?.rulesRaw || "RULES_RAW")}
-                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), rulesRaw: e.target.value } })}
-                        />
-                      </label>
-                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                        AUDIT_VIEW
-                        <input
-                          className="filter-input"
-                          style={{ width: "100%", height: 36, marginTop: 6 }}
-                          value={normStr(cur.tabs?.audit || "AUDIT_VIEW")}
-                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), audit: e.target.value } })}
-                        />
-                      </label>
-                      <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                        AUDIT_LOG
-                        <input
-                          className="filter-input"
-                          style={{ width: "100%", height: 36, marginTop: 6 }}
-                          value={normStr(cur.tabs?.auditLog || "AUDIT_LOG")}
-                          onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), auditLog: e.target.value } })}
-                        />
-                      </label>
-                    </div>
+                  <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      사담방 roomId
+                      <input
+                        className="filter-input"
+                        style={{ width: "100%", height: 36, marginTop: 6 }}
+                        value={ridChat}
+                        onChange={(e) => updateCourseField(courseKey, { rooms: { ...(cur.rooms || {}), chat: e.target.value } })}
+                        list={`rooms-${courseKeySlug}-chat`}
+                        placeholder="roomId (자동 감지가 안 되면 여기서 선택/입력)"
+                      />
+                      <datalist id={`rooms-${courseKeySlug}-chat`}>
+                        {(inferred?.rooms?.chat || []).map((r) => (
+                          <option key={r.roomId} value={String(r.roomId)}>{r.roomName}</option>
+                        ))}
+                      </datalist>
+                    </label>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      공지방 roomId
+                      <input
+                        className="filter-input"
+                        style={{ width: "100%", height: 36, marginTop: 6 }}
+                        value={ridNotice}
+                        onChange={(e) => updateCourseField(courseKey, { rooms: { ...(cur.rooms || {}), notice: e.target.value } })}
+                        list={`rooms-${courseKeySlug}-notice`}
+                        placeholder="roomId (자동 감지가 안 되면 여기서 선택/입력)"
+                      />
+                      <datalist id={`rooms-${courseKeySlug}-notice`}>
+                        {(inferred?.rooms?.notice || []).map((r) => (
+                          <option key={r.roomId} value={String(r.roomId)}>{r.roomName}</option>
+                        ))}
+                      </datalist>
+                    </label>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      프리미엄방 roomId
+                      <input
+                        className="filter-input"
+                        style={{ width: "100%", height: 36, marginTop: 6 }}
+                        value={ridPremium}
+                        onChange={(e) => updateCourseField(courseKey, { rooms: { ...(cur.rooms || {}), premium: e.target.value } })}
+                        list={`rooms-${courseKeySlug}-premium`}
+                        placeholder="roomId (자동 감지가 안 되면 여기서 선택/입력)"
+                      />
+                      <datalist id={`rooms-${courseKeySlug}-premium`}>
+                        {(inferred?.rooms?.premium || []).map((r) => (
+                          <option key={r.roomId} value={String(r.roomId)}>{r.roomName}</option>
+                        ))}
+                      </datalist>
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                    - roomId는 방 카드에서 ID를 클릭해 복사할 수 있습니다.
                   </div>
 
-                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
-                    <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                      - 입력을 바꾸면 <b>v2 설정 저장</b>을 눌러야 적용됩니다.
-                      <br />
-                      - 코스당 스프레드시트는 1개를 권장합니다. (3방 + 카페 RAW + AUDIT_VIEW + AUDIT_LOG)
+                  <details style={{ marginTop: 14 }}>
+                    <summary style={{ cursor: "pointer", fontWeight: 800, color: "var(--text-primary)" }}>고급: 탭 이름(기본값)</summary>
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          CAFE_RAW
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.cafeRaw || "CAFE_RAW")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), cafeRaw: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          OPENCHAT_RAW
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.openchatRaw || "OPENCHAT_RAW")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), openchatRaw: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          RULES_RAW
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.rulesRaw || "RULES_RAW")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), rulesRaw: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          AUDIT_VIEW
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.audit || "AUDIT_VIEW")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), audit: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          AUDIT_LOG
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.auditLog || "AUDIT_LOG")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), auditLog: e.target.value } })}
+                          />
+                        </label>
+                      </div>
+
+                      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                          - 입력을 바꾸면 상단 <b>설정 저장</b>을 눌러야 적용됩니다.
+                          <br />
+                          - 코스당 스프레드시트는 1개를 권장합니다. (3방 + 카페 RAW + AUDIT_VIEW + AUDIT_LOG)
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  </details>
                 </div>
               </div>
 
+              {showOpenchatMembersSheetsUi && (
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 800, color: "var(--text-primary)" }}>톡방 멤버 Sheets</div>
@@ -1519,13 +1806,60 @@ export default function CourseOpsPage() {
                   - 빈칸 sheetName은 방 이름 기반으로 자동 추론합니다. (<code>MEMBERS_CHAT/NOTICE/PREMIUM</code>)
                 </div>
               </div>
+              )}
+
+              <details style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
+                <summary style={{ cursor: "pointer", fontWeight: 800, color: "var(--text-primary)" }}>
+                  카카오 안내(레거시)
+                </summary>
+                <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                  <label className="control-label" style={{ display: "flex", gap: 8, alignItems: "center" }} title="v1 roster-worker: 입장자 안내/닉네임 검증 (15분/24시간 최대 2회)">
+                    <input
+                      type="checkbox"
+                      checked={courseRosterEnabled}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        const safeModeOn = !!(runtime && (runtime as any).safeMode === true);
+                        const talkApiOn = !!(runtime && (runtime as any).talkApi?.enabled === true);
+                        if (next && courseOpsSendEnabled && !safeModeOn && talkApiOn) {
+                          const ok = confirm(
+                            "입장자 안내(레거시)를 켤까요?\n\n" +
+                            "현재 상태에서 강의 메시지 발송이 ON이면,\n" +
+                            "신규 입장자에게 안내 메시지가 자동 발송될 수 있습니다.",
+                          );
+                          if (!ok) return;
+                        }
+                        void setCourseRosterEnabledForCourse(courseKey, next);
+                      }}
+                      disabled={!mappingOk || runtimeSaving === "saving"}
+                    />
+                    입장자 안내
+                  </label>
+                  <span className={`tag ${courseRosterEnabled ? "tag-active" : "tag-inactive"}`}>
+                    {courseRosterEnabled ? "ON" : "OFF"}
+                  </span>
+                  {!mappingOk && (
+                    <span className="tag tag-inactive" title="방 매핑(roomId)이 필요합니다.">
+                      방 매핑 필요
+                    </span>
+                  )}
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                  - 실제 발송은 위 <b>강의 메시지 발송</b>이 ON이고 <b>SAFE_MODE=OFF</b>일 때만 동작합니다.
+                  <br />
+                  - 이 설정은 v2 Sheets 업서트와 별개입니다.
+                </div>
+              </details>
             </div>
           );
         })}
       </div>
 
-      <div className="pipeline-card" style={{ marginTop: 16 }}>
-        <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>v2 워커 설정(전역)</h3>
+      <details className="pipeline-card" style={{ marginTop: 16 }}>
+        <summary style={{ cursor: "pointer", fontWeight: 800, color: "var(--text-primary)" }}>
+          고급: v2 워커 상세 설정
+        </summary>
+        <div style={{ marginTop: 10 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
           <label className="tag tag-excluded" style={{ display: "flex", alignItems: "center", gap: 6 }} title="enabled=true면 워커가 주기적으로 실행됩니다.">
             <input
@@ -1654,7 +1988,8 @@ export default function CourseOpsPage() {
           <br />
           - 초반(hot)에는 짧은 주기(예: 10분), 안정화 이후(steady)에는 긴 주기(예: 3시간)로 운영합니다.
         </div>
-      </div>
+        </div>
+      </details>
     </div>
   );
 }

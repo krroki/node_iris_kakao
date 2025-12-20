@@ -299,3 +299,19 @@
     - 결과 메시지 포맷(성공/실패 목록 + 발송 정보) 개선(프리픽스: `📣 공지 전송 결과`).
   - 코드: `node-iris-app/src/workers/broadcast_worker.ts`, `node-iris-app/src/utils/iris.ts`
   - 문서: `docs/adr/ADR-0029-broadcast-worker-from-logstream.md`, `docs/agents.md`, `docs/ssot.md`
+
+- 강의 운영 UI(/course) UX 단순화 + 가드레일 명확화:
+  - `/course` 상단에 “빠른 사용법”을 추가해 워크플로우(1회 업서트 → 자동 갱신 → (옵션) 카카오 안내)를 5단계로 고정.
+  - `v2 자동 갱신` 카드:
+    - `worker.enabled` 토글을 “자동 갱신”으로 노출하고, 주기(초기 N일/안정기)를 함께 표시.
+    - 토글 변경 시 설정 저장 + 워커 재시작까지 한 번에 수행(저장 실패 시 원복).
+    - 서비스계정 업로드/워커 재시작 버튼 제공.
+  - 코스 카드:
+    - `지금 1회 업서트` 버튼(카페+3방 취합 → `AUDIT_VIEW`/`AUDIT_LOG` 1회 갱신, clear 없이 upsert).
+    - `자동 갱신 포함` 토글(코스 enabled)과 방 매핑(roomId) 입력란 제공(자동 감지 실패/중복 대비).
+    - “탭 이름(기본값)”은 고급 섹션으로 접어 UI 과밀을 줄임.
+    - `카카오 안내(레거시)`는 코스별 `입장자 안내` 토글로 분리하고, ON 시 confirm을 추가.
+  - RoomCard:
+    - 방 단위 `멤버 보기/Sheets 업서트/멤버 Sheets 자동` UI는 혼선 방지를 위해 숨김(코스 운영은 `/course`에서 일원화).
+  - 운영 반영:
+    - `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild`로 재빌드/재기동 후 `/course` 200 확인.
