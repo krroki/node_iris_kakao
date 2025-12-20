@@ -846,7 +846,7 @@ class CourseMembershipAuditWorker:
             spreadsheet_id=course.spreadsheet_id,
             sheet_name=tabs.audit,
             rows=audit_rows,
-            key_cols=["clubId", "cafeUserId"],
+            key_cols=["cafeUserId"],
             now_iso=now_iso,
             extra_cols=extra_cols,
             ignore_update_cols={"cafeUpdatedAt", "openchatUpdatedAt"},
