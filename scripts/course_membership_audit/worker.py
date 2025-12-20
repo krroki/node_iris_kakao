@@ -891,6 +891,13 @@ class CourseMembershipAuditWorker:
                 ran_any = True
                 start_ms = _now_ms()
                 self.log("INFO", "점검 시작", courseKey=course.course_key, intervalSec=interval_sec)
+                # 이전 실행의 실패 결과가 남아있으면 "진행 중"에도 실패로 보일 수 있으므로 먼저 리셋한다.
+                cs["lastResult"] = "RUNNING"
+                cs["lastError"] = ""
+                cs["lastErrorUser"] = ""
+                cs["lastErrorTs"] = ""
+                cs["lastErrorMs"] = 0
+                self._save_state()
                 self._set_course_progress(course_key=course.course_key, stage="START", message="1회 업서트를 시작했어요", pct=10)
 
                 try:
@@ -899,6 +906,8 @@ class CourseMembershipAuditWorker:
                     cs["lastResult"] = result
                     cs["lastError"] = ""
                     cs["lastErrorUser"] = ""
+                    cs["lastErrorTs"] = ""
+                    cs["lastErrorMs"] = 0
                     self._set_course_progress(course_key=course.course_key, stage="DONE", message="완료됐어요", pct=100)
                     self.log("INFO", "점검 완료(OK)", courseKey=course.course_key, durationSec=round((_now_ms() - start_ms) / 1000.0, 3))
                 except SystemExit as e:
