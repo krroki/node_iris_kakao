@@ -144,6 +144,8 @@ export default function CourseOpsPage() {
   const [openchatMembersSheetsSyncMsgByRoom, setOpenchatMembersSheetsSyncMsgByRoom] = useState<Record<string, string>>({});
   const [openchatMembersSheetsSyncErrByRoom, setOpenchatMembersSheetsSyncErrByRoom] = useState<Record<string, string>>({});
 
+  const [pendingV2OneOff, setPendingV2OneOff] = useState<Record<string, { startedAtMs: number; originalWorkerEnabled: boolean; originalCourseEnabled: boolean }>>({});
+
   const inferredCourses = useMemo(() => {
     const grouped: Record<string, Record<RoomType, RoomInfo[]>> = {};
     for (const r of rooms || []) {
@@ -316,13 +318,14 @@ export default function CourseOpsPage() {
     }
   }, []);
 
-  const saveAuditConfig = useCallback(async () => {
+  const saveAuditConfig = useCallback(async (opts?: { workerEnabled?: boolean; courseEnabled?: Record<string, boolean> }) => {
     try {
       const cfgBase = auditConfig && typeof auditConfig === "object" ? auditConfig : null;
       if (!cfgBase) return false;
 
       const cfg: CourseMembershipAuditConfig = {
         ...cfgBase,
+        worker: { ...(cfgBase.worker || {}) },
         courses: { ...(cfgBase.courses || {}) },
       };
 
@@ -341,6 +344,18 @@ export default function CourseOpsPage() {
         };
       }
 
+      // (옵션) 저장 시점에 worker/course enabled 값을 강제 덮어쓴다.
+      if (opts && typeof opts.workerEnabled === "boolean") {
+        (cfg.worker as any) = { ...(cfg.worker || {}), enabled: opts.workerEnabled };
+      }
+      if (opts && opts.courseEnabled && typeof opts.courseEnabled === "object") {
+        for (const [courseKey, enabled] of Object.entries(opts.courseEnabled || {})) {
+          const cur = (cfg.courses || {})[courseKey];
+          if (!cur) continue;
+          (cfg.courses as any)[courseKey] = { ...(cur as any), enabled: !!enabled };
+        }
+      }
+
       // enabled=true 코스는 필수값이 빠지면 워커가 실패할 수 있으니 UI에서 선제 검증한다.
       const bad: string[] = [];
       for (const [courseKey, courseRaw] of Object.entries(cfg.courses || {})) {
@@ -348,8 +363,14 @@ export default function CourseOpsPage() {
         if (c?.enabled === false) continue;
         const clubId = String(c?.clubId || "").trim();
         const spreadsheetId = String(c?.spreadsheetId || "").trim();
+        const rooms = c?.rooms && typeof c.rooms === "object" ? c.rooms : {};
+        const ridChat = normStr((rooms as any).chat);
+        const ridNotice = normStr((rooms as any).notice);
+        const ridPremium = normStr((rooms as any).premium);
         if (!clubId || !/^\d+$/.test(clubId)) bad.push(`${courseKey}: clubId(숫자)`);
         if (!spreadsheetId) bad.push(`${courseKey}: spreadsheetId`);
+        if (!ridChat || !ridNotice || !ridPremium) bad.push(`${courseKey}: rooms(사담/공지/프리미엄)`);
+        if (ridChat && ridNotice && ridPremium && new Set([ridChat, ridNotice, ridPremium]).size !== 3) bad.push(`${courseKey}: rooms(중복)`);
       }
       if (bad.length) {
         throw new Error(`v2 설정 누락/오류: ${bad.join(", ")}`);
@@ -590,6 +611,70 @@ export default function CourseOpsPage() {
     }
   }, []);
 
+  const runV2UpsertOnce = useCallback(async (courseKey: string): Promise<void> => {
+    const ck = normStr(courseKey);
+    if (!ck) return;
+
+    const cfgBase = auditConfig && typeof auditConfig === "object" ? auditConfig : null;
+    if (!cfgBase) {
+      alert("v2 설정이 아직 로드되지 않았습니다. 잠시 후 다시 시도해주세요.");
+      return;
+    }
+    const course = ensureAuditCourseBase((cfgBase.courses || {})[ck]);
+
+    const clubId = normStr(course.clubId);
+    const spreadsheetId = normStr(course.spreadsheetId);
+    const rooms = course.rooms && typeof course.rooms === "object" ? course.rooms : {};
+    const ridChat = normStr((rooms as any).chat);
+    const ridNotice = normStr((rooms as any).notice);
+    const ridPremium = normStr((rooms as any).premium);
+
+    const missing: string[] = [];
+    if (!clubId || !/^\d+$/.test(clubId)) missing.push("clubId(숫자)");
+    if (!spreadsheetId) missing.push("스프레드시트 URL/ID");
+    if (!ridChat || !ridNotice || !ridPremium) missing.push("방 매핑(사담/공지/프리미엄)");
+    if (ridChat && ridNotice && ridPremium && new Set([ridChat, ridNotice, ridPremium]).size !== 3) missing.push("방 매핑(중복)");
+    if (missing.length) {
+      alert(`이 코스에서 1회 업서트를 실행하려면 먼저 아래를 채워주세요:\n- ${missing.join("\n- ")}`);
+      return;
+    }
+
+    const originalWorkerEnabled = !!cfgBase.worker?.enabled;
+    const originalCourseEnabled = course.enabled !== false;
+
+    const ok = confirm(
+      `이 코스의 데이터를 Google Sheets에 1회 업서트할까요?\n\n` +
+      `- 코스: ${ck}\n` +
+      `- 포함: 카페 크롤링 + 3방 멤버 취합 + AUDIT_VIEW/AUDIT_LOG 갱신\n\n` +
+      `※ 실행을 위해 워커를 잠깐 켤 수 있습니다(완료 후 원복).`,
+    );
+    if (!ok) return;
+
+    // 1회 실행을 위해 v2 worker/course를 일시적으로 ON → 저장
+    const saveOk = await saveAuditConfig({ workerEnabled: true, courseEnabled: { [ck]: true } });
+    if (!saveOk) return;
+
+    // 워커를 재시작해 즉시 반영(기동/설정 반영)
+    await restartAuditWorker();
+
+    // 코스 1회 실행 예약(nextRunMs=now)
+    try {
+      const r = await fetch(`/api/course-membership-audit/run-once`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ courseKey: ck }),
+      });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
+      setPendingV2OneOff((prev) => ({
+        ...prev,
+        [ck]: { startedAtMs: Date.now(), originalWorkerEnabled, originalCourseEnabled },
+      }));
+    } catch (e: any) {
+      alert(`1회 실행 예약 실패: ${String(e?.message || e)}`);
+    }
+  }, [auditConfig, saveAuditConfig, restartAuditWorker]);
+
   const setCourseOpsSendEnabled = useCallback(async (enabled: boolean) => {
     try {
       setRuntimeSaving("saving");
@@ -756,6 +841,44 @@ export default function CourseOpsPage() {
     }, 5000);
     return () => clearInterval(t);
   }, [loadRooms, loadRuntime, loadAuditConfig, loadAuditWorkerStatus, loadOpenchatMembersSheetsConfig, loadOpenchatMembersSheetsWorkerStatus]);
+
+  // 1회 실행(임시 ON) 완료 후 원래 상태로 복구
+  useEffect(() => {
+    const entries = Object.entries(pendingV2OneOff || {});
+    if (!entries.length) return;
+
+    const st = auditWorkerStatus && typeof auditWorkerStatus === "object" ? (auditWorkerStatus as any).state : null;
+    const courses = st && typeof st === "object" ? (st as any).courses : null;
+    if (!courses || typeof courses !== "object") return;
+
+    for (const [courseKey, p] of entries) {
+      const cs = (courses as any)[courseKey];
+      if (!cs || typeof cs !== "object") continue;
+      const lastRunMs = Number((cs as any).lastRunMs || 0);
+      if (!lastRunMs || lastRunMs < Number(p.startedAtMs || 0)) continue;
+
+      // 완료로 판단 → pending 제거 후 복구 시도
+      setPendingV2OneOff((prev) => {
+        const next = { ...(prev || {}) };
+        delete (next as any)[courseKey];
+        return next;
+      });
+
+      const needRestore = p.originalWorkerEnabled === false || p.originalCourseEnabled === false;
+      if (!needRestore) continue;
+
+      void (async () => {
+        await saveAuditConfig({
+          workerEnabled: p.originalWorkerEnabled,
+          courseEnabled: { [courseKey]: p.originalCourseEnabled },
+        });
+        // worker.enabled=false로 복귀하는 경우, 재시작으로 프로세스가 빨리 종료되도록 유도
+        if (p.originalWorkerEnabled === false) {
+          await restartAuditWorker();
+        }
+      })();
+    }
+  }, [pendingV2OneOff, auditWorkerStatus, saveAuditConfig, restartAuditWorker]);
 
   return (
     <div className="dashboard-container">
