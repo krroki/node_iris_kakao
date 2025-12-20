@@ -1157,9 +1157,6 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
       joinedAt: Number(p.guideSentAt || 0) || now,
     };
 
-    const nicknameNow = await queryOpenChatMemberNickname(p.roomId, p.userId, 8000).catch(() => null);
-    if (nicknameNow) entrant.name = nicknameNow;
-
     const isDefaultNickname = isKakaoDefaultNickname(entrant.name, defaultNickRegexes) === true;
     const confirmTemplate =
       isDefaultNickname && cfg.confirmTextKakaoDefaultNickname ? cfg.confirmTextKakaoDefaultNickname : cfg.confirmText;
