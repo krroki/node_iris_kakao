@@ -58,6 +58,11 @@ type PendingFollowUp = {
   expiresAt: number;
 };
 
+type TimeoutMentionConfig = {
+  enabled: boolean;
+  text: string;
+};
+
 type PendingOpenProfileCloseConfirmation = {
   roomId: string;
   roomName: string;
@@ -69,10 +74,20 @@ type PendingOpenProfileCloseConfirmation = {
   attempts: number;
 };
 
+type PendingNicknameChangeReminder = {
+  roomId: string;
+  roomName: string;
+  userId: string;
+  userName: string;
+  joinedAt: number;
+  dueAt: number;
+};
+
 type WorkerState = {
   lastSeenMs: number;
   pending: PendingFollowUp[];
   pendingOpenProfileCloseConfirmations?: PendingOpenProfileCloseConfirmation[];
+  pendingNicknameChangeReminders?: PendingNicknameChangeReminder[];
   roomLinkIds?: Record<string, { linkId: string; at: number }>;
   updatedAt: string;
 };
@@ -108,6 +123,8 @@ const joinBatches = new Map<string, JoinBatch>();
 const pendingByUser = new Map<string, PendingFollowUp>();
 // roomId:userId -> pending "open profile close" confirmation polling
 const pendingOpenProfileCloseByUser = new Map<string, PendingOpenProfileCloseConfirmation>();
+// roomId:userId -> pending "5m default-nickname reminder" check
+const pendingNicknameChangeReminderByUser = new Map<string, PendingNicknameChangeReminder>();
 
 // roomId -> linkId cache (reply attachment requires src_linkId)
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
@@ -295,6 +312,7 @@ type FollowUpConfig = {
   windowMs: number;
   maxPendingPerRoom: number;
   replies: string[];
+  timeoutMention: TimeoutMentionConfig;
 };
 
 function parseFollowUpConfig(runtime: RuntimeConfig): { ok: true; cfg: FollowUpConfig } | { ok: false; error: string } {
@@ -308,16 +326,58 @@ function parseFollowUpConfig(runtime: RuntimeConfig): { ok: true; cfg: FollowUpC
   const windowMsRaw = (fu as any).windowMs;
   const maxRaw = (fu as any).maxPendingPerRoom;
   const repliesRaw = (fu as any).replies;
+  const timeoutMentionRaw = (fu as any).timeoutMention;
 
   const windowMs = typeof windowMsRaw === "number" && Number.isFinite(windowMsRaw) ? Math.max(0, Math.floor(windowMsRaw)) : 0;
   const maxPendingPerRoom = typeof maxRaw === "number" && Number.isFinite(maxRaw) ? Math.max(0, Math.floor(maxRaw)) : 0;
   const replies = Array.isArray(repliesRaw) ? repliesRaw.map((x) => safeString(x)).filter(Boolean) : [];
 
+  let timeoutMention: TimeoutMentionConfig = { enabled: false, text: "" };
+  if (timeoutMentionRaw && typeof timeoutMentionRaw === "object") {
+    const en = (timeoutMentionRaw as any).enabled;
+    const text = safeString((timeoutMentionRaw as any).text ?? (timeoutMentionRaw as any).message ?? "");
+    timeoutMention = { enabled: en === true, text };
+  }
+
   if (enabled && windowMs <= 0) return { ok: false, error: "welcome.followUp.windowMs must be > 0" };
   if (enabled && maxPendingPerRoom <= 0) return { ok: false, error: "welcome.followUp.maxPendingPerRoom must be > 0" };
   if (enabled && replies.length === 0) return { ok: false, error: "welcome.followUp.replies must be non-empty" };
+  if (enabled && timeoutMention.enabled && !timeoutMention.text) {
+    return { ok: false, error: "welcome.followUp.timeoutMention.text must be non-empty" };
+  }
 
-  return { ok: true, cfg: { enabled, windowMs, maxPendingPerRoom, replies } };
+  return { ok: true, cfg: { enabled, windowMs, maxPendingPerRoom, replies, timeoutMention } };
+}
+
+type NicknameChangeReminderConfig = {
+  enabled: boolean;
+  delayMs: number;
+  maxPendingPerRoom: number;
+  text: string;
+};
+
+function parseNicknameChangeReminderConfig(
+  runtime: RuntimeConfig,
+): { ok: true; cfg: NicknameChangeReminderConfig } | { ok: false; error: string } {
+  const w = runtime.welcome && typeof runtime.welcome === "object" ? runtime.welcome : null;
+  const raw = w && typeof w === "object" ? (w as any).nicknameChangeReminder : null;
+  if (!raw || typeof raw !== "object") return { ok: false, error: "welcome.nicknameChangeReminder missing" };
+
+  const enabled = (raw as any).enabled;
+  if (typeof enabled !== "boolean") return { ok: false, error: "welcome.nicknameChangeReminder.enabled must be boolean" };
+
+  const delayMsRaw = (raw as any).delayMs ?? (raw as any).delay ?? null;
+  const maxRaw = (raw as any).maxPendingPerRoom;
+  const text = safeString((raw as any).text ?? (raw as any).message ?? "");
+
+  const delayMs = typeof delayMsRaw === "number" && Number.isFinite(delayMsRaw) ? Math.max(0, Math.floor(delayMsRaw)) : 0;
+  const maxPendingPerRoom = typeof maxRaw === "number" && Number.isFinite(maxRaw) ? Math.max(0, Math.floor(maxRaw)) : 0;
+
+  if (enabled && delayMs <= 0) return { ok: false, error: "welcome.nicknameChangeReminder.delayMs must be > 0" };
+  if (enabled && maxPendingPerRoom <= 0) return { ok: false, error: "welcome.nicknameChangeReminder.maxPendingPerRoom must be > 0" };
+  if (enabled && !text) return { ok: false, error: "welcome.nicknameChangeReminder.text must be non-empty" };
+
+  return { ok: true, cfg: { enabled, delayMs, maxPendingPerRoom, text } };
 }
 
 function parseOpenProfileCloseGuideConfig(
@@ -411,12 +471,15 @@ async function loadState(): Promise<WorkerState> {
     const pendingOpenProfileCloseConfirmations = Array.isArray(parsed.pendingOpenProfileCloseConfirmations)
       ? (parsed.pendingOpenProfileCloseConfirmations as PendingOpenProfileCloseConfirmation[])
       : [];
+    const pendingNicknameChangeReminders = Array.isArray(parsed.pendingNicknameChangeReminders)
+      ? (parsed.pendingNicknameChangeReminders as PendingNicknameChangeReminder[])
+      : [];
     const roomLinkIds =
       parsed.roomLinkIds && typeof parsed.roomLinkIds === "object" ? (parsed.roomLinkIds as Record<string, { linkId: string; at: number }>) : undefined;
     const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
-    return { lastSeenMs, pending, pendingOpenProfileCloseConfirmations, roomLinkIds, updatedAt };
+    return { lastSeenMs, pending, pendingOpenProfileCloseConfirmations, pendingNicknameChangeReminders, roomLinkIds, updatedAt };
   } catch {
-    return { lastSeenMs: 0, pending: [], updatedAt: new Date().toISOString() };
+    return { lastSeenMs: 0, pending: [], pendingNicknameChangeReminders: [], updatedAt: new Date().toISOString() };
   }
 }
 
@@ -641,9 +704,59 @@ function parseJoinFeedEntrantsFromMessageText(text: string, joinedAtMs: number):
   return out;
 }
 
+function parseProfileUpdateFeedMemberFromMessageText(text: string): { userId: string; nickName: string } | null {
+  const raw = safeString(text);
+  if (!raw || !raw.trim().startsWith("{")) return null;
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const ft = Number(parsed?.feedType);
+  if (!Number.isFinite(ft) || ft !== 2) return null;
+
+  const member = parsed?.member && typeof parsed.member === "object" ? parsed.member : null;
+  if (!member) return null;
+
+  const userId = safeString((member as any).userId);
+  const nickName = safeString((member as any).nickName) || "Guest";
+  if (!userId) return null;
+  return { userId, nickName };
+}
+
+async function maybeFastTrackOpenProfileCloseConfirmation(roomId: string, userId: string): Promise<void> {
+  const rid = safeString(roomId);
+  const uid = safeString(userId);
+  if (!rid || !uid) return;
+
+  const key = `${rid}:${uid}`;
+  const pending = pendingOpenProfileCloseByUser.get(key);
+  if (!pending) return;
+
+  const runtime = await loadRuntime();
+  // Guardrails: SAFE_MODE이면 늦은 발신을 막기 위해 pending을 제거한다(폴링 로직과 동일).
+  if (isSafeModeOn(runtime)) {
+    pendingOpenProfileCloseByUser.delete(key);
+    return;
+  }
+
+  pending.nextCheckAt = Date.now();
+  pendingOpenProfileCloseByUser.set(key, pending);
+  await processOpenProfileCloseConfirmations(runtime);
+}
+
 function countPendingByRoom(roomId: string): number {
   let n = 0;
   for (const it of pendingByUser.values()) {
+    if (it.roomId === roomId) n += 1;
+  }
+  return n;
+}
+
+function countPendingNicknameChangeRemindersByRoom(roomId: string): number {
+  let n = 0;
+  for (const it of pendingNicknameChangeReminderByUser.values()) {
     if (it.roomId === roomId) n += 1;
   }
   return n;
@@ -764,39 +877,64 @@ async function queryOpenChatMemberProfile(
 
   const base = safeString(process.env.IRIS_QUERY_BASE || process.env.IRIS_URL || "http://127.0.0.1:5050").replace(/\/+$/, "");
   const url = `${base}/query`;
-  const body = {
-    query:
-      "select profile_type, profile_link_id from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
-    bind: [roomId, userId],
-  };
+  // NOTE: 일부 환경에서 open_chat_member가 involved_chat_id로 바로 조회되지 않고,
+  // link_id(=open link id)로만 매칭되는 케이스가 있어 fallback을 둔다.
+  const linkId = await resolveOpenLinkIdForRoom(roomId).catch(() => null);
+  const candidates: Array<{ query: string; bind: string[]; label: string }> = [
+    {
+      label: "involved_chat_id",
+      query: "select profile_type, profile_link_id from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
+      bind: [roomId, userId],
+    },
+  ];
+  if (linkId) {
+    candidates.push({
+      label: "link_id",
+      query: "select profile_type, profile_link_id from db2.open_chat_member where link_id=? and user_id=? order by _id desc limit 1",
+      bind: [linkId, userId],
+    });
+  }
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     const tms = Math.min(25_000, Math.max(5000, Math.floor(timeoutMs) + (attempt - 1) * 3000));
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), tms);
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
-      clearTimeout(t);
+    for (const body of candidates) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), tms);
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: body.query, bind: body.bind }),
+          signal: ctrl.signal,
+        });
+        clearTimeout(t);
 
-      const j: any = await res.json().catch(() => null);
-      if (!res.ok) {
-        logger.warn("[welcome] queryOpenChatMemberProfile non-OK", { roomId, httpStatus: res.status, attempt });
-        continue;
+        const j: any = await res.json().catch(() => null);
+        if (!res.ok) {
+          logger.warn("[welcome] queryOpenChatMemberProfile non-OK", {
+            roomId,
+            httpStatus: res.status,
+            attempt,
+            by: body.label,
+          });
+          continue;
+        }
+
+        const row: any = j?.data?.[0] || null;
+        if (!row || typeof row !== "object") continue;
+
+        const profileLinkId = safeString(row?.profile_link_id ?? row?.profileLinkId ?? "");
+        const profileType = safeString(row?.profile_type ?? row?.profileType ?? "");
+        return { profileLinkId, profileType };
+      } catch (e) {
+        logger.warn("[welcome] queryOpenChatMemberProfile failed", {
+          roomId,
+          err: String(e),
+          attempt,
+          timeoutMs: tms,
+          by: body.label,
+        });
       }
-
-      const row: any = j?.data?.[0] || null;
-      if (!row || typeof row !== "object") return null;
-
-      const profileLinkId = safeString(row?.profile_link_id ?? row?.profileLinkId ?? "");
-      const profileType = safeString(row?.profile_type ?? row?.profileType ?? "");
-      return { profileLinkId, profileType };
-    } catch (e) {
-      logger.warn("[welcome] queryOpenChatMemberProfile failed", { roomId, err: String(e), attempt, timeoutMs: tms });
     }
 
     if (attempt < 2) {
@@ -838,38 +976,51 @@ async function queryOpenChatMemberNickname(roomIdRaw: string, userIdRaw: string,
 
   const base = safeString(process.env.IRIS_QUERY_BASE || process.env.IRIS_URL || "http://127.0.0.1:5050").replace(/\/+$/, "");
   const url = `${base}/query`;
-  const body = {
-    query: "select nickname from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
-    bind: [roomId, userId],
-  };
+  const linkId = await resolveOpenLinkIdForRoom(roomId).catch(() => null);
+  const candidates: Array<{ query: string; bind: string[]; label: string }> = [
+    {
+      label: "involved_chat_id",
+      query: "select nickname from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
+      bind: [roomId, userId],
+    },
+  ];
+  if (linkId) {
+    candidates.push({
+      label: "link_id",
+      query: "select nickname from db2.open_chat_member where link_id=? and user_id=? order by _id desc limit 1",
+      bind: [linkId, userId],
+    });
+  }
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     const tms = Math.min(25_000, Math.max(5000, Math.floor(timeoutMs) + (attempt - 1) * 3000));
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), tms);
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
-      clearTimeout(t);
+    for (const body of candidates) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), tms);
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: body.query, bind: body.bind }),
+          signal: ctrl.signal,
+        });
+        clearTimeout(t);
 
-      const j: any = await res.json().catch(() => null);
-      if (!res.ok) {
-        logger.warn("[welcome] queryOpenChatMemberNickname non-OK", { roomId, httpStatus: res.status, attempt });
-        continue;
+        const j: any = await res.json().catch(() => null);
+        if (!res.ok) {
+          logger.warn("[welcome] queryOpenChatMemberNickname non-OK", { roomId, httpStatus: res.status, attempt, by: body.label });
+          continue;
+        }
+
+        const row: any = j?.data?.[0] || null;
+        if (!row || typeof row !== "object") continue;
+
+        const nicknameRaw = safeString(row?.nickname ?? row?.nickName ?? "");
+        const nickname = normalizeNameForMention(decodeNicknameFromDb(nicknameRaw));
+        return nickname || null;
+      } catch (e) {
+        logger.warn("[welcome] queryOpenChatMemberNickname failed", { roomId, err: String(e), attempt, timeoutMs: tms, by: body.label });
       }
-
-      const row: any = j?.data?.[0] || null;
-      if (!row || typeof row !== "object") return null;
-
-      const nicknameRaw = safeString(row?.nickname ?? row?.nickName ?? "");
-      const nickname = normalizeNameForMention(decodeNicknameFromDb(nicknameRaw));
-      return nickname || null;
-    } catch (e) {
-      logger.warn("[welcome] queryOpenChatMemberNickname failed", { roomId, err: String(e), attempt, timeoutMs: tms });
     }
 
     if (attempt < 2) {
@@ -1394,6 +1545,40 @@ async function flushWelcome(roomId: string): Promise<void> {
     roomPending += 1;
   }
 
+  // 5분 기본닉 닉네임 변경 리마인더 (입장자 기준)
+  const nickCfgRes = parseNicknameChangeReminderConfig(runtime);
+  if (nickCfgRes.ok && nickCfgRes.cfg.enabled) {
+    const nickCfg = nickCfgRes.cfg;
+    const regexes = compileDefaultNickRegexes(runtime);
+    if (regexes) {
+      const now2 = Date.now();
+      const currentNickPending = countPendingNicknameChangeRemindersByRoom(roomId);
+      let roomNickPending = currentNickPending;
+      for (const e of entrants) {
+        if (roomNickPending >= nickCfg.maxPendingPerRoom) break;
+        const userId = safeString(e.senderId);
+        if (!userId) continue;
+
+        const klass = isKakaoDefaultNickname(safeString(e.name), regexes);
+        if (klass !== true) continue;
+
+        const joinedAt = Number(e.joinedAt || 0) || now2;
+        const dueAt = joinedAt + nickCfg.delayMs;
+        if (dueAt <= now2) continue;
+
+        pendingNicknameChangeReminderByUser.set(`${roomId}:${userId}`, {
+          roomId,
+          roomName: batch.roomName,
+          userId,
+          userName: safeString(e.name) || "Guest",
+          joinedAt,
+          dueAt,
+        });
+        roomNickPending += 1;
+      }
+    }
+  }
+
   // Image send failure must not block follow-up tracking (aligned with legacy bot path).
   if (imageUrls.length > 0) {
     const limited = imageUrls.slice(0, 6);
@@ -1566,11 +1751,177 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
   });
 }
 
-function expirePendingFollowUps(): void {
+async function expirePendingFollowUpsAndMaybeTimeoutMention(runtime: RuntimeConfig): Promise<void> {
   const now = Date.now();
+  const expired: PendingFollowUp[] = [];
+
   for (const [k, v] of pendingByUser.entries()) {
-    if (!v || typeof v.expiresAt !== "number") continue;
-    if (now >= v.expiresAt) pendingByUser.delete(k);
+    if (!v || typeof v.expiresAt !== "number") {
+      pendingByUser.delete(k);
+      continue;
+    }
+    if (now >= v.expiresAt) {
+      expired.push(v);
+      pendingByUser.delete(k);
+    }
+  }
+
+  if (expired.length === 0) return;
+
+  const cfgRes = parseFollowUpConfig(runtime);
+  if (!cfgRes.ok) return;
+  const cfg = cfgRes.cfg;
+  if (!cfg.enabled) return;
+  if (!cfg.timeoutMention.enabled || !cfg.timeoutMention.text) return;
+
+  // Guardrails: SAFE_MODE이면 늦은 발신을 막기 위해 만료 멘션은 스킵한다.
+  if (isSafeModeOn(runtime)) return;
+
+  const byRoom = new Map<string, PendingFollowUp[]>();
+  for (const e of expired) {
+    const rid = safeString((e as any)?.roomId);
+    if (!rid) continue;
+    const list = byRoom.get(rid) || [];
+    list.push(e);
+    byRoom.set(rid, list);
+  }
+
+  for (const [rid, list] of byRoom.entries()) {
+    if (!list.length) continue;
+    if (!isRoomAllowed(runtime, rid)) continue;
+    if (!isFeatureEnabled(runtime, rid, "welcome")) continue;
+    if (!isWelcomeFollowUpEnabledForRoom(runtime, rid)) continue;
+
+    const targets: WelcomeEntrant[] = list
+      .map((e) => ({ name: safeString((e as any)?.userName) || "Guest", senderId: safeString((e as any)?.userId), joinedAt: Number((e as any)?.joinedAt || 0) || now }))
+      .filter((e) => e.senderId);
+    if (targets.length === 0) continue;
+
+    const chunks = chunkArray(targets, 15);
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i]!;
+      const { text: message, hasMention } = renderWelcomeText(cfg.timeoutMention.text, chunk, rid);
+      if (!message) continue;
+      const mentionees = chunk
+        .map((e) => ({ name: e.name, userId: e.senderId }))
+        .filter((m) => m.userId && m.name && message.includes("@" + m.name));
+
+      let okTalk = false;
+      let okIris = false;
+      try {
+        okTalk = await tryServerTalkApiDispatch(logger, rid, message, hasMention && mentionees.length ? mentionees : [], 12000);
+      } catch (e) {
+        okTalk = false;
+        logger.warn("[followup-timeout] dispatch threw", { roomId: rid, err: String(e) });
+      }
+      if (!okTalk) {
+        const fallbackText = hasMention && mentionees.length ? stripAtMentionsForFallback(message, mentionees) : message;
+        okIris = await tryServerIrisReplyText(logger, rid, fallbackText, 12000);
+      }
+
+      await updateStatus({
+        lastFollowUpTimeoutAttemptTs: new Date().toISOString(),
+        lastFollowUpTimeoutRoomId: rid,
+        lastFollowUpTimeoutOk: okTalk || okIris,
+        lastFollowUpTimeoutCount: chunk.length,
+      });
+
+      if (i < chunks.length - 1) await sleepMs(1500);
+    }
+  }
+}
+
+async function expirePendingNicknameChangeRemindersAndMaybeNudge(runtime: RuntimeConfig): Promise<void> {
+  if (pendingNicknameChangeReminderByUser.size === 0) return;
+
+  const cfgRes = parseNicknameChangeReminderConfig(runtime);
+  if (!cfgRes.ok) return;
+  const cfg = cfgRes.cfg;
+  if (!cfg.enabled) return;
+
+  const now = Date.now();
+  const due: PendingNicknameChangeReminder[] = [];
+  for (const [k, v] of pendingNicknameChangeReminderByUser.entries()) {
+    if (!v || typeof v.dueAt !== "number") {
+      pendingNicknameChangeReminderByUser.delete(k);
+      continue;
+    }
+    if (now >= v.dueAt) {
+      due.push(v);
+      pendingNicknameChangeReminderByUser.delete(k);
+    }
+  }
+  if (due.length === 0) return;
+
+  // Guardrails: SAFE_MODE이면 늦은 발신을 막기 위해 만료된 리마인더는 스킵한다.
+  if (isSafeModeOn(runtime)) return;
+
+  const regexes = compileDefaultNickRegexes(runtime);
+  if (!regexes) return;
+
+  const byRoom = new Map<string, PendingNicknameChangeReminder[]>();
+  for (const e of due) {
+    const rid = safeString((e as any)?.roomId);
+    if (!rid) continue;
+    const list = byRoom.get(rid) || [];
+    list.push(e);
+    byRoom.set(rid, list);
+  }
+
+  for (const [rid, list] of byRoom.entries()) {
+    if (!list.length) continue;
+    if (!isRoomAllowed(runtime, rid)) continue;
+    if (!isFeatureEnabled(runtime, rid, "welcome")) continue;
+
+    const targets: WelcomeEntrant[] = [];
+    const roomName = safeString(list[0]?.roomName) || rid;
+
+    for (const e of list) {
+      const userId = safeString((e as any)?.userId);
+      if (!userId) continue;
+
+      const nickname = await queryOpenChatMemberNickname(rid, userId, 8000);
+      if (!nickname) continue;
+
+      const klass = isKakaoDefaultNickname(nickname, regexes);
+      if (klass !== true) continue;
+
+      targets.push({ name: nickname, senderId: userId, joinedAt: Number((e as any)?.joinedAt || 0) || now });
+    }
+
+    if (targets.length === 0) continue;
+
+    const chunks = chunkArray(targets, 15);
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i]!;
+      const { text: message, hasMention } = renderWelcomeText(cfg.text, chunk, roomName);
+      if (!message) continue;
+      const mentionees = chunk
+        .map((e) => ({ name: e.name, userId: e.senderId }))
+        .filter((m) => m.userId && m.name && message.includes("@" + m.name));
+
+      let okTalk = false;
+      let okIris = false;
+      try {
+        okTalk = await tryServerTalkApiDispatch(logger, rid, message, hasMention && mentionees.length ? mentionees : [], 12000);
+      } catch (e) {
+        okTalk = false;
+        logger.warn("[nickname-5m] dispatch threw", { roomId: rid, err: String(e) });
+      }
+      if (!okTalk) {
+        const fallbackText = hasMention && mentionees.length ? stripAtMentionsForFallback(message, mentionees) : message;
+        okIris = await tryServerIrisReplyText(logger, rid, fallbackText, 12000);
+      }
+
+      await updateStatus({
+        lastNicknameChangeReminderAttemptTs: new Date().toISOString(),
+        lastNicknameChangeReminderRoomId: rid,
+        lastNicknameChangeReminderOk: okTalk || okIris,
+        lastNicknameChangeReminderCount: chunk.length,
+      });
+
+      if (i < chunks.length - 1) await sleepMs(1500);
+    }
   }
 }
 
@@ -1617,6 +1968,13 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
         }
         return;
       }
+
+      // feedType=2: 프로필 변경(예: 오픈프로필 닫기) 이벤트가 들어오면,
+      // pending open-profile close confirmation을 즉시 한 번 더 체크해 확인 멘트를 빠르게 발신한다.
+      const upd = parseProfileUpdateFeedMemberFromMessageText(safeString(entry.text));
+      if (upd) {
+        await maybeFastTrackOpenProfileCloseConfirmation(roomId, upd.userId);
+      }
     }
     await handleFollowUpMessage(entry);
     return;
@@ -1657,6 +2015,25 @@ async function connectAndRun(): Promise<void> {
       attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
     });
   }
+  // restore nickname change reminders (within TTL)
+  for (const p of state.pendingNicknameChangeReminders || []) {
+    if (!p || !p.roomId || !p.userId) continue;
+    const roomId = safeString((p as any).roomId);
+    const userId = safeString((p as any).userId);
+    if (!roomId || !userId) continue;
+
+    const dueAt = Number((p as any).dueAt);
+    if (!Number.isFinite(dueAt) || dueAt <= now) continue;
+
+    pendingNicknameChangeReminderByUser.set(`${roomId}:${userId}`, {
+      roomId,
+      roomName: safeString((p as any).roomName) || roomId,
+      userId,
+      userName: safeString((p as any).userName) || "Guest",
+      joinedAt: Number((p as any).joinedAt || 0) || now,
+      dueAt,
+    });
+  }
   // restore link_id cache (best-effort)
   if (state.roomLinkIds && typeof state.roomLinkIds === "object") {
     for (const [rid, v] of Object.entries(state.roomLinkIds)) {
@@ -1681,6 +2058,7 @@ async function connectAndRun(): Promise<void> {
 	      pending: pendingByUser.size,
 	      pendingOpenProfileCloseConfirmations: pendingOpenProfileCloseByUser.size,
 	      pendingOpenProfileCloseConfirms: pendingOpenProfileCloseByUser.size,
+	      pendingNicknameChangeReminders: pendingNicknameChangeReminderByUser.size,
 	    });
 	  }, 30_000);
   try {
@@ -1697,11 +2075,13 @@ async function connectAndRun(): Promise<void> {
 	      try {
 	        const runtime = await loadRuntime();
 	        await processOpenProfileCloseConfirmations(runtime);
-	        expirePendingFollowUps();
+	        await expirePendingFollowUpsAndMaybeTimeoutMention(runtime);
+	        await expirePendingNicknameChangeRemindersAndMaybeNudge(runtime);
 	        const snapshot: WorkerState = {
 	          lastSeenMs: lastSeenMsRef.v,
 	          pending: Array.from(pendingByUser.values()),
 	          pendingOpenProfileCloseConfirmations: Array.from(pendingOpenProfileCloseByUser.values()),
+	          pendingNicknameChangeReminders: Array.from(pendingNicknameChangeReminderByUser.values()),
 	          roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
 	          updatedAt: new Date().toISOString(),
 	        };

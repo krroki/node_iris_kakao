@@ -72,6 +72,7 @@
 - 2025-12-19: EMFILE 재발 원인 확정 및 핫픽스 — `@tsuki-chat/node-iris` Logger가 인스턴스마다 winston File transport를 생성해 `logs/app.log`/`logs/error*.log` 핸들이 누수되었고, 공유 winstonLogger(transport 단일) 방식으로 핫픽스해 누수를 차단. 재설치 대비로 `patch-package`를 도입해 `postinstall`에서 자동 재적용, `@tsuki-chat/node-iris`는 `1.6.41`로 버전 고정. (ADR-0042)
 - 2025-12-19: Welcome 정책 재정렬 — 오픈프로필 닫기 안내는 “첫 이미지 업로드(15분 내)”에서만 멘션+가이드 1장으로 발신하고, 닫힘이 감지되면 즉시 1회 확인 멘션을 발신. 5분 기본닉 리마인더/미업로드 경고는 제거. (ADR-0045, supersedes ADR-0043)
 - 2025-12-19: Welcome-worker self-join 가드 — `senderName=Iris` join 이벤트(feedType=4)는 스킵하여 “봇이 자기 자신을 환영/Reply”하는 오발신을 차단. (ADR-0045)
+- 2025-12-20: Welcome 입장 시 “텍스트 + 하트스샷 가이드 이미지 1장” 발신을 재도입하고, 오픈프로필 닫기 가이드 이미지는 1장(`KakaoTalk_20251219_021112774.png`)만 유지하도록 정리.
 - 2025-12-20: 공지 이미지 전파 안정화 2차 — IRIS `/reply_media`는 방별 `send → echo 확인 → 다음 방` 직렬화로 누락을 줄이고, Talk-API raw 이미지 경로는 비활성(불안정) 처리. (ADR-0029)
 
 ## 기술 결정 요약

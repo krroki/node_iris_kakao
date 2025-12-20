@@ -226,8 +226,7 @@
 
 - Welcome 후속(첫 이미지) 정책 변경:
   - `runtime.json.welcome.followUp.windowMs`: 5분(300000ms) → 15분(900000ms)
-  - 15분 내 첫 이미지(하트 인증샷) 미업로드 시 1회 추가 멘션 경고 발신:
-    - `@{entrance} 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
+  - 15분 내 첫 이미지(하트 인증샷) 미업로드 경고(추가 멘션): **제거**(ADR-0045)
 
 - 에이전트 온보딩: `agents.md`/`docs/agents.md`/`docs/ssot.md`/`docs/prd.md`/`docs/roadmap.md`/주요 ADR/레퍼런스 숙지 완료(대기).
 
@@ -260,16 +259,17 @@
   - 문서: `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md` + `docs/ssot.md`/`AGENTS.md`/`docs/reference/verification-commands.md` 업데이트.
 
 - Welcome 정책 재정렬(오픈프로필 안내 첫 이미지 트리거 + 리마인더 제거):
-  - 환영 문구(텍스트만 발신; 템플릿 이미지 사용 안 함):
-    - 커스텀 닉네임: `@{entrance} 님 어서오세요 ~ 하트스샷 부탁드립니닷`
-    - 기본 닉네임: `@{entrance} 님 어서오세요~ 닉네임변경이랑 하트스샷 부탁드립니다!`
+  - 환영 문구(텍스트 + 하트스샷 가이드 이미지 1장 발신):
+    - 커스텀 닉네임: `@{entrance} 님 어서오세요 ~ 하트스샷 부탁드립니닷 ❤️`
+    - 기본 닉네임: `@{entrance} 님 어서오세요~ 닉네임변경이랑 하트스샷 부탁드립니다! ❤️`
     - 템플릿 파일: `node-iris-app/config/templates/welcome/welcome_custom_*.json`, `node-iris-app/config/templates/welcome/welcome_kakao_default_*.json`
+    - 하트스샷 가이드 이미지: `node-iris-app/config/templates/welcome/assets/common/KakaoTalk_20251213_123012048.png`
   - 첫 이미지 업로드(15분 내) 후속 동작:
     - 오픈프로필이 아닌 경우: 첫 이미지에 “감사합니다 …” Reply(type=26) 1회 발신
     - 오픈프로필인 경우: 감사 Reply는 스킵하고 “닫기 안내 + 가이드 이미지 1장”만 발신
   - 오픈프로필 닫기 안내:
     - 트리거: 입장 후 15분 내 “첫 이미지 업로드”에서만 실행(입장 직후 발신 금지)
-    - 판별: `db2.open_chat_member.profile_link_id != 0` (닫기 안내 대상)
+    - 판별: `db2.open_chat_member.profile_link_id == 0` (닫기 안내 대상)
     - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 1장 + confirmText + 폴링)
     - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
   - 닫힘 확인 멘트:

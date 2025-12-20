@@ -44,8 +44,8 @@
 ### 최종 플로우
 
 1) **입장(Welcome)**
-- 텍스트 Welcome만 발신한다.
-- Welcome 템플릿 이미지는 기본값에서 사용하지 않는다(입장 직후 사진 발신 금지).
+- 텍스트 Welcome + **하트스샷 업로드 방법 가이드 이미지(1장)** 를 발신한다.
+- 오픈프로필(프로필 닫기) 안내는 **입장 직후에는 발신하지 않는다**. (첫 이미지 트리거에서만)
 
 2) **첫 이미지 업로드(Welcome 후속, 15분 내)**
 - 신규 입장자 기준으로 15분 내 “첫 이미지 업로드”가 감지되면 프로필 상태를 IRIS DB로 조회한다.
@@ -95,7 +95,10 @@
     - `welcome.followUp`:
       - `enabled`, `windowMs`, `replies` (오픈프로필이 아닌 경우에만 사용)
 - 가이드 이미지(1장):
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/01.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+  - (오픈프로필 관련 이미지는 위 1장만 유지한다)
+- 하트스샷 가이드 이미지(1장):
+  - `node-iris-app/config/templates/welcome/assets/common/KakaoTalk_20251213_123012048.png`
 - 상태/진단:
   - `node-iris-app/data/welcome_worker_state.json` (pending confirmations 포함)
   - `node-iris-app/data/welcome_worker_status.json`

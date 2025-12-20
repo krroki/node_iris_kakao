@@ -123,8 +123,8 @@ if (result === null) {
 ### 오픈프로필 닫기 안내
 
 - 트리거: 신규 입장 후 `welcome.followUp.windowMs` 내 “첫 이미지 업로드”가 감지된 경우에만 실행
-- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id != 0` → 오픈프로필(닫기 안내 대상)
-  - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdNonZero`가 기본 운영값
+- 판별 기준(SSOT): `db2.open_chat_member.profile_link_id == 0` → 오픈프로필(닫기 안내 대상)
+  - 런타임 설정 `welcome.openProfileCloseGuide.match=profileLinkIdZero`가 기본 운영값
 - 발신 설정(SSOT): `node-iris-app/config/runtime.json` → `welcome.openProfileCloseGuide`
   - 텍스트: `text` (멘션, Talk-API 우선)
   - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 1장)
