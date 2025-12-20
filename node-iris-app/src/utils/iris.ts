@@ -52,7 +52,7 @@ export async function tryServerIrisReplyMedia(
   logger: Logger,
   roomId: string,
   imagesBase64: string[],
-  timeoutMs = 30000,
+  timeoutMs = 90_000,
 ): Promise<boolean> {
   try {
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");

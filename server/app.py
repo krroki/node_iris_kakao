@@ -43,6 +43,17 @@ _ROOM_ADMIN_REFRESH_LAST_GLOBAL: float = 0.0
 _ROOM_ADMIN_REFRESH_COOLDOWN_SEC_BY_ROOM = 15 * 60
 _ROOM_ADMIN_REFRESH_COOLDOWN_SEC_GLOBAL = 3 * 60
 
+# ---- IRIS /reply reliability (image) ----
+# IRIS /reply_media는 HTTP 200을 반환해도 실제 UI 전송은 비동기/지연/누락될 수 있다.
+# 따라서 서버에서 "MessageStore 로그 에코"를 확인한 뒤에만 ok=true를 반환해,
+# 여러 워커가 동시에 /send/iris/reply_media를 호출해도 IRIS UI 자동화가 겹치지 않도록 직렬화한다.
+IRIS_SENDER_ID = "434886784"
+IRIS_REPLY_ECHO_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_ECHO_TIMEOUT_MS", "25000"))
+IRIS_REPLY_ECHO_POLL_MS = int(os.getenv("IRIS_REPLY_ECHO_POLL_MS", "700"))
+IRIS_REPLY_LOG_SCAN_BYTES = int(os.getenv("IRIS_REPLY_LOG_SCAN_BYTES", str(256 * 1024)))
+IRIS_REPLY_POST_ECHO_DELAY_MS = int(os.getenv("IRIS_REPLY_POST_ECHO_DELAY_MS", "800"))
+_IRIS_REPLY_LOCK = asyncio.Lock()
+
 
 def _repo_root() -> Path:
     # server/app.py 기준 1단계 상위가 repo root
@@ -1815,6 +1826,121 @@ def _http_post_json(url: str, data: dict, headers: dict, timeout: float) -> tupl
         # FastAPI 500으로 터지는 것을 방지한다.
         return 0, str(e)
 
+# ---- IRIS reply echo check (MessageStore) ----
+def _is_image_message_type(raw_type: object) -> bool:
+    try:
+        n = int(raw_type)  # may be str/float
+    except Exception:
+        return False
+    # Kakao messageType may include flag 16384 in some cases.
+    base = n - 16384 if n >= 16384 else n
+    return base in (2, 27, 71)
+
+
+def _find_latest_room_log_path(room_id: str) -> Path | None:
+    rid = str(room_id or "").strip()
+    if not rid:
+        return None
+    d = get_logs_dir() / rid
+    try:
+        if not d.exists() or not d.is_dir():
+            return None
+        files = sorted([p for p in d.iterdir() if p.is_file() and re.match(r"^\d{4}-\d{2}-\d{2}\.log$", p.name)])
+        if not files:
+            return None
+        return files[-1]
+    except Exception:
+        return None
+
+
+def _has_iris_image_echo_since(room_id: str, since_ms: int) -> bool:
+    p = _find_latest_room_log_path(room_id)
+    if not p:
+        return False
+    try:
+        st = p.stat()
+    except Exception:
+        return False
+    try:
+        if not p.is_file() or st.st_size <= 0:
+            return False
+    except Exception:
+        return False
+
+    try:
+        # Fast path: if log file hasn't been updated since before since_ms, skip reading.
+        mtime_ms = int(st.st_mtime * 1000)
+        if mtime_ms + 2000 < int(since_ms):
+            return False
+    except Exception:
+        pass
+
+    try:
+        size = int(st.st_size)
+        start = max(0, size - max(1024, IRIS_REPLY_LOG_SCAN_BYTES))
+        with p.open("rb") as f:
+            f.seek(start)
+            data = f.read()
+        txt = data.decode("utf-8", errors="ignore")
+        lines = txt.splitlines()
+        for ln in reversed(lines):
+            if not ln:
+                continue
+            if IRIS_SENDER_ID not in ln:
+                continue
+            if "\"messageType\"" not in ln:
+                continue
+            try:
+                obj = json.loads(ln)
+            except Exception:
+                continue
+            snap = obj.get("snapshot") if isinstance(obj, dict) else None
+            payload = obj.get("payload") if isinstance(obj, dict) else None
+            sid = None
+            try:
+                sid = str((snap or {}).get("senderId") or (obj.get("senderId") if isinstance(obj, dict) else "")).strip()
+            except Exception:
+                sid = None
+            if sid != IRIS_SENDER_ID:
+                continue
+            ts = ""
+            try:
+                ts = str(obj.get("timestamp") or obj.get("ts") or "").strip()
+            except Exception:
+                ts = ""
+            tms = ts_to_ms(ts) if ts else 0
+            if not tms:
+                continue
+            # allow slight skew
+            if tms + 1500 < int(since_ms):
+                continue
+            mt = None
+            try:
+                mt = (payload or {}).get("messageType")
+            except Exception:
+                mt = None
+            if not _is_image_message_type(mt):
+                continue
+            return True
+        return False
+    except Exception:
+        return False
+
+
+async def _wait_for_iris_image_echo(room_id: str, since_ms: int, timeout_ms: int) -> bool:
+    s = int(since_ms or 0)
+    if s <= 0:
+        return False
+    timeout = max(0, int(timeout_ms or 0))
+    deadline = int(time.time() * 1000) + timeout
+    while True:
+        now = int(time.time() * 1000)
+        if now > deadline:
+            return False
+        if _has_iris_image_echo_since(room_id, s):
+            return True
+        await asyncio.sleep(max(0.05, min(1.0, IRIS_REPLY_ECHO_POLL_MS / 1000.0)))
+
 
 # ---- Avatar auto-resolve (Kakao open_link icon_url) ----
 _AVATAR_AUTO_CACHE_SEC = int(os.getenv("AVATAR_AUTO_CACHE_SEC", "3600"))
@@ -2297,7 +2423,8 @@ async def iris_reply_text(request: Request):
         "data": text,
     }
     url = _iris_base() + "/reply"
-    status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
+    async with _IRIS_REPLY_LOCK:
+        status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
     iris_body = None
     try:
         iris_body = json.loads(txt) if txt else None
@@ -2443,27 +2570,50 @@ async def iris_reply_media(request: Request):
         "room": rid,
         "data": imgs[0] if len(imgs) == 1 else imgs,
     }
-    url = _iris_base() + "/reply"
-    status, txt = _http_post_json(url, payload, headers={}, timeout=30.0)
-    iris_body = None
-    try:
-        iris_body = json.loads(txt) if txt else None
-    except Exception:
+
+    # NOTE:
+    # IRIS /reply 는 실제 UI 전송 완료 전에 200을 반환할 수 있다.
+    # 따라서 "요청 직전 시각" 기준으로 MessageStore 로그에 이미지 에코가 찍힐 때까지 대기한다.
+    call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+
+    async with _IRIS_REPLY_LOCK:
+        url = _iris_base() + "/reply"
+        status, txt = _http_post_json(url, payload, headers={}, timeout=30.0)
         iris_body = None
-    ok = status == 200
-    code = 200 if ok else 502
-    return JSONResponse(
-        status_code=code,
-        content={
-            "ok": ok,
-            "iris": {
-                "httpStatus": status,
-                "body": iris_body,
-                "raw": txt,
+        try:
+            iris_body = json.loads(txt) if txt else None
+        except Exception:
+            iris_body = None
+
+        iris_ok = status == 200
+        echo_ok = False
+        wait_ms = 0
+        if iris_ok:
+            t0 = int(time.time() * 1000)
+            echo_ok = await _wait_for_iris_image_echo(rid, call_started_ms, IRIS_REPLY_ECHO_TIMEOUT_MS)
+            wait_ms = max(0, int(time.time() * 1000) - t0)
+            if echo_ok and IRIS_REPLY_POST_ECHO_DELAY_MS > 0:
+                await asyncio.sleep(max(0.0, IRIS_REPLY_POST_ECHO_DELAY_MS / 1000.0))
+
+        ok = iris_ok and echo_ok
+        code = 200 if ok else 502
+        return JSONResponse(
+            status_code=code,
+            content={
+                "ok": ok,
+                "iris": {
+                    "httpStatus": status,
+                    "body": iris_body,
+                    "raw": txt,
+                },
+                "echo": {
+                    "ok": echo_ok,
+                    "timeoutMs": IRIS_REPLY_ECHO_TIMEOUT_MS,
+                    "waitMs": wait_ms,
+                },
+                "sent": {"roomId": rid, "count": len(imgs), "type": payload["type"]},
             },
-            "sent": {"roomId": rid, "count": len(imgs), "type": payload["type"]},
-        },
-    )
+        )
 
 
 @app.get("/talkapi/health")

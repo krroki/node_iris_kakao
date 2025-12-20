@@ -94,7 +94,7 @@ export async function safeReplyImageUrls(logger: Logger, context: ChatContext, u
   if (imagesBase64.length === 0) {
     throw new Error("No image-capable send method available (download failed)");
   }
-  const ok = await tryServerIrisReplyMedia(logger as any, rid, imagesBase64, Math.max(15000, timeoutMs));
+  const ok = await tryServerIrisReplyMedia(logger as any, rid, imagesBase64, Math.max(90_000, timeoutMs));
   if (!ok) {
     throw new Error("iris reply_media failed");
   }

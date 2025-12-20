@@ -83,11 +83,8 @@ const IRIS_SENDER_ID = "434886784";
 // IRIS /reply_media 는 HTTP 200으로 빠르게 응답해도 실제 UI 전송이 뒤늦게(또는 실패) 처리될 수 있다.
 // 공지 미러링(여러 방 연속 발신)에서는 속도가 너무 빠르면 “성공으로 보고되는데 실제 미발신”이 발생할 수 있어,
 // 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
-const IRIS_MEDIA_MIN_GAP_MS = 1000;
-const IRIS_MEDIA_RETRY_GAP_MS = 2500;
-const IRIS_MEDIA_ECHO_TIMEOUT_MS = 60000;
-const IRIS_MEDIA_ECHO_POLL_MS = 700;
-const IRIS_MEDIA_LOG_SCAN_BYTES = 256 * 1024;
+const IRIS_MEDIA_MIN_GAP_MS = 200;
+const IRIS_MEDIA_CALL_TIMEOUT_MS = 90_000;
 
 // 최근에 IRIS 이미지 발송이 실패했던 방은, 같은 공지 내에서 추가 retry를 시도해도 체감 속도만 느려지는 경우가 많다.
 // 따라서 "최근 실패(10분)" 방은 첫 시도까지만 하고, 같은 공지 내 retry 대상에서 제외한다.
@@ -465,96 +462,6 @@ function shouldIgnoreSender(entry: StreamEntry): boolean {
   return false;
 }
 
-async function findLatestRoomLogPath(roomId: string): Promise<string | null> {
-  const rid = safeString(roomId);
-  if (!rid) return null;
-  const dir = path.join(APP_ROOT, "data", "logs", rid);
-  try {
-    const names = await fs.readdir(dir).catch(() => []);
-    const files = (names || [])
-      .filter((n) => typeof n === "string" && /^\d{4}-\d{2}-\d{2}\.log$/.test(n))
-      .sort()
-      .reverse();
-    if (files.length === 0) return null;
-    return path.join(dir, files[0]!);
-  } catch {
-    return null;
-  }
-}
-
-async function hasIrisImageEchoSince(roomId: string, sinceMs: number): Promise<boolean> {
-  const p = await findLatestRoomLogPath(roomId);
-  if (!p) return false;
-  const st = await fs.stat(p).catch(() => null);
-  if (!st || !st.isFile()) return false;
-
-  const mtimeMs = typeof (st as any).mtimeMs === "number" ? Number((st as any).mtimeMs) : st.mtime.getTime();
-  if (Number.isFinite(mtimeMs) && mtimeMs + 2000 < sinceMs) return false;
-
-  const size = Number(st.size) || 0;
-  const start = Math.max(0, size - IRIS_MEDIA_LOG_SCAN_BYTES);
-  const len = Math.max(0, size - start);
-  if (len <= 0) return false;
-
-  let fh: any = null;
-  try {
-    fh = await (fs as any).open(p, "r");
-    const buf = Buffer.allocUnsafe(len);
-    await fh.read(buf, 0, len, start);
-    const txt = buf.toString("utf8");
-    const lines = txt.split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i] || "";
-      if (!line) continue;
-      if (!line.includes(IRIS_SENDER_ID)) continue;
-      if (!line.includes("\"messageType\"")) continue;
-
-      let obj: any = null;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
-      const sid = safeString(obj?.snapshot?.senderId ?? obj?.senderId);
-      if (sid !== IRIS_SENDER_ID) continue;
-
-      const ts = safeString(obj?.timestamp ?? obj?.ts);
-      const tms = ts ? Date.parse(ts) : NaN;
-      if (!Number.isFinite(tms)) continue;
-      if (tms + 1500 < sinceMs) continue; // slight skew allowance
-
-      const mt = obj?.payload?.messageType;
-      if (!isImageMessageType(mt)) continue;
-
-      return true;
-    }
-  } catch {
-    return false;
-  } finally {
-    try {
-      await fh?.close?.();
-    } catch {
-      // ignore
-    }
-  }
-  return false;
-}
-
-async function waitForIrisImageEcho(roomId: string, sinceMs: number, timeoutMs: number): Promise<boolean> {
-  const s = Number(sinceMs);
-  if (!Number.isFinite(s) || s <= 0) return false;
-  const deadlineMs = s + Math.max(0, Math.floor(timeoutMs));
-  while (true) {
-    const now = Date.now();
-    if (now > deadlineMs) return false;
-    const echoed = await hasIrisImageEchoSince(roomId, s);
-    if (echoed) return true;
-    const sleepFor = Math.min(IRIS_MEDIA_ECHO_POLL_MS, Math.max(0, deadlineMs - Date.now()));
-    if (sleepFor > 0) await sleepMs(sleepFor);
-  }
-}
-
 async function dispatchIrisImagesToTargets(
   targetIdsRaw: string[],
   imagesBase64: string[],
@@ -601,24 +508,17 @@ async function dispatchIrisImagesToTargets(
       return String(a).localeCompare(String(b));
     });
 
-  const gaps = Array.isArray(gapMsList) && gapMsList.length > 0 ? gapMsList : [IRIS_MEDIA_MIN_GAP_MS, IRIS_MEDIA_RETRY_GAP_MS];
+  const gaps = Array.isArray(gapMsList) && gapMsList.length > 0 ? gapMsList : [IRIS_MEDIA_MIN_GAP_MS];
   const gapBetweenRooms = Math.max(0, Math.floor(gaps[0] ?? 0));
 
   // NOTE:
-  // IRIS /reply_media can return HTTP 200 before the actual UI-send completes.
-  // Also, overlapping /reply_media requests can cause "only the last room actually gets the image" in some environments.
-  // So we serialize per room: send -> wait for MessageStore echo -> next room.
+  // Realtime API(/send/iris/reply_media)는 server에서 "MessageStore 이미지 echo"를 확인한 뒤에만 ok=true를 반환한다.
+  // 따라서 worker에서는 "요청 직렬화"만 유지하고, 성공 판정은 응답 ok에 따른다.
   for (let i = 0; i < orderedTargets.length; i += 1) {
     const roomId = orderedTargets[i]!;
-    const attemptAt = Date.now();
-    const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 30000);
-    if (!okCall) {
-      failedFinal.add(roomId);
-    } else {
-      const echoed = await waitForIrisImageEcho(roomId, attemptAt, IRIS_MEDIA_ECHO_TIMEOUT_MS);
-      if (echoed) okFinal.add(roomId);
-      else failedFinal.add(roomId);
-    }
+    const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, IRIS_MEDIA_CALL_TIMEOUT_MS);
+    if (okCall) okFinal.add(roomId);
+    else failedFinal.add(roomId);
     if (i < orderedTargets.length - 1 && gapBetweenRooms > 0) {
       await sleepMs(gapBetweenRooms);
     }
@@ -831,8 +731,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
         for (const rid of irisImageTargets) imageOkByTarget.set(rid, false);
       } else {
         const gapFast = Math.max(delayMs, IRIS_MEDIA_MIN_GAP_MS);
-        const gapRetry = Math.max(delayMs, IRIS_MEDIA_RETRY_GAP_MS);
-        const okSet = await dispatchIrisImagesToTargets(irisImageTargets, imagesBase64, [gapFast, gapRetry]);
+        const okSet = await dispatchIrisImagesToTargets(irisImageTargets, imagesBase64, [gapFast]);
         for (const rid of irisImageTargets) {
           imageOkByTarget.set(rid, okSet.has(rid));
         }

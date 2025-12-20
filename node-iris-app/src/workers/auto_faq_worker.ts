@@ -574,7 +574,7 @@ async function sendImages(roomId: string, imagesRel: string[], timeoutMs = 20000
     }
   }
   if (imagesBase64.length === 0) return false;
-  return await tryServerIrisReplyMedia(logger as any, roomId, imagesBase64, Math.max(15000, timeoutMs));
+  return await tryServerIrisReplyMedia(logger as any, roomId, imagesBase64, Math.max(90_000, timeoutMs));
 }
 
 async function isIrisOrStaff(runtime: RuntimeConfig, roomId: string, senderId: string, senderName: string): Promise<boolean> {
