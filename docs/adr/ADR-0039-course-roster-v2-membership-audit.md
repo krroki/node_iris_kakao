@@ -119,6 +119,9 @@
   - v2의 “점검/시트 업서트”는 발신이 아니므로, SAFE_MODE와 무관하게 실행 가능해야 한다.
 - 데이터가 불완전할 때 “임의로 정상 처리”하지 않는다.
   - 예: 톡방 멤버 DB가 미로딩이면 `INCOMPLETE`로 표시하고 점검 결과를 확정하지 않는다.
+  - (중요) IRIS `db2.open_chat_member`는 환경에 따라 `involved_chat_id`가 `0`으로 들어오는 row가 많아,
+    roomId 기준 집계만 하면 `loadedMembersCount`가 과소 집계될 수 있다.
+    따라서 멤버 목록/집계는 `chat_rooms.link_id` 기준을 우선한다.
 - 방 타입 자동 추론/코스 자동 묶음이 애매한 경우(예: 접두어 누락/동명이 코스)는 `rooms 해석 실패(ROOM_NOT_FOUND/ROOM_AMBIGUOUS)`로 기록하고, UI에서 `rooms` override로 해결한다.
 - 코어(bot)는 LogStore에만 집중하고, 신규 기능은 별도 워커(프로세스)로 분리한다(ADR-0027 준수).
 
