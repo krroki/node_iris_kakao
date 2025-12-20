@@ -998,8 +998,13 @@ export default function CourseOpsPage() {
           <button className="btn-outline" onClick={() => { void loadRooms(); void loadRuntime(); void loadAuditConfig(); void loadAuditWorkerStatus(); }}>
             새로고침
           </button>
-          <button className="btn-save" disabled={!auditDirty || auditSaving === "saving"} onClick={() => void saveAuditConfig()}>
-            {auditSaving === "saving" ? "저장 중…" : "설정 저장"}
+          <button
+            className="btn-save"
+            disabled={!auditDirty || auditSaving === "saving"}
+            onClick={() => void saveAuditConfig()}
+            title={auditPath ? `${auditPath} 저장` : "v2 설정 저장"}
+          >
+            {auditSaving === "saving" ? "저장 중…" : "변경사항 저장"}
           </button>
         </div>
       </div>
@@ -1028,7 +1033,7 @@ export default function CourseOpsPage() {
         <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>빠른 사용법</h3>
         <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.75 }}>
           <div>1) 방 이름이 <code>(사담방)</code> / <code>(공지방)</code> / <code>(프리미엄방)</code> 접두어 규칙을 따르는지 확인합니다.</div>
-          <div>2) 아래 코스 카드에서 <b>스프레드시트 URL/ID</b> + <b>카페 clubId</b> + <b>프리미엄/운영진 등급</b>만 입력합니다.</div>
+          <div>2) 아래 코스 카드에서 <b>스프레드시트 URL/ID</b> + <b>카페 clubId</b> + <b>프리미엄/운영진 등급</b>을 입력하고 <b>변경사항 저장</b>을 눌러 저장합니다.</div>
           <div>3) 코스 카드의 <b>지금 1회 업서트</b>로 RAW/VIEW/LOG를 한 번 갱신합니다. (v2는 clear 없이 upsert)</div>
           <div>4) 초반에 자주 확인이 필요하면 <b>자동 갱신</b>을 켭니다. (주기는 아래에 표시)</div>
           <div>5) 카카오 안내(레거시)는 <b>강의 메시지 발송</b>이 ON일 때만 나가며, OFF면 절대 발송되지 않습니다.</div>
@@ -1658,7 +1663,7 @@ export default function CourseOpsPage() {
 
                       <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
                         <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                          - 입력을 바꾸면 상단 <b>설정 저장</b>을 눌러야 적용됩니다.
+                          - 입력을 바꾸면 상단/우측 하단 <b>변경사항 저장</b>을 눌러야 적용됩니다.
                           <br />
                           - 코스당 스프레드시트는 1개를 권장합니다. (3방 + 카페 RAW + AUDIT_VIEW + AUDIT_LOG)
                         </div>
@@ -1990,6 +1995,42 @@ export default function CourseOpsPage() {
         </div>
         </div>
       </details>
+
+      {auditDirty && (
+        <div
+          style={{
+            position: "fixed",
+            right: 16,
+            bottom: 16,
+            zIndex: 1000,
+            maxWidth: "calc(100vw - 32px)",
+          }}
+        >
+          <div
+            className="pipeline-card"
+            style={{
+              marginTop: 0,
+              padding: 12,
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              justifyContent: "space-between",
+              boxShadow: "0 12px 32px rgba(0,0,0,0.35)",
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap" }}>설정 저장이 필요합니다</div>
+            <button
+              className="btn-save"
+              style={{ padding: "6px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+              disabled={auditSaving === "saving"}
+              onClick={() => void saveAuditConfig()}
+              title={auditPath ? `${auditPath} 저장` : "v2 설정 저장"}
+            >
+              {auditSaving === "saving" ? "저장 중…" : "변경사항 저장"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
