@@ -467,6 +467,25 @@ def build_overview_rows(
     normal_cnt = int(track_counts.get("normal") or 0)
 
     # openchat nickname format issues
+    _cipher_re = re.compile(r"^[A-Za-z0-9+/=]{16,}$")
+
+    def _looks_like_cipher_nick(s: str) -> bool:
+        x = str(s or "").strip()
+        if not x:
+            return False
+        if "(" in x or ")" in x:
+            return False
+        if " " in x or "\n" in x or "\r" in x or "\t" in x:
+            return False
+        if re.search(r"[가-힣ㄱ-ㅎㅏ-ㅣ]", x):
+            return False
+        if not _cipher_re.match(x):
+            return False
+        # 짧은 토큰/영문 닉네임(일반 텍스트)과 구분하기 위해 '='나 '/'/'+' 중 하나가 포함될 때만 cipher로 본다.
+        if ("=" in x) or ("/" in x) or ("+" in x):
+            return True
+        return False
+
     oc_header = openchat_rows[0] if openchat_rows else []
     oi = _h2i(oc_header)
     idx_room_label = oi.get("roomLabel")
@@ -476,6 +495,8 @@ def build_overview_rows(
 
     nick_bad: list[list[str]] = []
     nick_unknown: list[list[str]] = []
+    cipher_cnt = 0
+    total_openchat_rows = 0
 
     for r in openchat_rows[1:] if len(openchat_rows) > 1 else []:
         room_label = _cell(r, idx_room_label) or ROOM_LABEL.get(_cell(r, idx_room_type), _cell(r, idx_room_type))
@@ -483,8 +504,12 @@ def build_overview_rows(
         parsed = _cell(r, idx_parsed)
         if not nick:
             continue
+        total_openchat_rows += 1
         if not parsed:
-            nick_bad.append([room_label, nick, "", "괄호(카페닉) 형식이 아니에요. 예: 홍길동(카페닉)"])
+            if _looks_like_cipher_nick(nick):
+                cipher_cnt += 1
+            else:
+                nick_bad.append([room_label, nick, "", "괄호(카페닉) 형식이 아니에요. 예: 홍길동(카페닉)"])
             continue
         if parsed not in cafe_nick_set:
             nick_unknown.append([room_label, nick, parsed, "카페 명단에 없는 카페닉이에요(닉네임 불일치/미가입 가능)."])
@@ -528,6 +553,8 @@ def build_overview_rows(
     )
     if any_incomplete:
         rows.append(["주의", "loaded < active 상태면 결과가 DB미완전(INCOMPLETE)로 표시될 수 있어요."])
+    elif cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
+        rows.append(["주의", "톡방 닉네임이 암호화 형태로 저장되어 괄호(카페닉) 점검이 제한될 수 있어요."])
     else:
         rows.append(["", ""])
 
@@ -577,9 +604,11 @@ def build_overview_rows(
     rows.append([""])
     rows.append(["🧩 톡방 닉네임 형식 이상(괄호 카페닉 없음)"])
     rows.append(["방", "닉네임", "추출된 카페닉", "안내"])
+    if cipher_cnt > 0:
+        rows.append(["(참고)", f"닉네임이 암호화 형태로 저장된 항목: {cipher_cnt}명", "", "형식 점검 불가"])
     if nick_bad:
         rows.extend(nick_bad)
-    else:
+    elif cipher_cnt <= 0:
         rows.append(["(없음)", "", "", ""])
 
     rows.append([""])

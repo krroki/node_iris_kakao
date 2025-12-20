@@ -108,6 +108,28 @@ def _parse_room_name_from_meta(meta_raw: object) -> Optional[str]:
     return None
 
 
+_KOREAN_RE = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")
+
+
+def decode_nickname_from_db(raw: object) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    # IRIS /query가 open_chat_member.nickname을 UTF-8 bytes를 latin1로 잘못 디코딩해 내리는 케이스가 있다.
+    # 예: "ìµì°" → bytes(latin1) → utf8 → "융쓰"
+    # - 이미 한글이 포함되어 있으면 그대로 사용
+    # - 그렇지 않으면 latin1→utf8을 시도하고, 결과에 한글이 있으면 교체
+    if _KOREAN_RE.search(s):
+        return s
+    try:
+        decoded = s.encode("latin1", errors="ignore").decode("utf-8", errors="ignore").strip()
+        if decoded and _KOREAN_RE.search(decoded):
+            return decoded
+    except Exception:
+        pass
+    return s
+
+
 def fetch_rooms(realtime_base: str, timeout: float = 10.0) -> list[dict]:
     url = realtime_base.rstrip("/") + "/rooms"
     try:
@@ -170,7 +192,7 @@ def fetch_openchat_members(iris_base: str, room_id: str, page_size: int = 500) -
             uid = str(row.get("user_id") or "").strip()
             if not uid:
                 continue
-            nick = str(row.get("nickname") or "").strip()
+            nick = decode_nickname_from_db(row.get("nickname"))
             rec = out.get(uid)
             if not rec:
                 out[uid] = {"userId": uid, "nickname": nick}
