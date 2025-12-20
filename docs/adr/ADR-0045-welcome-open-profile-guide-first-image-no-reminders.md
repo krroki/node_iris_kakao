@@ -90,7 +90,8 @@
 - 런타임 설정(SSOT):
   - `node-iris-app/config/runtime.json`
     - `welcome.openProfileCloseGuide`:
-      - `enabled`, `match`, `text`, `confirmText`
+      - `enabled`, `match`, `text`, `confirmText`, `confirmTextKakaoDefaultNickname`
+        - 닫힘 확인 멘트(`confirmText`) 발신 시점에 **현재 닉네임이 “카카오 기본 닉네임”이면** `confirmTextKakaoDefaultNickname`를 우선 사용한다.
       - 판별(SSOT): IRIS DB `db2.open_chat_member`
         - `profile_type == 16` → 오픈프로필(오픈채팅 프로필)
         - `profile_link_id != 0` → “오픈채팅방 열려있음”(닫기 안내 대상)
