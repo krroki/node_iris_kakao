@@ -761,6 +761,7 @@ export default function CourseOpsPage() {
       `이 코스의 데이터를 Google Sheets에 1회 업서트할까요?\n\n` +
       `- 코스: ${ck}\n` +
       `- 포함: 카페 크롤링 + 3방 멤버 취합 + AUDIT_VIEW/AUDIT_LOG 갱신\n\n` +
+      `※ 지금 입력한 설정도 같이 저장됩니다.\n` +
       `※ 실행을 위해 워커를 잠깐 켤 수 있습니다(완료 후 원복).`,
     );
     if (!ok) return;
@@ -1110,9 +1111,9 @@ export default function CourseOpsPage() {
         <h3 style={{ marginTop: 0, color: "var(--text-primary)" }}>빠른 사용법</h3>
         <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.75 }}>
           <div>1) 방 이름이 <code>(사담방)</code> / <code>(공지방)</code> / <code>(프리미엄방)</code> 접두어 규칙을 따르는지 확인합니다.</div>
-          <div>2) 아래 코스 카드에서 <b>스프레드시트 URL/ID</b> + <b>카페 clubId</b> + <b>프리미엄/운영진 등급</b>을 입력하고 <b>변경사항 저장</b>을 눌러 저장합니다.</div>
+          <div>2) 아래 코스 카드에서 <b>스프레드시트 URL/ID</b> + <b>카페 URL/clubId</b> + <b>프리미엄/운영진 등급</b>을 입력하고 <b>변경사항 저장</b>을 눌러 저장합니다.</div>
           <div>3) 코스 카드의 <b>지금 1회 업서트</b>로 RAW/VIEW/LOG를 한 번 갱신합니다. (v2는 clear 없이 upsert)</div>
-          <div>4) 초반에 자주 확인이 필요하면 <b>자동 갱신</b>을 켭니다. (주기는 아래에 표시)</div>
+          <div>4) 초반에 자주 확인이 필요하면 <b>v2 자동 갱신</b>을 켜고, 코스 카드의 <b>자동 갱신 포함</b>도 ON으로 둡니다.</div>
           <div>5) 카카오 안내(레거시)는 <b>강의 메시지 발송</b>이 ON일 때만 나가며, OFF면 절대 발송되지 않습니다.</div>
         </div>
       </div>
@@ -1485,6 +1486,7 @@ export default function CourseOpsPage() {
                     <span className={`tag ${mappingOk ? "tag-active" : "tag-inactive"}`}>방 매핑 {mappingOk ? "OK" : "필요"}</span>
                     <span className={`tag ${inferredOk ? "tag-active" : "tag-inactive"}`}>자동 감지 {inferredOk ? "OK" : "미완성"}</span>
                     <span className={`tag ${hasConfig ? "tag-active" : "tag-excluded"}`}>설정 {hasConfig ? "OK" : "없음"}</span>
+                    <span className={`tag ${auditDirty ? "tag-inactive" : "tag-active"}`}>저장 {auditDirty ? "필요" : "OK"}</span>
                     {v2LastResult && (
                       <span className={`tag ${v2LastResultTagClass}`}>
                         {v2LastResult === "RUNNING" ? v2LastResultLabel : `최근 ${v2LastResultLabel}`}
@@ -1505,6 +1507,15 @@ export default function CourseOpsPage() {
                         다음 {v2NextRunTs}
                       </span>
                     )}
+                    <button
+                      className="btn-save"
+                      style={{ padding: "6px 10px", fontSize: 12 }}
+                      disabled={!auditDirty || auditSaving === "saving"}
+                      onClick={() => void saveAuditConfig()}
+                      title={auditDirty ? "변경사항을 저장합니다" : "저장할 변경사항이 없습니다"}
+                    >
+                      {auditSaving === "saving" ? "저장 중…" : auditDirty ? "설정 저장" : "저장됨"}
+                    </button>
                     <button
                       className="btn-save"
                       style={{ padding: "6px 10px", fontSize: 12 }}
@@ -1688,7 +1699,7 @@ export default function CourseOpsPage() {
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontWeight: 800, color: "var(--text-primary)", marginBottom: 8 }}>등급 규칙</div>
                     <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-                      프리미엄 등급(구분자: 줄바꿈 / , / . / /)
+                      프리미엄 등급(구분자: 줄바꿈 / . / /)
                       <textarea
                         className="filter-input"
                         style={{ width: "100%", height: 76, marginTop: 6, paddingTop: 8 }}
@@ -1698,11 +1709,11 @@ export default function CourseOpsPage() {
                           setGradeTextByCourse((prev) => ({ ...(prev || {}), [courseKey]: { premiumText: v, staffText: staffGradeText } }));
                           setAuditDirty(true);
                         }}
-                        placeholder="예: 프리미엄반, 2단계"
+                        placeholder={"예: 프리미엄반\n2단계"}
                       />
                     </label>
                     <label style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 10 }}>
-                      운영진 등급(구분자: 줄바꿈 / , / . / /)
+                      운영진 등급(구분자: 줄바꿈 / . / /)
                       <textarea
                         className="filter-input"
                         style={{ width: "100%", height: 66, marginTop: 6, paddingTop: 8 }}
@@ -1712,7 +1723,7 @@ export default function CourseOpsPage() {
                           setGradeTextByCourse((prev) => ({ ...(prev || {}), [courseKey]: { premiumText: premiumGradeText, staffText: v } }));
                           setAuditDirty(true);
                         }}
-                        placeholder="예: 운영진, 스태프"
+                        placeholder={"예: 운영진\n스태프"}
                       />
                     </label>
                     <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
