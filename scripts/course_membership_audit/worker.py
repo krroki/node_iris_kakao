@@ -904,6 +904,9 @@ class CourseMembershipAuditWorker:
 
         last_hb_ms = 0
         while True:
+            # UI/API(run-once 등)에서 state 파일을 갱신할 수 있으므로, 루프마다 최신 state를 로드한다.
+            # (단일 프로세스 락은 유지되며, state는 파일을 SSOT로 사용)
+            self._load_state()
             now_ms = _now_ms()
             try:
                 cfg_path, cfg = load_config(str(self.config_path))
