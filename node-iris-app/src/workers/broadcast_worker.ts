@@ -6,7 +6,7 @@ import path from "path";
 import DedupCache from "../services/dedupCache";
 import { broadcastService } from "../services";
 import { downloadUrlAsBase64 } from "../utils/download";
-import { tryServerIrisReplyMedia, tryServerIrisReplyText } from "../utils/iris";
+import { tryServerIrisReplyMedia, tryServerIrisReplyText, type IrisReplyVerifyOptions } from "../utils/iris";
 import { APP_ROOT } from "../utils/paths";
 import { tryServerTalkApiDispatch } from "../utils/talkapi";
 
@@ -85,6 +85,24 @@ const IRIS_SENDER_ID = "434886784";
 // 1) 최소 간격을 강제하고 2) MessageStore 로그로 1차 확인(에코) 후 성공으로 판정한다.
 const IRIS_MEDIA_MIN_GAP_MS = 200;
 const IRIS_MEDIA_CALL_TIMEOUT_MS = 90_000;
+function envInt(name: string, fallback: number): number {
+  const raw = safeString(process.env[name]);
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.floor(n);
+}
+
+const IRIS_MEDIA_ECHO_TIMEOUT_MS = envInt("IRIS_MEDIA_ECHO_TIMEOUT_MS", 18_000);
+const IRIS_MEDIA_SENDLOG_TIMEOUT_MS = envInt("IRIS_MEDIA_SENDLOG_TIMEOUT_MS", 25_000);
+const IRIS_MEDIA_MAX_RETRIES = envInt("IRIS_MEDIA_MAX_RETRIES", 1);
+const IRIS_MEDIA_RETRY_DELAY_MS = envInt("IRIS_MEDIA_RETRY_DELAY_MS", 1200);
+const IRIS_MEDIA_VERIFY_BASE: IrisReplyVerifyOptions = {
+  echoTimeoutMs: IRIS_MEDIA_ECHO_TIMEOUT_MS,
+  sendlogTimeoutMs: IRIS_MEDIA_SENDLOG_TIMEOUT_MS,
+  maxRetries: IRIS_MEDIA_MAX_RETRIES,
+  retryDelayMs: IRIS_MEDIA_RETRY_DELAY_MS,
+};
 
 // 최근에 IRIS 이미지 발송이 실패했던 방은, 같은 공지 내에서 추가 retry를 시도해도 체감 속도만 느려지는 경우가 많다.
 // 따라서 "최근 실패(10분)" 방은 첫 시도까지만 하고, 같은 공지 내 retry 대상에서 제외한다.
@@ -516,7 +534,11 @@ async function dispatchIrisImagesToTargets(
   // 따라서 worker에서는 "요청 직렬화"만 유지하고, 성공 판정은 응답 ok에 따른다.
   for (let i = 0; i < orderedTargets.length; i += 1) {
     const roomId = orderedTargets[i]!;
-    const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, IRIS_MEDIA_CALL_TIMEOUT_MS);
+    const roomHealth = roomHealthAtStart.get(roomId) || {};
+    const verify: IrisReplyVerifyOptions = hasRecentIrisMediaFail(roomHealth, nowMsAtStart)
+      ? { ...IRIS_MEDIA_VERIFY_BASE, maxRetries: 0 }
+      : IRIS_MEDIA_VERIFY_BASE;
+    const okCall = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, IRIS_MEDIA_CALL_TIMEOUT_MS, verify);
     if (okCall) okFinal.add(roomId);
     else failedFinal.add(roomId);
     if (i < orderedTargets.length - 1 && gapBetweenRooms > 0) {

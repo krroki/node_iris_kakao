@@ -1857,6 +1857,23 @@ def _find_latest_room_log_path(room_id: str) -> Path | None:
         return None
 
 
+def _attachment_has_remote_image_url(att: object) -> bool:
+    if not isinstance(att, dict):
+        return False
+    cand: list[str] = []
+    for k in ("url", "thumbnailUrl", "imageUrl", "imageUrls", "urls"):
+        v = att.get(k)
+        if isinstance(v, str):
+            cand.append(v)
+        elif isinstance(v, list):
+            cand.extend([x for x in v if isinstance(x, str)])
+    for u in cand:
+        t = u.strip()
+        if t.startswith("http://") or t.startswith("https://"):
+            return True
+    return False
+
+
 def _has_iris_image_echo_since(room_id: str, since_ms: int) -> bool:
     p = _find_latest_room_log_path(room_id)
     if not p:
@@ -1924,6 +1941,14 @@ def _has_iris_image_echo_since(room_id: str, since_ms: int) -> bool:
             except Exception:
                 mt = None
             if not _is_image_message_type(mt):
+                continue
+            # 이미지 전송 실패(재전송 필요) 상태에서는 attachment에 원격 URL이 없을 수 있다.
+            # 성공 판정은 "원격 URL이 있는 이미지"로 한정한다.
+            try:
+                att = (payload or {}).get("attachment")
+            except Exception:
+                att = None
+            if not _attachment_has_remote_image_url(att):
                 continue
             return True
         return False

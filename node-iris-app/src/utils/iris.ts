@@ -1,20 +1,34 @@
 import type { Logger } from "@tsuki-chat/node-iris";
 
+export type IrisReplyVerifyOptions = {
+  echoTimeoutMs?: number;
+  sendlogTimeoutMs?: number;
+  maxRetries?: number;
+  retryDelayMs?: number;
+};
+
 export async function tryServerIrisReplyText(
   logger: Logger,
   roomId: string,
   text: string,
   timeoutMs = 15000,
+  verify?: IrisReplyVerifyOptions,
 ): Promise<boolean> {
   try {
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");
     const url = `${base}/send/iris/reply_text`;
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const body: any = { roomId, text };
+    if (verify && typeof verify === "object") {
+      if (Number.isFinite(Number(verify.sendlogTimeoutMs))) body.sendlogTimeoutMs = Number(verify.sendlogTimeoutMs);
+      if (Number.isFinite(Number(verify.maxRetries))) body.maxRetries = Number(verify.maxRetries);
+      if (Number.isFinite(Number(verify.retryDelayMs))) body.retryDelayMs = Number(verify.retryDelayMs);
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId, text }),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     }).catch((e) => {
       throw e;
@@ -56,16 +70,24 @@ export async function tryServerIrisReplyMedia(
   roomId: string,
   imagesBase64: string[],
   timeoutMs = 90_000,
+  verify?: IrisReplyVerifyOptions,
 ): Promise<boolean> {
   try {
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");
     const url = `${base}/send/iris/reply_media`;
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const body: any = { roomId, imagesBase64 };
+    if (verify && typeof verify === "object") {
+      if (Number.isFinite(Number(verify.echoTimeoutMs))) body.echoTimeoutMs = Number(verify.echoTimeoutMs);
+      if (Number.isFinite(Number(verify.sendlogTimeoutMs))) body.sendlogTimeoutMs = Number(verify.sendlogTimeoutMs);
+      if (Number.isFinite(Number(verify.maxRetries))) body.maxRetries = Number(verify.maxRetries);
+      if (Number.isFinite(Number(verify.retryDelayMs))) body.retryDelayMs = Number(verify.retryDelayMs);
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId, imagesBase64 }),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     }).catch((e) => {
       throw e;
