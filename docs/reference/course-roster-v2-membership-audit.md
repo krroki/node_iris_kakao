@@ -126,8 +126,10 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
 
 - `CAFE_RAW`
   - 카페 멤버 전체(등급 포함)
+  - upsert 고유키: `clubId + cafeUserId`
 - `OPENCHAT_RAW`
   - 3개 톡방 참여자(방 타입 포함)
+  - upsert 고유키: `roomId + openchatUserId`
 - `RULES_RAW`
   - 코스 설정(grade 규칙/방 매핑/스케줄 등) 스냅샷
 
@@ -141,7 +143,8 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
     - auditStatus: `OK` / `MISSING` / `AMBIGUOUS` / `INCOMPLETE` / `STAFF`
     - 데이터 갱신 시각(`cafeUpdatedAt`, `openchatUpdatedAt`)
     - 참고: 톡방별 중복 매칭은 `chatCount`/`noticeCount`/`premiumCount`로 확인
-  - 조건부 서식/필터 템플릿은 2차(선택).
+    - 조건부 서식/필터 템플릿은 2차(선택).
+  - upsert 고유키: `cafeUserId`
 
 > 시각화를 위해 조건부 서식(누락=빨강 등)을 추가하는 것은 선택이다. (2차)
 
@@ -152,6 +155,9 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
 - `AUDIT_LOG`
   - 워커가 스프레드시트를 **clear 하지 않고 upsert**하는 과정에서 생긴 변경을 append-only로 기록한다.
   - `CAFE_RAW` / `OPENCHAT_RAW` / `AUDIT_VIEW`는 행을 삭제하지 않고, `present`, `firstSeenAt`, `leftAt` 컬럼으로 **잔존 데이터(탈퇴/이탈 포함)**를 관리한다.
+  - `courseKey`는 표시용 컬럼이며, upsert 고유키에는 포함하지 않는다.
+    - 과거에 `courseKey`가 깨진 상태로 업서트된 적이 있으면(예: `????`), 워커가 `present=FALSE`로 자동 비활성화한다.
+    - 물리 삭제(시트 행 삭제)는 안전장치가 필요하므로 기본 동작에서는 수행하지 않는다. (필요 시 수동 정리 권장)
   - 기본 컬럼:
     - `ts`, `courseKey`, `tab`, `action`, `key`, `fields`, `old`, `new`
   - `action`:
