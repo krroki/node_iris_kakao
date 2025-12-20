@@ -52,6 +52,10 @@ IRIS_REPLY_ECHO_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_ECHO_TIMEOUT_MS", "25000"
 IRIS_REPLY_ECHO_POLL_MS = int(os.getenv("IRIS_REPLY_ECHO_POLL_MS", "700"))
 IRIS_REPLY_LOG_SCAN_BYTES = int(os.getenv("IRIS_REPLY_LOG_SCAN_BYTES", str(256 * 1024)))
 IRIS_REPLY_POST_ECHO_DELAY_MS = int(os.getenv("IRIS_REPLY_POST_ECHO_DELAY_MS", "800"))
+IRIS_REPLY_SENDLOG_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_SENDLOG_TIMEOUT_MS", "25000"))
+IRIS_REPLY_SENDLOG_POLL_MS = int(os.getenv("IRIS_REPLY_SENDLOG_POLL_MS", "600"))
+IRIS_REPLY_MAX_RETRIES = int(os.getenv("IRIS_REPLY_MAX_RETRIES", "0"))
+IRIS_REPLY_RETRY_DELAY_MS = int(os.getenv("IRIS_REPLY_RETRY_DELAY_MS", "800"))
 _IRIS_REPLY_LOCK = asyncio.Lock()
 
 
@@ -1942,6 +1946,53 @@ async def _wait_for_iris_image_echo(room_id: str, since_ms: int, timeout_ms: int
         await asyncio.sleep(max(0.05, min(1.0, IRIS_REPLY_ECHO_POLL_MS / 1000.0)))
 
 
+def _count_iris_sending_logs_since(room_id: str, since_sec: int, send_type: int) -> int:
+    rid = str(room_id or "").strip()
+    if not rid:
+        return 0
+    try:
+        st = int(send_type)
+    except Exception:
+        return 0
+    s = int(since_sec or 0)
+    if s < 0:
+        s = 0
+    rows = _iris_query_strict(
+        "select count(1) as cnt from chat_sending_logs where chat_id=? and type=? and created_at>=?",
+        [rid, st, s],
+        timeout_sec=6.0,
+    )
+    if rows and isinstance(rows[0], dict):
+        return _safe_int(rows[0].get("cnt")) or 0
+    return 0
+
+
+async def _wait_for_iris_sending_log_cleared(
+    room_id: str, since_sec: int, send_type: int, timeout_ms: int
+) -> bool:
+    s = int(since_sec or 0)
+    if s <= 0:
+        return False
+    timeout = max(0, int(timeout_ms or 0))
+    deadline = int(time.time() * 1000) + timeout
+
+    stable_zero = 0
+    while True:
+        now = int(time.time() * 1000)
+        if now > deadline:
+            return False
+
+        cnt = _count_iris_sending_logs_since(room_id, s, send_type)
+        if cnt <= 0:
+            stable_zero += 1
+            if stable_zero >= 2:
+                return True
+        else:
+            stable_zero = 0
+
+        await asyncio.sleep(max(0.05, min(1.0, IRIS_REPLY_SENDLOG_POLL_MS / 1000.0)))
+
+
 # ---- Avatar auto-resolve (Kakao open_link icon_url) ----
 _AVATAR_AUTO_CACHE_SEC = int(os.getenv("AVATAR_AUTO_CACHE_SEC", "3600"))
 _avatar_auto_cache: dict[str, tuple[float, str]] = {}
@@ -2422,28 +2473,79 @@ async def iris_reply_text(request: Request):
         "room": rid,
         "data": text,
     }
-    url = _iris_base() + "/reply"
+    max_retries = max(0, int(IRIS_REPLY_MAX_RETRIES))
+
     async with _IRIS_REPLY_LOCK:
-        status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
-    iris_body = None
-    try:
-        iris_body = json.loads(txt) if txt else None
-    except Exception:
-        iris_body = None
-    ok = status == 200
-    code = 200 if ok else 502
-    return JSONResponse(
-        status_code=code,
-        content={
-            "ok": ok,
-            "iris": {
-                "httpStatus": status,
-                "body": iris_body,
-                "raw": txt,
-            },
-            "sent": {"roomId": rid, "len": len(text), "type": payload["type"]},
-        },
-    )
+        attempt = 0
+        last_status = 0
+        last_txt = ""
+        last_iris_body = None
+        last_sendlog_ok = False
+        last_sendlog_wait_ms = 0
+        last_sendlog_err = None
+
+        while True:
+            attempt += 1
+            call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+            call_started_sec = max(0, int(call_started_ms / 1000) - 1)
+
+            url = _iris_base() + "/reply"
+            status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
+            last_status = status
+            last_txt = txt
+            try:
+                last_iris_body = json.loads(txt) if txt else None
+            except Exception:
+                last_iris_body = None
+
+            iris_ok = status == 200
+            sendlog_ok = False
+            sendlog_wait_ms = 0
+            sendlog_err = None
+
+            if iris_ok:
+                try:
+                    t1 = int(time.time() * 1000)
+                    sendlog_ok = await _wait_for_iris_sending_log_cleared(
+                        rid, call_started_sec, 1, IRIS_REPLY_SENDLOG_TIMEOUT_MS
+                    )
+                    sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
+                except HTTPException as e:
+                    sendlog_ok = False
+                    sendlog_err = str(e.detail)
+                except Exception as e:
+                    sendlog_ok = False
+                    sendlog_err = str(e)
+
+            last_sendlog_ok = sendlog_ok
+            last_sendlog_wait_ms = sendlog_wait_ms
+            last_sendlog_err = sendlog_err
+
+            ok = iris_ok and sendlog_ok
+            if ok or attempt > max_retries:
+                code = 200 if ok else 502
+                return JSONResponse(
+                    status_code=code,
+                    content={
+                        "ok": ok,
+                        "attempt": attempt,
+                        "iris": {
+                            "httpStatus": last_status,
+                            "body": last_iris_body,
+                            "raw": last_txt,
+                        },
+                        "sendlog": {
+                            "ok": last_sendlog_ok,
+                            "timeoutMs": IRIS_REPLY_SENDLOG_TIMEOUT_MS,
+                            "waitMs": last_sendlog_wait_ms,
+                            "error": last_sendlog_err,
+                        },
+                        "sent": {"roomId": rid, "len": len(text), "type": payload["type"]},
+                    },
+                )
+
+            if IRIS_REPLY_RETRY_DELAY_MS > 0:
+                await asyncio.sleep(max(0.0, IRIS_REPLY_RETRY_DELAY_MS / 1000.0))
 
 
 @app.get("/rooms/{room_id}/admins")
@@ -2570,50 +2672,98 @@ async def iris_reply_media(request: Request):
         "room": rid,
         "data": imgs[0] if len(imgs) == 1 else imgs,
     }
-
-    # NOTE:
-    # IRIS /reply 는 실제 UI 전송 완료 전에 200을 반환할 수 있다.
-    # 따라서 "요청 직전 시각" 기준으로 MessageStore 로그에 이미지 에코가 찍힐 때까지 대기한다.
-    call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+    max_retries = max(0, int(IRIS_REPLY_MAX_RETRIES))
 
     async with _IRIS_REPLY_LOCK:
-        url = _iris_base() + "/reply"
-        status, txt = _http_post_json(url, payload, headers={}, timeout=30.0)
-        iris_body = None
-        try:
-            iris_body = json.loads(txt) if txt else None
-        except Exception:
-            iris_body = None
+        attempt = 0
+        last_status = 0
+        last_txt = ""
+        last_iris_body = None
+        last_echo_ok = False
+        last_echo_wait_ms = 0
+        last_sendlog_ok = False
+        last_sendlog_wait_ms = 0
+        last_sendlog_err = None
 
-        iris_ok = status == 200
-        echo_ok = False
-        wait_ms = 0
-        if iris_ok:
-            t0 = int(time.time() * 1000)
-            echo_ok = await _wait_for_iris_image_echo(rid, call_started_ms, IRIS_REPLY_ECHO_TIMEOUT_MS)
-            wait_ms = max(0, int(time.time() * 1000) - t0)
-            if echo_ok and IRIS_REPLY_POST_ECHO_DELAY_MS > 0:
-                await asyncio.sleep(max(0.0, IRIS_REPLY_POST_ECHO_DELAY_MS / 1000.0))
+        while True:
+            attempt += 1
+            call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+            call_started_sec = max(0, int(call_started_ms / 1000) - 1)
 
-        ok = iris_ok and echo_ok
-        code = 200 if ok else 502
-        return JSONResponse(
-            status_code=code,
-            content={
-                "ok": ok,
-                "iris": {
-                    "httpStatus": status,
-                    "body": iris_body,
-                    "raw": txt,
-                },
-                "echo": {
-                    "ok": echo_ok,
-                    "timeoutMs": IRIS_REPLY_ECHO_TIMEOUT_MS,
-                    "waitMs": wait_ms,
-                },
-                "sent": {"roomId": rid, "count": len(imgs), "type": payload["type"]},
-            },
-        )
+            url = _iris_base() + "/reply"
+            status, txt = _http_post_json(url, payload, headers={}, timeout=30.0)
+            last_status = status
+            last_txt = txt
+            try:
+                last_iris_body = json.loads(txt) if txt else None
+            except Exception:
+                last_iris_body = None
+
+            iris_ok = status == 200
+            echo_ok = False
+            echo_wait_ms = 0
+            sendlog_ok = False
+            sendlog_wait_ms = 0
+            sendlog_err = None
+
+            if iris_ok:
+                t0 = int(time.time() * 1000)
+                echo_ok = await _wait_for_iris_image_echo(rid, call_started_ms, IRIS_REPLY_ECHO_TIMEOUT_MS)
+                echo_wait_ms = max(0, int(time.time() * 1000) - t0)
+
+                if echo_ok and IRIS_REPLY_POST_ECHO_DELAY_MS > 0:
+                    await asyncio.sleep(max(0.0, IRIS_REPLY_POST_ECHO_DELAY_MS / 1000.0))
+
+                if echo_ok:
+                    try:
+                        t1 = int(time.time() * 1000)
+                        sendlog_ok = await _wait_for_iris_sending_log_cleared(
+                            rid, call_started_sec, 2, IRIS_REPLY_SENDLOG_TIMEOUT_MS
+                        )
+                        sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
+                    except HTTPException as e:
+                        sendlog_ok = False
+                        sendlog_err = str(e.detail)
+                    except Exception as e:
+                        sendlog_ok = False
+                        sendlog_err = str(e)
+
+            last_echo_ok = echo_ok
+            last_echo_wait_ms = echo_wait_ms
+            last_sendlog_ok = sendlog_ok
+            last_sendlog_wait_ms = sendlog_wait_ms
+            last_sendlog_err = sendlog_err
+
+            ok = iris_ok and echo_ok and sendlog_ok
+            if ok or attempt > max_retries:
+                code = 200 if ok else 502
+                return JSONResponse(
+                    status_code=code,
+                    content={
+                        "ok": ok,
+                        "attempt": attempt,
+                        "iris": {
+                            "httpStatus": last_status,
+                            "body": last_iris_body,
+                            "raw": last_txt,
+                        },
+                        "echo": {
+                            "ok": last_echo_ok,
+                            "timeoutMs": IRIS_REPLY_ECHO_TIMEOUT_MS,
+                            "waitMs": last_echo_wait_ms,
+                        },
+                        "sendlog": {
+                            "ok": last_sendlog_ok,
+                            "timeoutMs": IRIS_REPLY_SENDLOG_TIMEOUT_MS,
+                            "waitMs": last_sendlog_wait_ms,
+                            "error": last_sendlog_err,
+                        },
+                        "sent": {"roomId": rid, "count": len(imgs), "type": payload["type"]},
+                    },
+                )
+
+            if IRIS_REPLY_RETRY_DELAY_MS > 0:
+                await asyncio.sleep(max(0.0, IRIS_REPLY_RETRY_DELAY_MS / 1000.0))
 
 
 @app.get("/talkapi/health")

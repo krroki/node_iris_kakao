@@ -22,25 +22,28 @@ export async function tryServerIrisReplyText(
     clearTimeout(t);
     if (!res) return false;
     const data: any = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      logger.warn("[iris] reply_text non-OK", {
-        roomId,
-        httpStatus: res.status,
-        detail: data?.detail,
-        len: typeof text === "string" ? text.length : 0,
-      });
-      return false;
-    }
-    if (!data?.ok) {
+    const len = typeof text === "string" ? text.length : 0;
+    const attempt = data?.attempt;
+    const irisHttp = data?.iris?.httpStatus ?? res.status;
+    const sendlogOk = data?.sendlog?.ok;
+    const sendlogWaitMs = data?.sendlog?.waitMs;
+    const sendlogErr = data?.sendlog?.error ?? data?.sendlog?.err ?? data?.detail;
+
+    if (!res.ok || !data?.ok) {
       logger.warn("[iris] reply_text failed", {
         roomId,
+        httpStatus: res.status,
+        irisHttpStatus: irisHttp,
         ok: data?.ok,
-        httpStatus: data?.iris?.httpStatus,
-        len: typeof text === "string" ? text.length : 0,
+        attempt,
+        sendlogOk,
+        sendlogWaitMs,
+        sendlogErr,
+        len,
       });
       return false;
     }
-    logger.info("[iris] reply_text ok", { roomId, len: typeof text === "string" ? text.length : 0 });
+    logger.info("[iris] reply_text ok", { roomId, len, attempt, sendlogWaitMs });
     return true;
   } catch (e) {
     logger.warn("[iris] reply_text error", { roomId, err: String(e) });
@@ -70,24 +73,32 @@ export async function tryServerIrisReplyMedia(
     clearTimeout(t);
     if (!res) return false;
     const data: any = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      logger.warn("[iris] reply_media non-OK", {
-        httpStatus: res.status,
-        detail: data?.detail,
-        count: Array.isArray(imagesBase64) ? imagesBase64.length : 0,
-      });
-      return false;
-    }
-    if (!data?.ok) {
+    const count = Array.isArray(imagesBase64) ? imagesBase64.length : 0;
+    const attempt = data?.attempt;
+    const irisHttp = data?.iris?.httpStatus ?? res.status;
+    const echoOk = data?.echo?.ok;
+    const echoWaitMs = data?.echo?.waitMs;
+    const sendlogOk = data?.sendlog?.ok;
+    const sendlogWaitMs = data?.sendlog?.waitMs;
+    const sendlogErr = data?.sendlog?.error ?? data?.sendlog?.err ?? data?.detail;
+
+    if (!res.ok || !data?.ok) {
       logger.warn("[iris] reply_media failed", {
         roomId,
+        httpStatus: res.status,
+        irisHttpStatus: irisHttp,
         ok: data?.ok,
-        httpStatus: data?.iris?.httpStatus,
-        count: data?.sent?.count,
+        attempt,
+        echoOk,
+        echoWaitMs,
+        sendlogOk,
+        sendlogWaitMs,
+        sendlogErr,
+        count,
       });
       return false;
     }
-    logger.info("[iris] reply_media ok", { roomId, count: data?.sent?.count });
+    logger.info("[iris] reply_media ok", { roomId, count: data?.sent?.count ?? count, attempt, echoWaitMs, sendlogWaitMs });
     return true;
   } catch (e) {
     logger.warn("[iris] reply_media error", { roomId, err: String(e) });

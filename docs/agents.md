@@ -109,10 +109,11 @@ if (result === null) {
   - Talk-API raw 이미지 발신은 불안정한 환경이 있어, **IRIS 단일 경로**를 기본으로 유지한다.
   - 이미지 전송은 Realtime API `/send/iris/reply_media` 경유로 수행한다.
     - server는 IRIS `/reply` 호출을 `_IRIS_REPLY_LOCK`으로 직렬화해 UI automation 경합을 방지한다.
-    - `/send/iris/reply_media`는 **MessageStore 이미지 echo 확인 후에만** `ok=true`를 반환한다. (성공 판정 SSOT)
-    - echo 확인 기본 타임아웃은 **25초**이며, 필요 시 환경변수로 조정한다:
+    - `/send/iris/reply_media`는 **MessageStore 이미지 echo + `chat_sending_logs` 비움(전송 완료) 확인 후에만** `ok=true`를 반환한다. (성공 판정 SSOT)
+    - echo/sendlog 확인 기본 타임아웃은 **25초**이며, 필요 시 환경변수로 조정한다:
       - `IRIS_REPLY_ECHO_TIMEOUT_MS`, `IRIS_REPLY_ECHO_POLL_MS`, `IRIS_REPLY_POST_ECHO_DELAY_MS`, `IRIS_REPLY_LOG_SCAN_BYTES`
-  - **재전송(리트라이)은 하지 않고**, echo 기준으로만 집계한다. (중복 이미지 전송 방지)
+      - `IRIS_REPLY_SENDLOG_TIMEOUT_MS`, `IRIS_REPLY_SENDLOG_POLL_MS`
+  - **재전송(리트라이)은 기본 비활성화**(`IRIS_REPLY_MAX_RETRIES=0`) 상태로 운영한다. (중복 이미지 전송 방지)
   - 전송 순서는 `node-iris-app/data/iris_media_health.json` 이력(최근 실패는 뒤로)을 참고해 정렬한다.
   - 공지 결과 메시지 프리픽스는 `📣 공지 전송 결과`(루프 방지 스킵 대상)이다.
 

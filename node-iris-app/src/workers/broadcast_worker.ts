@@ -512,7 +512,7 @@ async function dispatchIrisImagesToTargets(
   const gapBetweenRooms = Math.max(0, Math.floor(gaps[0] ?? 0));
 
   // NOTE:
-  // Realtime API(/send/iris/reply_media)는 server에서 "MessageStore 이미지 echo"를 확인한 뒤에만 ok=true를 반환한다.
+  // Realtime API(/send/iris/reply_media)는 server에서 "MessageStore 이미지 echo + chat_sending_logs 비움"을 확인한 뒤에만 ok=true를 반환한다.
   // 따라서 worker에서는 "요청 직렬화"만 유지하고, 성공 판정은 응답 ok에 따른다.
   for (let i = 0; i < orderedTargets.length; i += 1) {
     const roomId = orderedTargets[i]!;
@@ -603,7 +603,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     roomNameMap = await resolveRoomNames(Array.from(resolveIds), 3000);
   } catch (e) {
     roomNameErr = e instanceof Error ? e.message : String(e);
-    logger.warn("[announce] 방 이름 조회 실패(결과 메시지 제한)", { err: roomNameErr });
+    logger.warn("[announce] 방 이름 조회 실패(임시 라벨 표시)", { err: roomNameErr });
   }
 
   const unknownLabels = new Map<string, string>();
@@ -625,7 +625,7 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
   const resultLines: string[] = [];
   resultLines.push("📣 공지 전송 결과");
   if (roomNameErr) {
-    resultLines.push("⚠️ 방 이름 조회 실패로 일부 목록이 생략될 수 있어요");
+    resultLines.push("⚠️ 방 이름 조회 실패로 일부 방 이름이 임시 라벨로 표시될 수 있어요");
   }
 
   const normalizeInfoText = (t: string) => normalizeText(t).replace(/\s+/g, " ").trim();
@@ -749,10 +749,10 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
       const ok = okText && okImg;
       if (ok) {
         successCount += 1;
-        if (!roomNameErr) okNames.push(roomLabel(targetId));
+        okNames.push(roomLabel(targetId));
       } else {
         failCount += 1;
-        if (!roomNameErr) failNames.push(roomLabel(targetId));
+        failNames.push(roomLabel(targetId));
       }
     }
 
@@ -779,23 +779,21 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     resultLines.push(`전송 실패 : ${failCount}개`);
     resultLines.push("ㅡㅡㅡㅡㅡ");
 
-    if (!roomNameErr) {
-      resultLines.push("[ 실패한 방]");
-      if (failNames.length === 0) {
-        resultLines.push("없음");
-      } else {
-        for (const n of failNames) resultLines.push(n);
-      }
-
-      resultLines.push("");
-      resultLines.push("[ 성공한 방]");
-      if (okNames.length === 0) {
-        resultLines.push("없음");
-      } else {
-        for (const n of okNames) resultLines.push(n);
-      }
-      resultLines.push("ㅡㅡㅡㅡㅡ");
+    resultLines.push("[ 실패한 방]");
+    if (failNames.length === 0) {
+      resultLines.push("없음");
+    } else {
+      for (const n of failNames) resultLines.push(n);
     }
+
+    resultLines.push("");
+    resultLines.push("[ 성공한 방]");
+    if (okNames.length === 0) {
+      resultLines.push("없음");
+    } else {
+      for (const n of okNames) resultLines.push(n);
+    }
+    resultLines.push("ㅡㅡㅡㅡㅡ");
 
     resultLines.push("📝 발송 정보");
     resultLines.push(`출처: ${sourceName}`);
