@@ -18,13 +18,14 @@
   - 워커: `scripts/openchat_members_sheets_worker.py`
   - 기동: `windows/start_openchat_members_sheets_worker.ps1`, `windows/start_all.ps1` 조건부 자동 기동
   - watchdog 자동 복구: `windows/watchdog.ps1`에 stage 추가(단, `worker.enabled=false`면 스킵)
-  - UI(3100): 상단 “오픈채팅 멤버(전체) Sheets 동기화” 카드 + 방 카드 “멤버 Sheets 자동”으로 roomId별 설정/상태 확인
+  - UI(3100): `/course` 탭 “톡방 멤버 Sheets(선택)” 카드 + (강의) 코스 카드 “톡방 멤버 Sheets”로 roomId별 설정/상태 확인
+    - 강의톡방이 아닌 일반 방은 RoomCard “멤버 Sheets 자동” UI 유지(레거시)
   - 결정 문서: `docs/adr/ADR-0033-openchat-members-sheets-worker.md`
   - 스케줄 정책:
     - ON이면 **10분마다 업서트(고정)**, enable 직후 즉시 실행하지 않고 **다음 주기부터** 실행
     - 실패/스킵 시 테스트 방(`18462226881291012`)으로 1회 알림(전제: `safeMode=false`, `talkApi.enabled=true`)
     - 재시도 없음(다음 주기에서만 재시도)
-    - 즉시 1회 실행은 방 카드의 `지금 업서트`(수동) 버튼으로 수행
+    - 즉시 1회 실행은 UI의 `지금 업서트`(수동) 버튼으로 수행
 - 완전성 원칙 유지: `loadedMembersCount < activeMembersCount`이면 폴백 없이 스킵/실패(스크롤 로딩 필요)로 기록.
 - 검증: `cd web && npm run build` PASS, Python 스크립트 문법 체크(`py_compile`) PASS.
 - Web(UI, 3100) 안정화:

@@ -60,7 +60,7 @@ export default function RoomCard({
     const [avatarError, setAvatarError] = useState(false);
 
     const rawRoomName = String(room.roomName || "").trim();
-    const inferredCourseRoom = /^\((사담방|공지방|프리미엄방)\)/.test(rawRoomName);
+    const inferredCourseRoom = /^(?:\d+\.)?\s*[\(\[]\s*(사담방|공지방|프리미엄방)\s*[\)\]]/.test(rawRoomName);
     const isCourseRoom =
         features.courseRoom === true ||
         features.courseRoster === true ||
@@ -275,7 +275,11 @@ export default function RoomCard({
     const syncMembersToSheets = async (): Promise<void> => {
         const rid = String(room.roomId || "").trim();
         if (!rid) return;
-        const ok = confirm(`이 방 멤버를 Google Sheets에 업서트할까요?\n\nroomId=${rid}\n\n(※ loadedMembersCount < activeMembersCount이면 실패합니다)`);
+        const allowIncomplete = openchatSheetsAllowIncomplete;
+        const ok = confirm(
+            `이 방 멤버를 Google Sheets에 업서트할까요?\n\nroomId=${rid}\n\n` +
+            `(※ loadedMembersCount < activeMembersCount이면 ${allowIncomplete ? "불완전 허용 옵션으로 강제 진행합니다(권장하지 않음)" : "실패합니다"})`
+        );
         if (!ok) return;
 
         setMembersSheetsSyncing(true);
@@ -284,7 +288,11 @@ export default function RoomCard({
         setMembersSheetsHintCmd(null);
 
         try {
-            const r = await fetch(`/api/rooms/${encodeURIComponent(rid)}/members/sync-sheets`, { method: "POST" });
+            const r = await fetch(`/api/rooms/${encodeURIComponent(rid)}/members/sync-sheets`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ allowIncomplete }),
+            });
             const j: any = await r.json().catch(() => null);
             if (!r.ok || !j || j.ok !== true) {
                 setMembersSheetsSyncErr(String(j?.detail || j?.error || `HTTP ${r.status}`));
@@ -537,6 +545,7 @@ export default function RoomCard({
                 </div>
             </div>
 
+            {!isCourseRoom && (
             <div style={{ marginTop: 10, borderTop: '1px solid var(--border-color)', paddingTop: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -771,6 +780,7 @@ export default function RoomCard({
                     </div>
                 )}
             </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
                 <div style={{ display: 'flex', gap: 8 }}>

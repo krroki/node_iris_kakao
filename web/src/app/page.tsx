@@ -1033,6 +1033,8 @@ export default function Home() {
 
   // 강의 운영 UI는 /course에서 코스 단위로 관리(SSOT). 홈에서는 링크만 유지한다.
   const showCourseUiInHome = false;
+  // 오픈채팅 멤버 Sheets UI도 /course에서 관리(코스 단위 SSOT). 홈에서는 숨긴다.
+  const showOpenchatMembersSheetsUiInHome = false;
 
   return (
     <div className="dashboard-container">
@@ -1671,6 +1673,7 @@ export default function Home() {
       )}
 
       {/* 오픈채팅 멤버(전체) Sheets 동기화 워커 */}
+      {showOpenchatMembersSheetsUiInHome && (
       <div className="pipeline-card" style={{ marginTop: 12 }}>
         <h3 style={{ marginTop: 0, color: 'var(--text-primary)' }}>오픈채팅 멤버(전체) Sheets 동기화</h3>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
@@ -1783,6 +1786,7 @@ export default function Home() {
           (<code>loadedMembersCount &lt; activeMembersCount</code>면 폴백 없이 스킵/실패 처리)
         </div>
       </div>
+      )}
 
       <div className="filters-bar">
         <div className="filter-group">

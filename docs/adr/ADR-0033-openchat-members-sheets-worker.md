@@ -46,8 +46,9 @@
   - `windows/start_all.ps1`에서 `worker.enabled=true`일 때만 자동 기동
   - `windows/watchdog.ps1`에서 heartbeat stale/프로세스 종료 시 자동 재기동(단, `worker.enabled=false`면 스킵)
 - UI(3100):
-  - 상단 카드 “오픈채팅 멤버(전체) Sheets 동기화”: 전역 기본값 + 워커 on/off + 워커 재시작/저장
-  - 방 카드 “멤버 Sheets 자동”: roomId별 enabled/시트 타겟/allowIncomplete 설정 + 즉시 1회 업서트(수동) 버튼
+  - `/course` 탭 상단 카드 “톡방 멤버 Sheets(선택)”: 전역 기본값 + 워커 on/off + 워커 재시작/저장
+  - (강의) 코스 카드 “톡방 멤버 Sheets”: (사담/공지/프리미엄) 방별 enabled/시트 타겟/allowIncomplete 설정 + 즉시 1회 업서트(수동) 버튼
+  - (레거시) 강의톡방이 아닌 일반 방은 RoomCard “멤버 Sheets 자동” UI로 roomId별 설정 가능
 
 스케줄 정책:
 - **고정 10분**: 워커 스케줄링 ON이면 **10분마다** 업서트한다(설정으로 변경 불가).

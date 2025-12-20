@@ -71,7 +71,8 @@ API key는 주로 **공개 데이터 읽기**에만 쓰이며, 업서트(쓰기)
 
 ### 3.5) (권장) UI에서 1클릭 실행
 
-- 대시보드(3100) → 해당 방(RoomCard) → **`Sheets 업서트`** 버튼
+- 일반 방: 대시보드(3100) → 해당 방(RoomCard) → **`Sheets 업서트`** 버튼
+- 강의톡방(접두어 `(사담방)/(공지방)/(프리미엄방)`): 대시보드(3100) → **`/course`** → 코스 카드 “톡방 멤버 Sheets” → **`지금 업서트`**
   - 내부적으로 `scripts/sync_openchat_members_to_sheets.py`를 호출한다.
   - `loadedMembersCount < activeMembersCount`이면(=DB 로딩 불완전) **실패**하며,
     UI에 `openchat_load_members.ps1` 실행 커맨드가 힌트로 노출된다.
@@ -82,16 +83,19 @@ API key는 주로 **공개 데이터 읽기**에만 쓰이며, 업서트(쓰기)
 워커가 주기적으로 자동 업서트를 수행하도록 구성할 수 있다.
 
 - 설정 UI:
-  1) 대시보드(3100) 상단 카드 **“오픈채팅 멤버(전체) Sheets 동기화”**
+  1) 대시보드(3100) `/course` 탭 상단 카드 **“톡방 멤버 Sheets(선택)”**
      - 서비스 계정 업로드(없다면)
      - `기본 Spreadsheet ID/URL` / `기본 시트 탭 이름` 설정(ON/OFF와 무관하게 저장 가능)
      - `자동 동기화 워커` ON 시: **10분마다 업서트(고정)**
-  2) 각 방(RoomCard) → **“멤버 Sheets 자동”**
+  2) 강의 운영 코스 카드 → **“톡방 멤버 Sheets”**
      - `Spreadsheet ID/URL` / `시트 탭`은 ON/OFF와 무관하게 미리 저장 가능(ON은 실행 여부만 제어)
      - `자동 동기화` ON
      - 강의별 분리가 필요하면 roomId별 `Spreadsheet ID/URL` 또는 `시트 탭`을 override
+     - `시트 탭`이 빈칸이면 방 이름 접두어 기반으로 자동 추론한다: `(사담방)=MEMBERS_CHAT`, `(공지방)=MEMBERS_NOTICE`, `(프리미엄방)=MEMBERS_PREMIUM` (최종 fallback: `members`)
      - 즉시 1회 실행은 `지금 업서트` 버튼(수동)으로 수행한다(자동 동기화는 “다음 주기”부터 실행).
      - 저장 버튼을 눌러 반영
+
+  3) (레거시) 강의톡방이 아닌 일반 방은 RoomCard → **“멤버 Sheets 자동”** UI로 roomId별 설정 가능
 
 - 워커:
   - 스크립트: `scripts/openchat_members_sheets_worker.py`

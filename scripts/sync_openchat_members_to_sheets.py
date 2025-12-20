@@ -129,6 +129,36 @@ def _parse_spreadsheet_id(raw: str) -> str:
     return s
 
 
+def _infer_default_sheet_name(room_name: str) -> Optional[str]:
+    """
+    강의톡방(접두어)인 경우, 빈칸 sheetName의 기본값을 룸 타입별로 분리해 충돌을 방지한다.
+
+    예:
+      - (사담방) ...      -> MEMBERS_CHAT
+      - 1. (공지방) ...   -> MEMBERS_NOTICE
+      - [프리미엄방] ...  -> MEMBERS_PREMIUM
+    """
+    s = str(room_name or "").strip()
+    if not s:
+        return None
+
+    m = re.match(r"^(?:\d+\.)?\s*(?:\(([^)]+)\)|\[([^\]]+)\])\s*", s)
+    if not m:
+        return None
+    prefix = str(m.group(1) or m.group(2) or "").strip()
+    if not prefix:
+        return None
+
+    p = re.sub(r"\s+", "", prefix)
+    if "사담" in p:
+        return "MEMBERS_CHAT"
+    if "공지" in p:
+        return "MEMBERS_NOTICE"
+    if "프리미엄" in p:
+        return "MEMBERS_PREMIUM"
+    return None
+
+
 def _iris_base() -> str:
     return (
         os.getenv("IRIS_QUERY_BASE")
@@ -506,6 +536,7 @@ def main() -> int:
         str(args.sheet_name or "").strip()
         or str(os.getenv("SHEETS_SHEET_NAME") or "").strip()
         or str(room_cfg.get("sheetName") or room_cfg.get("sheet_name") or "").strip()
+        or str(_infer_default_sheet_name(room_name) or "").strip()
         or str(cfg.get("sheetName") or cfg.get("sheet_name") or "").strip()
         or "members"
     )

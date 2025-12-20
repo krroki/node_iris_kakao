@@ -143,12 +143,13 @@
     - `start_web.ps1`도 READY 전에 **정적 자산 1개를 추가로 검증**해(실패 시 CleanBuild로 1회 자가복구) 빈 화면 재발을 줄인다.
 
 - **오픈채팅 멤버 Sheets 자동 동기화(새 기능)**:
-  - UI(3100) 상단 “오픈채팅 멤버(전체) Sheets 동기화”에서 `worker.enabled=true`로 켜고,
-    방 카드 “멤버 Sheets 자동”에서 roomId별 `enabled=true`로 설정 후 저장하면 자동 업서트가 돈다.
+  - UI(3100) `/course` 탭의 “톡방 멤버 Sheets(선택)”에서 `worker.enabled=true`로 켜고,
+    `/course` 코스 카드 “톡방 멤버 Sheets”에서 (사담/공지/프리미엄) 방별 `enabled=true`로 설정 후 저장하면 자동 업서트가 돈다.
+    - 강의톡방이 아닌 일반 방은 RoomCard “멤버 Sheets 자동”에서 roomId별 설정 가능(레거시 UI 유지)
   - 스케줄:
     - **ON이면 10분마다 업서트(고정)** (`intervalSec` 설정으로 변경 불가)
     - 방/워커를 켜도 **즉시 실행하지 않고 다음 주기(10분 후)** 부터 실행
-    - 즉시 1회 실행은 방 카드의 **`지금 업서트`(수동)** 버튼으로만 수행
+    - 즉시 1회 실행은 **`지금 업서트`(수동)** 버튼으로만 수행
     - **재시도 없음**: 실패해도 즉시 재시도하지 않고 다음 주기로 넘어감
     - 실패/스킵 발생 시 테스트용 오픈채팅방(`18462226881291012`)으로 1회 알림 발신(전제: `safeMode=false`, `talkApi.enabled=true`)
   - 상태 파일: `node-iris-app/data/openchat_members_sheets_worker_status.json`, `node-iris-app/data/openchat_members_sheets_worker_state.json`

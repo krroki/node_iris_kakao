@@ -110,7 +110,7 @@
   - `windows/watchdog.ps1`: 설정 파일 존재 + `worker.enabled=true`일 때만 heartbeat 기반 자동 재시작
   - 운영 비활성화(옵션): `COURSE_MEMBERSHIP_AUDIT_WORKER_DISABLE=1`
 - UI(3100):
-  - 상단 카드: “강의 운영 v2 (등급 기반 참여 점검)”
+  - `/course` 탭 상단 카드: “강의 운영 v2 (등급 기반 참여 점검)”
   - API: `/api/course-membership-audit/config`, `/api/course-membership-audit/status`, `/api/course-membership-audit/restart`
 
 ### Invariants(불변식)
