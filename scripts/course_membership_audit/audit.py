@@ -191,6 +191,7 @@ def build_audit_view_rows(
     openchat_fetched_at: str,
 ) -> List[List[str]]:
     cafe_fetched_at = str(cafe_snapshot.get("fetchedAt") or "").strip()
+    club_id = str(cafe_snapshot.get("clubId") or "").strip()
     cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
 
     # room completeness
@@ -216,6 +217,7 @@ def build_audit_view_rows(
     rows: List[List[str]] = [
         [
             "courseKey",
+            "clubId",
             "cafeNickname",
             "grade",
             "track",
@@ -281,6 +283,7 @@ def build_audit_view_rows(
         rows.append(
             [
                 course_key,
+                club_id,
                 cafe_nick,
                 grade,
                 track,
@@ -300,4 +303,3 @@ def build_audit_view_rows(
         )
 
     return rows
-

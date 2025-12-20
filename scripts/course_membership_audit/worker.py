@@ -188,15 +188,43 @@ def _upsert_sheet_rows(
     # build existing index
     existing_index: dict[tuple[str, ...], tuple[int, list[str]]] = {}
     dup_keys = 0
+    dup_rows: list[tuple[tuple[str, ...], int, list[str]]] = []
+
+    present_idx_existing = header_to_idx.get("present")
+
+    def is_present(row: list[str]) -> bool:
+        if present_idx_existing is None:
+            return True
+        cell = str(row[present_idx_existing] if present_idx_existing < len(row) else "").strip()
+        return True if cell == "" else _is_true(cell)
+
     for i, r in enumerate(existing[1:] if len(existing) > 1 else []):
         row_no = i + 2
         rr = _pad_row(r, len(final_header))
         key = _build_key_tuple(header_to_idx, rr, key_cols)
         if not key:
             continue
+
         if key in existing_index:
             dup_keys += 1
+            kept_row_no, kept_row = existing_index[key]
+            kept_present = is_present(kept_row)
+            cur_present = is_present(rr)
+
+            # prefer present=TRUE row, otherwise prefer the later row (newer append)
+            keep_current = False
+            if cur_present and not kept_present:
+                keep_current = True
+            elif cur_present == kept_present:
+                keep_current = row_no > kept_row_no
+
+            if keep_current:
+                dup_rows.append((key, kept_row_no, kept_row))
+                existing_index[key] = (row_no, rr)
+            else:
+                dup_rows.append((key, row_no, rr))
             continue
+
         existing_index[key] = (row_no, rr)
 
     # build new rows index
@@ -224,6 +252,7 @@ def _upsert_sheet_rows(
     updated = 0
     left = 0
     rejoined = 0
+    dup_deactivated = 0
 
     updates: list[tuple[int, list[str]]] = []
     appends: list[list[str]] = []
@@ -342,6 +371,20 @@ def _upsert_sheet_rows(
     # mark missing rows as left
     present_idx = header_to_idx.get("present")
     if present_idx is not None:
+        # duplicates: ensure only one row per key is effectively active
+        if dup_rows:
+            for _key, row_no, old_row in dup_rows:
+                cell = str(old_row[present_idx] if present_idx < len(old_row) else "").strip()
+                was_present = True if cell == "" else _is_true(cell)
+                if not was_present:
+                    continue
+                next_row = list(old_row)
+                next_row[present_idx] = "FALSE"
+                if "leftAt" in header_to_idx:
+                    next_row[header_to_idx["leftAt"]] = now_iso
+                updates.append((row_no, _pad_row(next_row, len(final_header))))
+                dup_deactivated += 1
+
         for key, (row_no, old_row) in existing_index.items():
             if key in new_index:
                 continue
@@ -364,7 +407,10 @@ def _upsert_sheet_rows(
         append_rows(svc, spreadsheet_id, sheet_name, appends, last_col=last_col)
 
     if dup_keys or new_dup:
-        log_rows.append([now_iso, course_key, sheet_name, "WARN", "", f"dup existing={dup_keys}, new={new_dup}", "", ""])
+        extra = f"dup existing={dup_keys}, new={new_dup}"
+        if dup_deactivated:
+            extra = f"{extra}, deactivated={dup_deactivated}"
+        log_rows.append([now_iso, course_key, sheet_name, "WARN", "", extra, "", ""])
 
     log_rows.append(
         [
@@ -760,7 +806,7 @@ class CourseMembershipAuditWorker:
             spreadsheet_id=course.spreadsheet_id,
             sheet_name=tabs.cafe_raw,
             rows=cafe_rows,
-            key_cols=["courseKey", "cafeUserId"],
+            key_cols=["clubId", "cafeUserId"],
             now_iso=now_iso,
             extra_cols=extra_cols,
             ignore_update_cols={"fetchedAt"},
@@ -773,7 +819,7 @@ class CourseMembershipAuditWorker:
             spreadsheet_id=course.spreadsheet_id,
             sheet_name=tabs.openchat_raw,
             rows=openchat_rows,
-            key_cols=["courseKey", "roomType", "openchatUserId"],
+            key_cols=["roomId", "openchatUserId"],
             now_iso=now_iso,
             extra_cols=extra_cols,
             ignore_update_cols={"fetchedAt", "activeMembersCount", "loadedMembersCount"},
@@ -800,7 +846,7 @@ class CourseMembershipAuditWorker:
             spreadsheet_id=course.spreadsheet_id,
             sheet_name=tabs.audit,
             rows=audit_rows,
-            key_cols=["courseKey", "cafeUserId"],
+            key_cols=["clubId", "cafeUserId"],
             now_iso=now_iso,
             extra_cols=extra_cols,
             ignore_update_cols={"cafeUpdatedAt", "openchatUpdatedAt"},
