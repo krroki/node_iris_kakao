@@ -666,10 +666,12 @@ export default function CourseOpsPage() {
       });
       const j: any = await r.json().catch(() => null);
       if (!r.ok || !j || j.ok !== true) throw new Error(String(j?.error || `HTTP ${r.status}`));
-      setPendingV2OneOff((prev) => ({
-        ...prev,
-        [ck]: { startedAtMs: Date.now(), originalWorkerEnabled, originalCourseEnabled },
-      }));
+      if (originalWorkerEnabled === false || originalCourseEnabled === false) {
+        setPendingV2OneOff((prev) => ({
+          ...prev,
+          [ck]: { startedAtMs: Date.now(), originalWorkerEnabled, originalCourseEnabled },
+        }));
+      }
     } catch (e: any) {
       alert(`1회 실행 예약 실패: ${String(e?.message || e)}`);
     }
