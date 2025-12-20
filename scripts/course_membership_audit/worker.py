@@ -394,6 +394,92 @@ class CourseMembershipAuditWorker:
 
         self.state: dict = {}
 
+    def _friendly_error(self, raw_err: str) -> str:
+        s = str(raw_err or "").strip()
+        if not s:
+            return "알 수 없는 오류가 발생했어요."
+
+        if "IRIS /query 호출 실패" in s or "IRIS /query 실패" in s:
+            return "카카오톡 데이터(멤버 DB) 연결에 실패했어요. IRIS 연결을 확인해주세요."
+        if "Realtime API /rooms" in s:
+            return "방 목록을 불러오지 못했어요. 서버 상태를 확인해주세요."
+
+        if "settings.json" in s and ("찾지 못했습니다" in s or "없습니다" in s):
+            return "카페 로그인 설정(settings.json)을 찾지 못했어요."
+        if "naver_id/naver_pw" in s:
+            return "카페 로그인 정보(naver_id/naver_pw)가 비어 있어요."
+        if "카페 크롤링 실패" in s:
+            return "카페 멤버를 불러오지 못했어요. 로그인/권한을 확인해주세요."
+
+        # Google Sheets 권한/대상 오류
+        if ("The caller does not have permission" in s) or ("insufficientPermissions" in s) or ("PERMISSION_DENIED" in s):
+            return "서비스계정이 스프레드시트 편집 권한이 없어요. 시트를 서비스계정 이메일에 Editor로 공유해주세요."
+        if ("Requested entity was not found" in s) or ("notFound" in s):
+            return "스프레드시트를 찾지 못했어요. URL/ID를 확인해주세요."
+
+        # 너무 긴/난해한 메시지는 사용자용으로 축약
+        if len(s) > 160:
+            return s[:160] + "…"
+        return s
+
+    def _append_course_event(
+        self,
+        *,
+        course_key: str,
+        level: str,
+        message: str,
+        stage: str = "",
+        pct: Optional[int] = None,
+    ) -> None:
+        cs = self._course_state(course_key)
+        events = cs.get("events")
+        if not isinstance(events, list):
+            events = []
+
+        ev: dict[str, Any] = {
+            "ts": _iso_now(),
+            "level": str(level or "INFO"),
+            "message": str(message or "").strip(),
+        }
+        if stage:
+            ev["stage"] = str(stage)
+        if pct is not None:
+            try:
+                ev["pct"] = int(pct)
+            except Exception:
+                pass
+
+        events.append(ev)
+        if len(events) > 80:
+            events = events[-80:]
+        cs["events"] = events
+
+    def _set_course_progress(
+        self,
+        *,
+        course_key: str,
+        stage: str,
+        message: str,
+        pct: Optional[int] = None,
+        level: str = "INFO",
+    ) -> None:
+        cs = self._course_state(course_key)
+        progress = cs.get("progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        progress["stage"] = str(stage or "").strip()
+        progress["message"] = str(message or "").strip()
+        progress["ts"] = _iso_now()
+        progress["ms"] = _now_ms()
+        if pct is not None:
+            try:
+                progress["pct"] = int(pct)
+            except Exception:
+                pass
+        cs["progress"] = progress
+        self._append_course_event(course_key=course_key, level=level, message=message, stage=stage, pct=pct)
+        self._save_state()
+
     def log(self, level: str, msg: str, **extra: Any) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         payload = f" {json.dumps(extra, ensure_ascii=False)}" if extra else ""
@@ -533,16 +619,20 @@ class CourseMembershipAuditWorker:
             }, ""
         return self._infer_rooms_for_course(course.course_key, rooms)
 
-    def _fetch_openchat_bundle(self, resolved_rooms: dict) -> Tuple[dict[str, dict], dict[str, list[dict]], str]:
+    def _fetch_openchat_bundle(self, course_key: str, resolved_rooms: dict) -> Tuple[dict[str, dict], dict[str, list[dict]], str]:
         fetched_at = _iso_now()
         room_infos: dict[str, dict] = {}
         members_by_room: dict[str, list[dict]] = {}
 
-        for rt in ["chat", "notice", "premium"]:
+        for i, rt in enumerate(["chat", "notice", "premium"]):
             info = resolved_rooms.get(rt) if isinstance(resolved_rooms.get(rt), dict) else {}
             room_id = str(info.get("roomId") or "").strip()
             if not room_id:
                 raise SystemExit(f"[오류] roomId 비어있음(rt={rt})")
+
+            rt_label = "사담방" if rt == "chat" else "공지방" if rt == "notice" else "프리미엄방"
+            pct = 20 + i * 10
+            self._set_course_progress(course_key=course_key, stage="OPENCHAT", message=f"{rt_label} 멤버를 불러오는 중", pct=pct)
 
             room_name, active = fetch_room_meta(self.iris_base, room_id)
             loaded = fetch_loaded_member_count(self.iris_base, room_id)
@@ -576,9 +666,11 @@ class CourseMembershipAuditWorker:
             raise SystemExit(f"rooms 해석 실패: {room_err}")
 
         # openchat
-        room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(resolved_rooms)
+        self._set_course_progress(course_key=course.course_key, stage="OPENCHAT", message="톡방(3방) 데이터를 불러오는 중", pct=15)
+        room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(course.course_key, resolved_rooms)
 
         # crawler
+        self._set_course_progress(course_key=course.course_key, stage="CAFE", message="카페 멤버를 불러오는 중", pct=55)
         c = cfg.worker.crawler
         if not c.repo_path or not Path(c.repo_path).exists():
             raise SystemExit(f"crawler.repoPath가 없거나 경로가 없습니다: {c.repo_path}")
@@ -603,6 +695,12 @@ class CourseMembershipAuditWorker:
             raise SystemExit(f"카페 크롤링 실패: {err}")
 
         # sheets
+        total_cnt = cafe_snapshot.get("totalCount")
+        if total_cnt is not None:
+            self._append_course_event(course_key=course.course_key, level="INFO", message=f"카페 멤버 {int(total_cnt) if str(total_cnt).isdigit() else total_cnt}명 불러옴", stage="CAFE", pct=70)
+            self._save_state()
+
+        self._set_course_progress(course_key=course.course_key, stage="SHEETS", message="시트에 반영하는 중", pct=85)
         sa_json = self._resolve_service_account_json()
         svc = build_sheets_client(sa_json)
 
@@ -793,26 +891,37 @@ class CourseMembershipAuditWorker:
                 ran_any = True
                 start_ms = _now_ms()
                 self.log("INFO", "점검 시작", courseKey=course.course_key, intervalSec=interval_sec)
+                self._set_course_progress(course_key=course.course_key, stage="START", message="1회 업서트를 시작했어요", pct=10)
 
                 try:
                     result = self._run_course_once(cfg, course, rooms, interval_sec)
                     ok_cnt += 1
                     cs["lastResult"] = result
                     cs["lastError"] = ""
+                    cs["lastErrorUser"] = ""
+                    self._set_course_progress(course_key=course.course_key, stage="DONE", message="완료됐어요", pct=100)
                     self.log("INFO", "점검 완료(OK)", courseKey=course.course_key, durationSec=round((_now_ms() - start_ms) / 1000.0, 3))
                 except SystemExit as e:
                     fail_cnt += 1
                     cs["lastResult"] = "ERROR"
-                    cs["lastError"] = str(e)
+                    err_raw = str(e)
+                    err_user = self._friendly_error(err_raw)
+                    cs["lastError"] = err_raw
+                    cs["lastErrorUser"] = err_user
                     cs["lastErrorTs"] = _iso_now()
                     cs["lastErrorMs"] = _now_ms()
+                    self._set_course_progress(course_key=course.course_key, stage="ERROR", message=err_user, pct=100, level="ERROR")
                     self.log("ERROR", "점검 실패", courseKey=course.course_key, err=str(e))
                 except Exception as e:
                     fail_cnt += 1
                     cs["lastResult"] = "ERROR"
-                    cs["lastError"] = str(e)
+                    err_raw = str(e)
+                    err_user = self._friendly_error(err_raw)
+                    cs["lastError"] = err_raw
+                    cs["lastErrorUser"] = err_user
                     cs["lastErrorTs"] = _iso_now()
                     cs["lastErrorMs"] = _now_ms()
+                    self._set_course_progress(course_key=course.course_key, stage="ERROR", message=err_user, pct=100, level="ERROR")
                     self.log("ERROR", "점검 예외", courseKey=course.course_key, err=str(e))
 
                 # 다음 주기 예약(재시도 없음)

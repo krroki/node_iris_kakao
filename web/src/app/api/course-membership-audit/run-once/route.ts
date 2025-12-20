@@ -59,12 +59,19 @@ export async function POST(req: Request) {
 
   for (const ck of courseKeys) {
     const cur = (coursesObj[ck] && typeof coursesObj[ck] === "object") ? coursesObj[ck] : {};
+    const prevEvents = Array.isArray((cur as any).events) ? (cur as any).events : [];
+    const nextEvents = [
+      ...prevEvents,
+      { ts: nowTs, level: "INFO", stage: "QUEUED", pct: 5, message: "1회 업서트를 예약했어요" },
+    ].slice(-80);
     coursesObj[ck] = {
       ...cur,
       manualTriggerMs: nowMs,
       manualTriggerTs: nowTs,
       nextRunMs: nowMs,
       nextRunTs: nowTs,
+      progress: { stage: "QUEUED", message: "실행 대기 중", ts: nowTs, ms: nowMs, pct: 5 },
+      events: nextEvents,
     };
   }
 
@@ -82,4 +89,3 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true, path: statePath, courseKeys, nowMs, nowTs }, { status: 200 });
 }
-
