@@ -12,7 +12,17 @@ from .config import AuditConfig, CourseConfig, DEFAULT_CONFIG_PATH, load_config,
 from .crawler import crawl_cafe_members
 from .iris import fetch_loaded_member_count, fetch_openchat_members, fetch_room_meta, fetch_rooms, read_iris_base, read_realtime_base
 from .room_infer import infer_room_type_and_course_key
-from .sheets import append_rows, batch_update_rows, build_sheets_client, ensure_sheet_exists, get_values, update_values
+from .sheets import (
+    append_rows,
+    batch_update_rows,
+    build_sheets_client,
+    clear_values,
+    ensure_sheet_exists,
+    get_values,
+    move_sheet_to_index,
+    set_sheet_frozen_rows,
+    update_values,
+)
 
 
 def _now_ms() -> int:
@@ -790,8 +800,11 @@ class CourseMembershipAuditWorker:
         # upsert(no clear) + change history
         tabs = course.tabs
         log_tab = getattr(tabs, "audit_log", "") or "AUDIT_LOG"
-        for tab in [tabs.cafe_raw, tabs.openchat_raw, tabs.rules_raw, tabs.audit, log_tab]:
+        overview_tab = getattr(tabs, "overview", "") or "OVERVIEW"
+        for tab in [overview_tab, tabs.cafe_raw, tabs.openchat_raw, tabs.rules_raw, tabs.audit, log_tab]:
             ensure_sheet_exists(svc, course.spreadsheet_id, tab)
+        # overview 탭은 사용성을 위해 항상 "가장 앞"으로 이동한다.
+        move_sheet_to_index(svc, course.spreadsheet_id, overview_tab, 0)
 
         log_header = ["ts", "courseKey", "tab", "action", "key", "fields", "old", "new"]
         existing_log = get_values(svc, course.spreadsheet_id, f"{log_tab}!1:1")
@@ -857,6 +870,20 @@ class CourseMembershipAuditWorker:
 
         if log_rows:
             append_rows(svc, course.spreadsheet_id, log_tab, log_rows, last_col=_col_letter(len(log_header)))
+
+        # Overview는 derived view이므로 clear 후 전체 재작성한다.
+        overview_rows = audit_mod.build_overview_rows(
+            course_key=course.course_key,
+            now_iso=now_iso,
+            cafe_snapshot=cafe_snapshot,
+            room_infos=room_infos,
+            audit_rows=audit_rows,
+            openchat_rows=openchat_rows,
+        )
+        clear_values(svc, course.spreadsheet_id, overview_tab)
+        update_values(svc, course.spreadsheet_id, overview_tab, overview_rows)
+        # 상단 요약 + 테이블 헤더까지 고정(가독성)
+        set_sheet_frozen_rows(svc, course.spreadsheet_id, overview_tab, 9)
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()

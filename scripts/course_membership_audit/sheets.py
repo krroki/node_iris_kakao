@@ -35,6 +35,85 @@ def ensure_sheet_exists(svc, spreadsheet_id: str, sheet_name: str) -> None:
     svc.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req).execute()
 
 
+def move_sheet_to_index(svc, spreadsheet_id: str, sheet_name: str, index: int) -> None:
+    idx = max(0, int(index))
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheets = meta.get("sheets") or []
+    target = None
+    for s in sheets:
+        if not isinstance(s, dict):
+            continue
+        p = s.get("properties") if isinstance(s.get("properties"), dict) else {}
+        if p.get("title") == sheet_name:
+            target = p
+            break
+    if not target:
+        return
+    sheet_id = target.get("sheetId")
+    cur_idx = target.get("index")
+    try:
+        sid = int(sheet_id)
+    except Exception:
+        return
+    try:
+        cidx = int(cur_idx)
+    except Exception:
+        cidx = None
+    if cidx == idx:
+        return
+    req = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sid, "index": idx},
+                    "fields": "index",
+                }
+            }
+        ]
+    }
+    svc.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req).execute()
+
+
+def set_sheet_frozen_rows(svc, spreadsheet_id: str, sheet_name: str, frozen_row_count: int) -> None:
+    n = max(0, int(frozen_row_count))
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheets = meta.get("sheets") or []
+    target = None
+    for s in sheets:
+        if not isinstance(s, dict):
+            continue
+        p = s.get("properties") if isinstance(s.get("properties"), dict) else {}
+        if p.get("title") == sheet_name:
+            target = p
+            break
+    if not target:
+        return
+    sheet_id = target.get("sheetId")
+    grid = target.get("gridProperties") if isinstance(target.get("gridProperties"), dict) else {}
+    cur = grid.get("frozenRowCount")
+    try:
+        sid = int(sheet_id)
+    except Exception:
+        return
+    try:
+        cur_n = int(cur) if cur is not None else 0
+    except Exception:
+        cur_n = 0
+    if cur_n == n:
+        return
+    req = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": n}},
+                    "fields": "gridProperties.frozenRowCount",
+                }
+            }
+        ]
+    }
+    svc.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req).execute()
+
+
 def clear_values(svc, spreadsheet_id: str, sheet_name: str) -> None:
     svc.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range=sheet_name, body={}).execute()
 
