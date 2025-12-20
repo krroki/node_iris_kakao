@@ -23,6 +23,83 @@ function formatIntervalSec(secRaw: unknown): string {
   return `${Math.round(day)}일`;
 }
 
+function formatIsoToHHMMSS(iso: string): string {
+  const s = String(iso || "").trim();
+  if (!s) return "";
+  try {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString("ko-KR", { hour12: false });
+  } catch {
+    return "";
+  }
+}
+
+function formatAgo(iso: string): string {
+  const s = String(iso || "").trim();
+  if (!s) return "";
+  try {
+    const d = new Date(s);
+    const t = d.getTime();
+    if (!Number.isFinite(t)) return "";
+    const diffSec = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (diffSec < 10) return "방금";
+    if (diffSec < 60) return `${diffSec}초 전`;
+    const diffMin = Math.round(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}분 전`;
+    const diffHr = Math.round(diffMin / 60);
+    if (diffHr < 48) return `${diffHr}시간 전`;
+    const diffDay = Math.round(diffHr / 24);
+    return `${diffDay}일 전`;
+  } catch {
+    return "";
+  }
+}
+
+function v2StageLabel(stageRaw: unknown): string {
+  const s = String(stageRaw || "").trim().toUpperCase();
+  if (s === "QUEUED") return "대기";
+  if (s === "START") return "시작";
+  if (s === "OPENCHAT") return "톡방 데이터";
+  if (s === "CAFE") return "카페 데이터";
+  if (s === "SHEETS") return "시트 반영";
+  if (s === "DONE") return "완료";
+  if (s === "ERROR") return "실패";
+  return s || "";
+}
+
+function v2DefaultPct(stageRaw: unknown): number | null {
+  const s = String(stageRaw || "").trim().toUpperCase();
+  if (s === "QUEUED") return 5;
+  if (s === "START") return 10;
+  if (s === "OPENCHAT") return 30;
+  if (s === "CAFE") return 60;
+  if (s === "SHEETS") return 85;
+  if (s === "DONE") return 100;
+  if (s === "ERROR") return 100;
+  return null;
+}
+
+function friendlyV2Error(rawErr: unknown, userErr: unknown): string {
+  const user = String(userErr || "").trim();
+  if (user) return user;
+  const raw = String(rawErr || "").trim();
+  if (!raw) return "";
+
+  if (raw.includes("IRIS /query")) return "카카오톡 데이터(멤버 DB) 연결에 실패했어요. IRIS 연결을 확인해주세요.";
+  if (raw.includes("Realtime API /rooms")) return "방 목록을 불러오지 못했어요. 서버 상태를 확인해주세요.";
+  if (raw.includes("settings.json") && (raw.includes("찾지 못했습니다") || raw.includes("없습니다"))) return "카페 로그인 설정(settings.json)을 찾지 못했어요.";
+  if (raw.includes("naver_id/naver_pw")) return "카페 로그인 정보(naver_id/naver_pw)가 비어 있어요.";
+  if (raw.includes("카페 크롤링 실패")) return "카페 멤버를 불러오지 못했어요. 로그인/권한을 확인해주세요.";
+  if (raw.includes("The caller does not have permission") || raw.includes("insufficientPermissions") || raw.includes("PERMISSION_DENIED")) {
+    return "서비스계정이 스프레드시트 편집 권한이 없어요. 시트를 서비스계정 이메일에 Editor로 공유해주세요.";
+  }
+  if (raw.includes("Requested entity was not found") || raw.includes("notFound")) return "스프레드시트를 찾지 못했어요. URL/ID를 확인해주세요.";
+
+  if (raw.length <= 80) return raw;
+  return "업서트에 실패했어요. ‘고급: 오류 상세’에서 원문을 확인할 수 있어요.";
+}
+
 function splitList(raw: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -1320,8 +1397,29 @@ export default function CourseOpsPage() {
           const v2CoursesState = (auditWorkerStatus && typeof auditWorkerStatus === "object") ? (auditWorkerStatus as any).state?.courses : null;
           const v2CourseState = (v2CoursesState && typeof v2CoursesState === "object") ? (v2CoursesState as any)[courseKey] : null;
           const v2LastResult = normStr(v2CourseState?.lastResult || "");
+          const v2LastResultLabel =
+            v2LastResult === "OK" ? "완료" :
+            v2LastResult === "ERROR" ? "실패" :
+            v2LastResult === "RUNNING" ? "진행 중" :
+            v2LastResult;
+          const v2LastResultTagClass =
+            v2LastResult === "OK" ? "tag-active" :
+            v2LastResult === "RUNNING" ? "tag-inactive" :
+            v2LastResult === "ERROR" ? "tag-excluded" :
+            "tag-excluded";
           const v2LastRunTs = normStr(v2CourseState?.lastRunTs || "");
           const v2NextRunTs = normStr(v2CourseState?.nextRunTs || "");
+          const v2Progress = (v2CourseState && typeof v2CourseState === "object") ? (v2CourseState as any).progress : null;
+          const v2ProgressStage = normStr(v2Progress?.stage || "");
+          const v2ProgressMsg = normStr(v2Progress?.message || "");
+          const v2ProgressTs = normStr(v2Progress?.ts || "");
+          const v2ProgressPctRaw = v2Progress?.pct;
+          const v2ProgressPct = Number.isFinite(Number(v2ProgressPctRaw)) ? Math.max(0, Math.min(100, Number(v2ProgressPctRaw))) : null;
+          const v2Events = Array.isArray((v2CourseState as any)?.events) ? ((v2CourseState as any).events as any[]) : [];
+          const v2LastErrorRaw = normStr(v2CourseState?.lastError || "");
+          const v2LastErrorUser = normStr((v2CourseState as any)?.lastErrorUser || "");
+          const v2ErrorFriendly = friendlyV2Error(v2LastErrorRaw, v2LastErrorUser);
+          const v2HasProgressUi = !!(pendingOneOff || v2ProgressStage || v2ProgressMsg || v2Events.length || v2LastResult === "ERROR" || v2LastResult === "RUNNING");
           const courseKeySlug = String(courseKey || "").replace(/[^a-zA-Z0-9_-]/g, "_");
 
           const missingForRunOnce: string[] = [];
@@ -1388,8 +1486,8 @@ export default function CourseOpsPage() {
                     <span className={`tag ${inferredOk ? "tag-active" : "tag-inactive"}`}>자동 감지 {inferredOk ? "OK" : "미완성"}</span>
                     <span className={`tag ${hasConfig ? "tag-active" : "tag-excluded"}`}>설정 {hasConfig ? "OK" : "없음"}</span>
                     {v2LastResult && (
-                      <span className={`tag ${v2LastResult === "OK" ? "tag-active" : "tag-excluded"}`}>
-                        최근 {v2LastResult}
+                      <span className={`tag ${v2LastResultTagClass}`}>
+                        {v2LastResult === "RUNNING" ? v2LastResultLabel : `최근 ${v2LastResultLabel}`}
                       </span>
                     )}
                     {pendingOneOff && (
@@ -1442,6 +1540,104 @@ export default function CourseOpsPage() {
                   />
                 </label>
               </div>
+
+              {v2HasProgressUi && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: 12,
+                    border: "1px solid var(--border-color)",
+                    borderRadius: 10,
+                    background: "rgba(255,255,255,0.02)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 800, color: "var(--text-primary)" }}>진행 상태</div>
+                    {(v2ProgressStage || v2LastResult) && (
+                      <span className={`tag ${v2LastResult === "ERROR" ? "tag-excluded" : v2ProgressStage ? "tag-inactive" : "tag-excluded"}`}>
+                        {v2ProgressStage ? v2StageLabel(v2ProgressStage) : v2LastResultLabel}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+                    {v2ProgressMsg || (pendingOneOff ? "실행 요청됨 · 완료되면 자동으로 원복됩니다." : "")}
+                  </div>
+
+                  {(v2ProgressPct !== null || v2ProgressStage) && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ height: 8, borderRadius: 999, background: "rgba(148,163,184,0.18)", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: 8,
+                            width: `${v2ProgressPct !== null ? v2ProgressPct : (v2DefaultPct(v2ProgressStage) ?? 0)}%`,
+                            background: v2LastResult === "ERROR" ? "rgba(239,68,68,0.7)" : "rgba(59,130,246,0.7)",
+                            transition: "width 0.35s ease",
+                          }}
+                        />
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-muted)" }}>
+                        {v2ProgressTs ? `${formatAgo(v2ProgressTs)} · ${formatIsoToHHMMSS(v2ProgressTs)}` : ""}
+                      </div>
+                    </div>
+                  )}
+
+                  {v2LastResult === "ERROR" && v2ErrorFriendly && (
+                    <div style={{ marginTop: 10, fontSize: 13, color: "var(--error)", lineHeight: 1.6 }}>
+                      실패: {v2ErrorFriendly}
+                    </div>
+                  )}
+
+                  {v2Events.length > 0 && (
+                    <details style={{ marginTop: 10 }}>
+                      <summary style={{ cursor: "pointer", fontWeight: 800, color: "var(--text-primary)" }}>
+                        진행 로그
+                      </summary>
+                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                        {v2Events.slice(-12).map((ev: any, idx: number) => {
+                          const ts = normStr(ev?.ts || "");
+                          const msg = normStr(ev?.message || "");
+                          const level = normStr(ev?.level || "");
+                          const stg = normStr(ev?.stage || "");
+                          if (!msg) return null;
+                          return (
+                            <div
+                              key={`${courseKeySlug}-ev-${idx}`}
+                              style={{
+                                fontSize: 12,
+                                color: level.toUpperCase() === "ERROR" ? "var(--error)" : "var(--text-secondary)",
+                                display: "flex",
+                                gap: 8,
+                                alignItems: "baseline",
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              <span style={{ color: "var(--text-muted)" }}>{ts ? formatIsoToHHMMSS(ts) : ""}</span>
+                              {stg && (
+                                <span className="tag tag-excluded" style={{ padding: "2px 8px", fontSize: 11 }}>
+                                  {v2StageLabel(stg)}
+                                </span>
+                              )}
+                              <span>{msg}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  )}
+
+                  {v2LastResult === "ERROR" && v2LastErrorRaw && (
+                    <details style={{ marginTop: 10 }}>
+                      <summary style={{ cursor: "pointer", fontWeight: 800, color: "var(--text-primary)" }}>
+                        고급: 오류 상세
+                      </summary>
+                      <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6, wordBreak: "break-word" }}>
+                        <code>{v2LastErrorRaw}</code>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
 
               <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "start" }}>
                 <div>
