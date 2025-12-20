@@ -897,6 +897,7 @@ async function queryOpenChatMemberProfile(
 }
 
 const HANGUL_RE = /[\uAC00-\uD7A3]/;
+const BASE64ISH_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 function normalizeNameForMention(raw: string): string {
   return String(raw || "")
@@ -905,6 +906,14 @@ function normalizeNameForMention(raw: string): string {
     .replace(/\n+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isSafeMentionNickname(raw: string): boolean {
+  const s = normalizeNameForMention(raw);
+  if (!s) return false;
+  if (s.length > 40) return false;
+  if (!HANGUL_RE.test(s) && BASE64ISH_RE.test(s) && s.length >= 16) return false;
+  return true;
 }
 
 function decodeNicknameFromDb(raw: string): string {
@@ -1156,6 +1165,11 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
       senderId: safeString(p.userId),
       joinedAt: Number(p.guideSentAt || 0) || now,
     };
+
+    const nicknameNow = await queryOpenChatMemberNickname(p.roomId, p.userId, 8000).catch(() => null);
+    if (nicknameNow && isSafeMentionNickname(nicknameNow)) {
+      entrant.name = nicknameNow;
+    }
 
     const isDefaultNickname = isKakaoDefaultNickname(entrant.name, defaultNickRegexes) === true;
     const confirmTemplate =

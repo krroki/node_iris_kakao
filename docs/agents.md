@@ -137,7 +137,7 @@ if (result === null) {
   - 텍스트: `text` (멘션, Talk-API 우선)
   - 가이드 이미지: `images` (IRIS `/reply_media`로만 발신, 1장)
   - 닫힘 확인 멘트: `confirmText` (프로필이 닫힌 것이 감지되면 즉시 1회 멘션 발신)
-    - 단, 가이드 대상자 표시 닉네임(첫 이미지 트리거 시점에 캡처한 `senderName`)이 “카카오 기본 닉네임”이면 `confirmTextKakaoDefaultNickname`를 우선 사용한다.
+    - 단, 닫힘 확인 시점의 현재 닉네임이 “카카오 기본 닉네임”이면 `confirmTextKakaoDefaultNickname`를 우선 사용한다.
   - 폴링: `confirmWindowMs`(최대 대기), `confirmCheckIntervalMs`(체크 주기)
 - 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
