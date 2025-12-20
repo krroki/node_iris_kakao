@@ -93,9 +93,10 @@
 3. broadcast-worker는 기존에 IRIS 응답(HTTP 200/ok)만으로 성공 처리하여 “성공 보고”와 “실제 발신”이 불일치했다.
 
 ### 조치
-- broadcast-worker는 IRIS 이미지 폴백 시:
+- broadcast-worker는 이미지 전파 시:
   - 이미지 URL→base64 다운로드를 **타겟마다 반복하지 않고 1회 캐시**한다(동일 공지의 여러 방 전파 속도 개선).
-  - IRIS `/reply_media`는 **방별 최소 간격(gap)을 지켜 1회 전송**하고, MessageStore 로그(`node-iris-app/data/logs/<roomId>/*.log`)의 “IRIS가 보낸 이미지” 에코를 **배치 폴링(최대 20초)** 으로 확인해 성공/실패를 판정한다.
+  - 이미지 전송은 Realtime API `/send/iris/reply_media` 경유로 수행한다.
+  - 성공/실패 판정은 `/send/iris/reply_media`의 응답 `ok`(MessageStore 이미지 echo 확인 포함)를 **SSOT**로 사용한다.
   - `node-iris-app/data/iris_media_health.json` 이력(최근 실패는 뒤로)을 참고해 전송 순서를 정렬한다.
   - 공지 결과 메시지는 기존 `[공지 전파 결과]` 외에 `📣 공지 전송 결과` 프리픽스도 루프 방지 대상으로 포함하며, 결과 포맷을 “성공/실패 방 목록 + 발송 정보” 형태로 가독성 개선했다.
 
@@ -119,11 +120,14 @@
    이미지 전파가 사실상 IRIS 경로에 의존해 위 문제가 더 자주 드러났다.
 
 ### 조치
-- IRIS 이미지 전파를 **방별 직렬화**한다.
-  - `send(iris_reply_media) -> MessageStore 이미지 echo 확인 -> 다음 방`
-- echo 확인 타임아웃을 **60초**로 확장한다.
-- 공지 이미지 전파에서는 Talk-API `dispatch_raw(photo)`를 더 이상 사용하지 않고(IRIS 단일 경로),
-  성공 판정은 MessageStore echo 기반으로만 수행한다.
+- Realtime API(server)에서 IRIS 이미지 발신을 **직렬화 + echo-verified**로 SSOT화한다.
+  - `/send/iris/reply_media`는 IRIS `/reply` 호출 이후 **MessageStore 이미지 echo 확인**까지 완료되면 `ok=true`를 반환한다.
+  - 여러 worker가 동시에 이미지를 보내도 IRIS UI 자동화가 겹치지 않도록, server에서 `_IRIS_REPLY_LOCK`으로 요청을 직렬화한다.
+  - 텍스트(`/send/iris/reply_text`)도 동일 락으로 감싸, 이미지 전송 중 텍스트가 끼어드는 UI 경합을 방지한다.
+  - echo 확인 타임아웃 기본값은 **25초**이며, 운영 환경 변수로 조정 가능하다:
+    - `IRIS_REPLY_ECHO_TIMEOUT_MS`, `IRIS_REPLY_ECHO_POLL_MS`, `IRIS_REPLY_POST_ECHO_DELAY_MS`, `IRIS_REPLY_LOG_SCAN_BYTES`
+- broadcast-worker는 더 이상 MessageStore 로그를 직접 스캔/폴링하지 않고, `/send/iris/reply_media` 응답 `ok`만으로 성공을 판정한다.
+- 공지 이미지 전파는 Talk-API raw 이미지 발신 경로가 불안정한 환경을 고려해, **IRIS 단일 경로**를 기본으로 유지한다.
 
 ### 영향
 - 다수 타겟 이미지 전파에서 누락/오보가 크게 감소한다.
