@@ -45,6 +45,7 @@ type OpenProfileCloseGuideConfig = {
   text: string;
   images: string[];
   confirmText: string;
+  confirmTextKakaoDefaultNickname?: string;
   confirmWindowMs: number;
   confirmCheckIntervalMs: number;
 };
@@ -357,6 +358,9 @@ function parseOpenProfileCloseGuideConfig(
 
   const text = safeString((raw as any).text ?? (raw as any).message ?? "");
   const confirmText = safeString((raw as any).confirmText ?? (raw as any).confirmMessage ?? "");
+  const confirmTextKakaoDefaultNickname = safeString(
+    (raw as any).confirmTextKakaoDefaultNickname ?? (raw as any).confirmTextForKakaoDefaultNickname ?? "",
+  );
   const confirmWindowMsRaw = (raw as any).confirmWindowMs ?? (raw as any).confirmWindow ?? null;
   const confirmCheckIntervalMsRaw = (raw as any).confirmCheckIntervalMs ?? (raw as any).confirmIntervalMs ?? null;
   const images = Array.isArray((raw as any).images) ? (raw as any).images.map((x: any) => safeString(x)).filter(Boolean) : [];
@@ -386,6 +390,7 @@ function parseOpenProfileCloseGuideConfig(
       text,
       images,
       confirmText,
+      confirmTextKakaoDefaultNickname: confirmTextKakaoDefaultNickname || undefined,
       confirmWindowMs,
       confirmCheckIntervalMs,
     },
@@ -1107,6 +1112,8 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
     return;
   }
 
+  const defaultNickRegexes = compileDefaultNickRegexes(runtime);
+
   const now = Date.now();
   const maxPerTick = 25;
   let processed = 0;
@@ -1149,7 +1156,15 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
       senderId: safeString(p.userId),
       joinedAt: Number(p.guideSentAt || 0) || now,
     };
-    const { text: message, hasMention } = renderWelcomeText(cfg.confirmText, [entrant], safeString(p.roomName) || p.roomId);
+
+    const nicknameNow = await queryOpenChatMemberNickname(p.roomId, p.userId, 8000).catch(() => null);
+    if (nicknameNow) entrant.name = nicknameNow;
+
+    const isDefaultNickname = isKakaoDefaultNickname(entrant.name, defaultNickRegexes) === true;
+    const confirmTemplate =
+      isDefaultNickname && cfg.confirmTextKakaoDefaultNickname ? cfg.confirmTextKakaoDefaultNickname : cfg.confirmText;
+
+    const { text: message, hasMention } = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
     const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter((m) => m.userId && m.name && message.includes("@" + m.name));
 
     let okTalk = false;
