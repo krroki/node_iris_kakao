@@ -1242,6 +1242,16 @@ function Test-CourseMembershipAuditWorkerOk {
     } catch { $cfgEnabled = $false }
     if (-not $cfgEnabled) { return $true }
 
+    # 중복 실행 감지: 동일 워커 프로세스가 2개 이상이면 비정상으로 간주해 자동 복구(재기동)한다.
+    try {
+      $procs = @(
+        Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" |
+          Where-Object { $_.CommandLine -and ($_.CommandLine -match 'scripts[/\\\\]course_membership_audit_worker\\.py') } |
+          Select-Object ProcessId
+      )
+      if ($procs.Count -gt 1) { return $false }
+    } catch {}
+
     $statusPath = Join-Path $root "node-iris-app\data\course_membership_audit_worker_status.json"
     $workerPid = $null
     $hbTs = $null

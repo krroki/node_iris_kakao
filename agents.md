@@ -129,6 +129,10 @@
   - course-membership-audit-worker(선택 기능): `windows/start_course_membership_audit_worker.ps1 -Restart`
     - **중복 실행 금지**: 네이버 카페 창이 여러 개 뜨거나(크롤링 2~3회 반복) 업서트가 과도하게 자주 돌면 워커가 중복 실행 중일 수 있다.  
       반드시 위 재기동 스크립트로만 관리하고, `python scripts/course_membership_audit_worker.py` 직접 실행은 피한다.
+    - **운영 원칙(중요)**: 재발 시 운영자가 수동으로 “정리/재기동”을 하지 않아도 되게 만든다.
+      - watchdog가 **중복 실행(프로세스 2개 이상)** 을 감지하면 자동으로 재기동해 1개만 남긴다.
+      - 즉, 카페 창이 여러 개 뜨는 문제가 보이면 **잠시 기다리면 자동 복구**되는 것이 정상이다.
+      - 예외: watchdog가 꺼져 있으면 자동 복구가 동작하지 않는다. 이때만 `windows/ensure_watchdog.ps1 -Restart`로 watchdog를 먼저 살린다.
   - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
 
 - **UI(3100) 남색 배경만 뜨는 증상(중요)**:
