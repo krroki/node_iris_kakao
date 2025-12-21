@@ -109,6 +109,14 @@
   - `node-iris-app/data/welcome_worker_state.json` (pending confirmations 포함)
   - `node-iris-app/data/welcome_worker_status.json`
 
+### 운영 보강 (2025-12-21)
+
+- 닫힘 확인 시 닉네임 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영
+  - IRIS `db2.open_chat_member.nickname`가 base64-like 토큰으로 저장되는 케이스가 있어 기본닉 판별/멘션 타겟 매칭이 깨질 수 있음
+- 레이스 보완: `feedType=2` 이벤트가 pending 생성보다 먼저 들어오는 케이스 대비 `roomId:userId` 최근 닉네임 캐시(20분 TTL) 도입
+- 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지)
+- 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 멘션 누락을 방지
+
 ---
 
 ## Consequences (결과)

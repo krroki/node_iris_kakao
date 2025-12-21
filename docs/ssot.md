@@ -76,6 +76,7 @@
 - 2025-12-20: Welcome 입장 시 “텍스트 + 하트스샷 가이드 이미지 1장” 발신을 재도입하고, 오픈프로필 닫기 가이드 이미지는 1장(`KakaoTalk_20251219_021112774.png`)만 유지하도록 정리.
 - 2025-12-20: Welcome `openProfileCloseGuide.match`는 **`profileLinkIdNonZero`(오픈채팅방 열려있음만)** 로 운영한다. `profileLinkIdZero`는 정상 프로필(카카오프렌즈/오픈채팅 없음)까지 매칭되어 오발송 위험이 크다.
 - 2025-12-20: 공지 이미지 전파 안정화 2차 — IRIS `/reply_media`는 방별 `send → echo 확인 → 다음 방` 직렬화로 누락을 줄이고, Talk-API raw 이미지 경로는 비활성(불안정) 처리. (ADR-0029)
+- 2025-12-21: Welcome 오픈프로필 닫기 확인 분기 보강 — 기본닉/비기본닉 분기 SSOT를 `feedType=2.member.nickName`으로 고정하고, 레이스 대비 최근 닉네임 캐시 + 오픈프로필 안내 dedup 키를 `roomId:userId:joinedAt`로 확장. (ADR-0045)
 
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |

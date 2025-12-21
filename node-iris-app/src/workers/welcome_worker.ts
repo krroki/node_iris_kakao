@@ -114,6 +114,9 @@ const joinBatches = new Map<string, JoinBatch>();
 const pendingByUser = new Map<string, PendingFollowUp>();
 // roomId:userId -> pending "open profile close" confirmation polling
 const pendingOpenProfileCloseByUser = new Map<string, PendingOpenProfileCloseConfirmation>();
+// roomId:userId -> last known nickname from feedType=2(profile update)
+const profileNickByUser = new Map<string, { nickName: string; at: number }>();
+const PROFILE_NICK_CACHE_MS = 20 * 60 * 1000;
 
 // roomId -> linkId cache (reply attachment requires src_linkId)
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
@@ -129,6 +132,43 @@ function safeString(v: unknown): string {
   if (typeof v === "bigint") return v.toString();
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
   return String(v ?? "").trim();
+}
+
+function cleanupProfileNickCache(now: number): void {
+  for (const [k, v] of profileNickByUser.entries()) {
+    const at = Number((v as any)?.at);
+    if (!Number.isFinite(at) || at <= 0 || now - at >= PROFILE_NICK_CACHE_MS) profileNickByUser.delete(k);
+  }
+}
+
+function setRecentProfileNickname(roomId: string, userId: string, nickName: string): void {
+  const rid = safeString(roomId);
+  const uid = safeString(userId);
+  const nn = safeString(nickName);
+  if (!rid || !uid || !nn) return;
+
+  const now = Date.now();
+  cleanupProfileNickCache(now);
+  profileNickByUser.set(`${rid}:${uid}`, { nickName: nn, at: now });
+}
+
+function getRecentProfileNickname(roomId: string, userId: string): string | null {
+  const rid = safeString(roomId);
+  const uid = safeString(userId);
+  if (!rid || !uid) return null;
+
+  const key = `${rid}:${uid}`;
+  const now = Date.now();
+  const hit = profileNickByUser.get(key);
+  if (!hit) return null;
+
+  const at = Number((hit as any)?.at);
+  const nn = safeString((hit as any)?.nickName);
+  if (!nn || !Number.isFinite(at) || at <= 0 || now - at >= PROFILE_NICK_CACHE_MS) {
+    profileNickByUser.delete(key);
+    return null;
+  }
+  return nn;
 }
 
 function isPidAlive(pidRaw: unknown): boolean {
@@ -1004,6 +1044,22 @@ function isProfileLinkIdMatch(match: OpenProfileCloseGuideMatch, profileLinkIdRa
   return match === "profileLinkIdNonZero" ? nonZero : !nonZero;
 }
 
+function buildOpenProfileGuideDedupKey(roomId: string, userId: string, joinedAtRaw: unknown): string {
+  const rid = safeString(roomId);
+  const uid = safeString(userId);
+  const joinedAt = Number(joinedAtRaw);
+  const ja = Number.isFinite(joinedAt) && joinedAt > 0 ? Math.floor(joinedAt) : 0;
+  return ja ? `${rid}:${uid}:${ja}` : `${rid}:${uid}`;
+}
+
+function ensureEntranceMentionTemplate(raw: string): string {
+  const t = safeString(raw);
+  if (!t) return "";
+  if (/@\{(?:entrant|entrance|userName)\}/.test(t)) return t;
+  if (t.includes("@")) return t;
+  return `@{entrance} 님 ${t}`;
+}
+
 async function sendOpenProfileCloseGuideForEntrant(
   roomId: string,
   roomName: string,
@@ -1017,11 +1073,11 @@ async function sendOpenProfileCloseGuideForEntrant(
   const uid = safeString(entrant?.senderId);
   if (!uid) return false;
 
-  const dedupKey = `${roomId}:${uid}`;
+  const dedupKey = buildOpenProfileGuideDedupKey(roomId, uid, entrant?.joinedAt);
   if (OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) return false;
 
   const targets = [entrant];
-  const { text: message, hasMention } = renderWelcomeText(cfg.text, targets, roomName);
+  const { text: message, hasMention } = renderWelcomeText(ensureEntranceMentionTemplate(cfg.text), targets, roomName);
   const mentionees = targets
     .map((e) => ({ name: e.name, userId: e.senderId }))
     .filter((m) => m.userId && m.name && message.includes("@" + m.name));
@@ -1089,11 +1145,13 @@ function enqueueOpenProfileCloseConfirmation(
   if (expiresAt <= now) return;
 
   const key = `${roomId}:${userId}`;
+  const cachedNick = getRecentProfileNickname(roomId, userId);
+  const cachedUserName = cachedNick && isSafeMentionNickname(cachedNick) ? cachedNick : "";
   pendingOpenProfileCloseByUser.set(key, {
     roomId,
     roomName: safeString(roomNameRaw) || roomId,
     userId,
-    userName: safeString(userNameRaw) || "Guest",
+    userName: cachedUserName || safeString(userNameRaw) || "Guest",
     guideSentAt: now,
     nextCheckAt: now + 5000,
     expiresAt,
@@ -1172,8 +1230,9 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
     }
 
     const isDefaultNickname = isKakaoDefaultNickname(entrant.name, defaultNickRegexes) === true;
-    const confirmTemplate =
-      isDefaultNickname && cfg.confirmTextKakaoDefaultNickname ? cfg.confirmTextKakaoDefaultNickname : cfg.confirmText;
+    const confirmTemplate = ensureEntranceMentionTemplate(
+      isDefaultNickname && cfg.confirmTextKakaoDefaultNickname ? cfg.confirmTextKakaoDefaultNickname : cfg.confirmText,
+    );
 
     const { text: message, hasMention } = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
     const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter((m) => m.userId && m.name && message.includes("@" + m.name));
@@ -1226,7 +1285,7 @@ async function maybeSendOpenProfileCloseGuide(
   for (const e of entrants) {
     const uid = safeString(e?.senderId);
     if (!uid) continue;
-    const dedupKey = `${roomId}:${uid}`;
+    const dedupKey = buildOpenProfileGuideDedupKey(roomId, uid, e?.joinedAt);
     if (OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) continue;
 
     const prof = await queryOpenChatMemberProfile(roomId, uid, 8000);
@@ -1241,7 +1300,7 @@ async function maybeSendOpenProfileCloseGuide(
 
   if (!targets.length) return;
 
-  const { text: message, hasMention } = renderWelcomeText(cfg.text, targets, roomName);
+  const { text: message, hasMention } = renderWelcomeText(ensureEntranceMentionTemplate(cfg.text), targets, roomName);
   const mentionees = targets
     .map((e) => ({ name: e.name, userId: e.senderId }))
     .filter((m) => m.userId && m.name && message.includes("@" + m.name));
@@ -1285,7 +1344,7 @@ async function maybeSendOpenProfileCloseGuide(
   for (const e of targets) {
     const uid = safeString(e?.senderId);
     if (!uid) continue;
-    OPEN_PROFILE_GUIDE_DEDUP.mark(`${roomId}:${uid}`);
+    OPEN_PROFILE_GUIDE_DEDUP.mark(buildOpenProfileGuideDedupKey(roomId, uid, e?.joinedAt));
   }
 
   await updateStatus({
@@ -1604,7 +1663,8 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
   // 감사 Reply 대신 "오픈프로필 닫기" 안내 + 이미지(1장) 발송 + 확인(1회)로 처리한다.
   const opCfgRes = parseOpenProfileCloseGuideConfig(runtime);
   if (opCfgRes.ok && opCfgRes.cfg.enabled) {
-    const dedupKey = `${roomId}:${senderId}`;
+    const joinedAt = Number(pending.joinedAt || 0) || now;
+    const dedupKey = buildOpenProfileGuideDedupKey(roomId, senderId, joinedAt);
     if (!OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) {
       const prof = await queryOpenChatMemberProfile(roomId, senderId, 8000);
       const profileLinkId = safeString(prof?.profileLinkId ?? "");
@@ -1614,7 +1674,7 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
         const entrant: WelcomeEntrant = {
           name: safeString(entry.senderName) || safeString(pending.userName) || "Guest",
           senderId,
-          joinedAt: Number(pending.joinedAt || 0) || now,
+          joinedAt,
         };
 
         let okGuide = false;
@@ -1754,6 +1814,13 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
       // pending open-profile close confirmation을 즉시 한 번 더 체크해 확인 멘트를 빠르게 발신한다.
       const upd = parseProfileUpdateFeedMemberFromMessageText(safeString(entry.text));
       if (upd) {
+        setRecentProfileNickname(roomId, upd.userId, upd.nickName);
+        const key = `${roomId}:${upd.userId}`;
+        const pending = pendingOpenProfileCloseByUser.get(key);
+        if (pending && upd.nickName) {
+          pending.userName = upd.nickName;
+          pendingOpenProfileCloseByUser.set(key, pending);
+        }
         await maybeFastTrackOpenProfileCloseConfirmation(roomId, upd.userId);
       }
     }

@@ -315,3 +315,18 @@
     - 방 단위 `멤버 보기/Sheets 업서트/멤버 Sheets 자동` UI는 혼선 방지를 위해 숨김(코스 운영은 `/course`에서 일원화).
   - 운영 반영:
     - `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort -CleanBuild`로 재빌드/재기동 후 `/course` 200 확인.
+
+---
+
+## 2025-12-21
+
+- Welcome 오픈프로필 닫기 안내/확인(ADR-0045) 운영 보강:
+  - 닫힘 확인 닉네임 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영(일부 DB nickname 값이 base64-like 토큰으로 저장되는 케이스 대응)
+  - 레이스 보완: `feedType=2` 이벤트가 pending 생성보다 먼저 들어오는 케이스 대비 최근 닉네임 캐시(20분 TTL) + pending 즉시 갱신
+  - 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지)
+  - 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 멘션 누락을 방지
+- 검증(서브 테스트용 오픈채팅방_1):
+  - 15:26 1차 성공 (오픈채팅 열려있음 + 닉네임 변경 필요)
+  - 15:59 2차 성공 (오픈채팅 닫혀있음)
+  - 16:00 3차 성공 (카카오 프로필)
+  - 16:01 4차 성공 (오픈채팅 열려있음 + 닉네임 변경 필요)

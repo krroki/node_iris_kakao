@@ -438,8 +438,9 @@ docs/adr/ADR-<4자리 번호>-<주제-kebab>.md
   - Welcome 이미지(ADR-0030): welcome 템플릿의 `images`는 welcome-worker가 `/templates/assets/...`에서 다운로드→base64 변환 후 Realtime API `/send/iris/reply_media` 경유로 IRIS `/reply`에 전달해 발신한다(SAFE_MODE 최종 차단 유지).
   - Welcome 오픈프로필 닫기 안내/확인(ADR-0045):
     - IRIS `db2.open_chat_member.nickname`는 평문이 아니라 base64-like 토큰으로 저장되는 케이스가 있어, **기본닉/비기본닉 분기는 DB nickname을 신뢰하지 않는다.**
-    - 분기 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영해 확인 멘트를 선택한다.
-    - 비기본닉 확인 멘트는 `welcome.followUp.replies[0]`를 재사용할 수 있는데, 템플릿에 `@{entrance}`가 없으면 앞에 `@{entrance} 님`을 자동으로 붙여 **멘션 누락을 방지**한다.
+    - 분기 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영해 확인 멘트를 선택한다(레이스 대비: 최근 닉네임 캐시 + pending 즉시 갱신).
+    - 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지).
+    - 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 **멘션 누락을 방지**한다.
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
   - 기본값: `AI_DISPATCHER=worker` (레거시 롤백: `AI_DISPATCHER=bot`)
