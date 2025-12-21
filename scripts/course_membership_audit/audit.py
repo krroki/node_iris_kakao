@@ -13,7 +13,11 @@ ROOM_LABEL: dict[str, str] = {
 }
 
 
-_CAFE_NICK_RE = re.compile(r"\\(([^()\\n\\r]{1,100})\\)\\s*$")
+# 오픈채팅 닉네임 규칙: "<이름 마스킹>@ + (카페닉)" 형태에서 괄호 안 카페닉만 추출한다.
+# 예) "정@록(나물쓰)" -> "나물쓰"
+# 예) "정@@록(나물쓰)" -> "나물쓰"
+# NOTE: 일부 사용자는 전각 괄호(（ ）)를 쓰기도 해서 함께 허용한다.
+_CAFE_NICK_RE = re.compile(r"[（(]([^（）()\n\r]{1,100})[）)]\s*$")
 
 
 def extract_cafe_nickname_from_openchat(nickname: str) -> str:
