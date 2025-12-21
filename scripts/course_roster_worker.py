@@ -605,6 +605,7 @@ class CafeSnapshotLoader:
             club,
             "--cafe-name",
             str(cafe_name or f"club_{club}"),
+            "--headless",
             "--output",
             str(out_path),
         ]

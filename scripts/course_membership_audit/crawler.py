@@ -41,6 +41,7 @@ def crawl_cafe_members(
         str(club_id),
         "--cafe-name",
         str(cafe_name),
+        "--headless",
         "--output",
         str(output_json),
     ]
@@ -59,4 +60,3 @@ def crawl_cafe_members(
     dur = time.time() - t0
     snap: dict[str, Any] = _read_json(output_json)
     return p.returncode, snap, (p.stdout or ""), (p.stderr or ""), dur
-

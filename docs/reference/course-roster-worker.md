@@ -108,6 +108,15 @@ UI(대시보드)에서의 위치:
 - 레거시(비권장): **CSV 스냅샷**
   - `cafeSource=csv` + `cafeCsvPath`
 
+### 5.1) 로그인/프로필(중요)
+
+- 크롤러는 Playwright `storage_state`로 로그인 세션을 저장하고 재사용한다.
+  - 기본 저장 경로: `%LOCALAPPDATA%\\NaverCafeMemberCrawler\\profile\\storage_state.json`
+- 운영 워커(주기 실행)에서 크롤링을 호출할 때는 **`--headless`를 강제**한다.
+  - 따라서 주기 실행 때 크롬 창이 여러 개 뜨는 현상은 발생하지 않아야 한다.
+- 세션 만료/보안 체크 등으로 크롤링이 실패하면, **1회만 headed로 실행**해 세션을 갱신한 뒤 다시 headless로 돌아간다.
+  - 예: `python scripts/crawl_naver_cafe_members.py --crawler-repo <PATH> --settings <PATH> --club-id <CLUB_ID> --headed --output <PATH>`
+
 카페 데이터 갱신 시차(운영 현실):
 
 - 카페 가입/닉네임 변경이 즉시 스냅샷에 반영되지 않을 수 있다.

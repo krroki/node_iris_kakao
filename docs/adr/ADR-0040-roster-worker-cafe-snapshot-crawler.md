@@ -43,6 +43,9 @@ roster-worker의 카페 데이터 소스 기본값을 **크롤러(JSON 스냅샷
 - roster-worker는 크롤러 스냅샷을 로컬 파일로 저장하고 캐시한다.
 - `--cafe-cache-sec`는 “카페 스냅샷 갱신 최소 간격(초)”으로 해석한다.
   - 크롤러 모드에서는 이 주기보다 자주 크롤링하지 않는다.
+- 크롤러 브리지(`scripts/crawl_naver_cafe_members.py`)는 Playwright `storage_state`로 로그인 세션을 저장/재사용한다.
+  - 기본 경로: `%LOCALAPPDATA%\\NaverCafeMemberCrawler\\profile\\storage_state.json`
+  - 운영 워커에서 호출될 때는 `--headless`를 강제해 주기 실행 중 브라우저 창이 뜨지 않도록 한다.
 
 ### 3) 실패 처리(불변식 준수)
 

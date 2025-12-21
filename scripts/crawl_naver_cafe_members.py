@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -141,15 +142,31 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        from crawler import run_crawl  # type: ignore
+        from crawler import NaverCafeMemberCrawler  # type: ignore
     except Exception as e:
         raise SystemExit(f"[오류] crawler 모듈 import 실패: {e}")
 
     club_id = _safe_str(args.club_id)
     cafe_name = _safe_str(args.cafe_name) or f"cafe_{club_id}"
 
+    async def _crawl_once() -> Any:
+        crawler = NaverCafeMemberCrawler(naver_id=naver_id, naver_pw=naver_pw, headless=headless)
+        try:
+            ok = await crawler.start_session()
+            if not ok:
+                raise SystemExit("로그인 실패")
+            batch = await crawler.crawl_with_session([(cafe_name, club_id)], continue_on_error=False)
+            if not getattr(batch, "results", None):
+                raise SystemExit("크롤링 결과가 비어 있습니다.")
+            return batch.results[0]
+        finally:
+            try:
+                await crawler.stop_session()
+            except Exception:
+                pass
+
     try:
-        result = run_crawl(naver_id=naver_id, naver_pw=naver_pw, cafe_id=club_id, cafe_name=cafe_name, headless=headless)
+        result = asyncio.run(_crawl_once())
     except SystemExit as e:
         payload: Dict[str, Any] = {
             "ok": False,
@@ -209,4 +226,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
