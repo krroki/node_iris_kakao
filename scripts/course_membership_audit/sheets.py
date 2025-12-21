@@ -212,3 +212,57 @@ def append_rows(svc, spreadsheet_id: str, sheet_name: str, rows: list[list[str]]
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
     ).execute()
+
+
+def _get_sheet_id(svc, spreadsheet_id: str, sheet_name: str) -> int | None:
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheets = meta.get("sheets") or []
+    for s in sheets:
+        if not isinstance(s, dict):
+            continue
+        p = s.get("properties") if isinstance(s.get("properties"), dict) else {}
+        if p.get("title") != sheet_name:
+            continue
+        sid = p.get("sheetId")
+        try:
+            return int(sid)
+        except Exception:
+            return None
+    return None
+
+
+def delete_rows_range(svc, spreadsheet_id: str, sheet_name: str, start_row: int, end_row: int) -> None:
+    """
+    Delete row range in a sheet.
+
+    Args:
+        start_row: 1-based inclusive
+        end_row: 1-based inclusive
+    """
+    s = max(1, int(start_row))
+    e = max(s, int(end_row))
+    if e < s:
+        return
+
+    sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+    if sheet_id is None:
+        return
+
+    # Google Sheets API uses 0-based indices and endIndex is exclusive.
+    start_index = s - 1
+    end_index = e
+    req = {
+        "requests": [
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": start_index,
+                        "endIndex": end_index,
+                    }
+                }
+            }
+        ]
+    }
+    svc.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req).execute()

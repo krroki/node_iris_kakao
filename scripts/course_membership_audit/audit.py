@@ -19,6 +19,25 @@ ROOM_LABEL: dict[str, str] = {
 # NOTE: 일부 사용자는 전각 괄호(（ ）)를 쓰기도 해서 함께 허용한다.
 _CAFE_NICK_RE = re.compile(r"[（(]([^（）()\n\r]{1,100})[）)]\s*$")
 _CAFE_NICK_SLASH_RE = re.compile(r"[/／]\s*([^/／\s]{1,100})\s*$")
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_cafe_nickname(s: str) -> str:
+    # NOTE: 카페/오픈채팅 닉네임은 공백 유무가 흔히 흔들리므로(예: "오남매워킹맘" vs "오남매 워킹맘")
+    # 안전하게 "공백 제거" 정규화 키를 추가로 사용한다(단, 정규화 매칭은 유니크할 때만 적용).
+    return _WS_RE.sub("", str(s or "").strip())
+
+
+def build_cafe_nickname_index(cafe_nick_set: set[str]) -> dict[str, list[str]]:
+    index: dict[str, set[str]] = {}
+    for nick in cafe_nick_set or set():
+        k = normalize_cafe_nickname(nick)
+        if not k:
+            continue
+        if k not in index:
+            index[k] = set()
+        index[k].add(nick)
+    return {k: sorted(list(v)) for k, v in index.items()}
 
 
 def parse_cafe_nickname_from_openchat(nickname: str) -> tuple[str, str]:
@@ -49,7 +68,11 @@ def extract_cafe_nickname_from_openchat(nickname: str) -> str:
     return cafe_nick
 
 
-def resolve_cafe_nickname_from_openchat(nickname: str, cafe_nick_set: set[str]) -> tuple[str, str]:
+def resolve_cafe_nickname_from_openchat(
+    nickname: str,
+    cafe_nick_set: set[str],
+    cafe_nick_index: dict[str, list[str]] | None = None,
+) -> tuple[str, str]:
     """
     Tries to resolve openchat nickname -> cafeNickname using strict rules first,
     then safe heuristics only when the candidate exists in cafe_nick_set.
@@ -58,9 +81,25 @@ def resolve_cafe_nickname_from_openchat(nickname: str, cafe_nick_set: set[str]) 
         (cafeNickname, source)
         - source: paren|slash|exact|token|after_paren|broken_paren|none
     """
+    def _norm_unique(candidate: str) -> tuple[str, str] | None:
+        if not cafe_nick_index:
+            return None
+        key = normalize_cafe_nickname(candidate)
+        if not key:
+            return None
+        hits = cafe_nick_index.get(key) if isinstance(cafe_nick_index.get(key), list) else None
+        if not hits or len(hits) != 1:
+            return None
+        return hits[0], "norm_space"
+
     parsed, src = parse_cafe_nickname_from_openchat(nickname)
     if parsed and parsed in cafe_nick_set:
         return parsed, src
+    if parsed:
+        nu = _norm_unique(parsed)
+        if nu:
+            nick, label = nu
+            return nick, f"{src}_{label}"
 
     s = str(nickname or "").strip()
     if (not s) or (not cafe_nick_set):
@@ -68,18 +107,30 @@ def resolve_cafe_nickname_from_openchat(nickname: str, cafe_nick_set: set[str]) 
 
     if s in cafe_nick_set:
         return s, "exact"
+    nu = _norm_unique(s)
+    if nu:
+        nick, label = nu
+        return nick, f"exact_{label}"
 
     # "(홍*동)카페닉" 처럼 이름 괄호가 앞에 오는 변형 케이스: ')' 이후 텍스트가 cafeNickname이면 사용
     if ")" in s:
         tail = s.rsplit(")", 1)[-1].strip()
         if tail and tail in cafe_nick_set:
             return tail, "after_paren"
+        nu = _norm_unique(tail)
+        if nu:
+            nick, label = nu
+            return nick, f"after_paren_{label}"
 
     # "박@희(카페닉" 처럼 닫는 괄호가 누락된 케이스: '(' 이후 텍스트가 cafeNickname이면 사용
     if "(" in s and ")" not in s:
         tail = s.rsplit("(", 1)[-1].strip()
         if tail and tail in cafe_nick_set:
             return tail, "broken_paren"
+        nu = _norm_unique(tail)
+        if nu:
+            nick, label = nu
+            return nick, f"broken_paren_{label}"
 
     # 공백 토큰 중 정확히 1개만 cafeNickname과 일치하면 사용 (예: "조교 카페닉", "카페닉 2")
     tokens = [t.strip() for t in re.split(r"\s+", s) if t.strip()]
@@ -114,10 +165,21 @@ def is_valid_name_mask_prefix(prefix: str) -> bool:
 
 
 def classify_track(grade: str, rules: GradeRules) -> str:
-    g = str(grade or "").strip()
-    if g and g in set(rules.staff_grades):
+    def _ng(s: str) -> str:
+        return normalize_cafe_nickname(str(s or "")).lower()
+
+    g_raw = str(grade or "").strip()
+    g = _ng(g_raw)
+    staff_norm = {_ng(x) for x in (rules.staff_grades or []) if str(x or "").strip()}
+    premium_norm = {_ng(x) for x in (rules.premium_grades or []) if str(x or "").strip()}
+
+    if g and g in staff_norm:
         return "staff"
-    if g and g in set(rules.premium_grades):
+    # 운영진 grade는 강의/카페마다 이름이 흔들릴 수 있어, 최소한의 보조 규칙을 적용한다.
+    # (예: "부 매니저" / "카페스탭" 등)
+    if g and (("매니저" in g) or ("스탭" in g) or ("스텝" in g) or ("운영" in g)):
+        return "staff"
+    if g and g in premium_norm:
         return "premium"
     return "normal"
 
@@ -185,6 +247,7 @@ def build_openchat_raw_rows(
     members_by_room: dict[str, list[dict]],
     cafe_nick_set: set[str] | None = None,
 ) -> List[List[str]]:
+    cafe_nick_index = build_cafe_nickname_index(cafe_nick_set) if cafe_nick_set else None
     rows: List[List[str]] = [
         [
             "courseKey",
@@ -224,7 +287,7 @@ def build_openchat_raw_rows(
             resolved = ""
             resolved_src = ""
             if cafe_nick_set:
-                resolved, resolved_src = resolve_cafe_nickname_from_openchat(nick, cafe_nick_set)
+                resolved, resolved_src = resolve_cafe_nickname_from_openchat(nick, cafe_nick_set, cafe_nick_index)
 
             name_mask_prefix = ""
             name_mask_ok = ""
@@ -329,6 +392,7 @@ def build_audit_view_rows(
         for it in cafe_members
         if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
     }
+    cafe_nick_index = build_cafe_nickname_index(cafe_nick_set)
 
     # room completeness(방 단위): requiredRooms에만 적용해야 normal/premium 판정이 과도하게 INCOMPLETE로 굳지 않는다.
     incomplete_by_room: dict[str, bool] = {}
@@ -343,7 +407,7 @@ def build_audit_view_rows(
             if not isinstance(m, dict):
                 continue
             nick = str(m.get("nickname") or "").strip()
-            cafe_nick, _src = resolve_cafe_nickname_from_openchat(nick, cafe_nick_set)
+            cafe_nick, _src = resolve_cafe_nickname_from_openchat(nick, cafe_nick_set, cafe_nick_index)
             if not cafe_nick:
                 continue
             bucket = counts[rt]
@@ -739,7 +803,7 @@ def build_overview_rows(
             if (not staff_like) and (not resolved) and (not _looks_like_cipher_nick(nick)):
                 by_room[rt]["unmatched"] = int(by_room[rt].get("unmatched") or 0) + 1
 
-        if (not staff_like) and parsed and (parsed not in cafe_nick_set):
+        if (not staff_like) and parsed and (not resolved):
             unknown_set.add(parsed)
             nick_unknown.append([room_label, nick, parsed, "카페 명단에 없는 카페닉이에요(오타/변경 가능)."])
 
