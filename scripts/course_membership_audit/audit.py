@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -513,6 +514,8 @@ def build_overview_rows(
     room_infos: dict[str, dict],
     audit_rows: List[List[str]],
     openchat_rows: List[List[str]],
+    recent_audit_log_rows: List[List[str]] | None = None,
+    max_recent_audit_log_rows: int = 60,
     max_nickname_issue_rows: int = 300,
 ) -> List[List[str]]:
     # Overview는 "보기용" 시트이므로, 매 실행 시 전체 재작성(clear + update)을 전제로 한다.
@@ -843,8 +846,8 @@ def build_overview_rows(
 
     # compose overview sheet rows
     rows: List[List[str]] = []
-    rows.append(["강의 운영 Overview", course_key])
-    rows.append(["최종 갱신", now_iso])
+    rows.append([f"강의 운영 v2 (등급 기반 참여 점검) - {course_key}"])
+    rows.append([f"최종 갱신: {now_iso}"])
     rows.append(
         [
             "카페 멤버",
@@ -1017,5 +1020,84 @@ def build_overview_rows(
         rows.extend(nick_unknown)
     else:
         rows.append(["(없음)", "", "", ""])
+
+    # 최근 변경 이력(AUDIT_LOG) 프리뷰(통합 탭에서 바로 확인)
+    logs = [r for r in (recent_audit_log_rows or []) if isinstance(r, list) and len(r) >= 8]
+    if logs:
+        def _parse_map(s: str) -> dict[str, str]:
+            try:
+                obj = json.loads(str(s or "").strip() or "{}")
+            except Exception:
+                return {}
+            if not isinstance(obj, dict):
+                return {}
+            return {str(k): str(v) for k, v in obj.items()}
+
+        def _action_label(s: str) -> str:
+            x = str(s or "").strip().upper()
+            if x == "INSERT":
+                return "추가"
+            if x == "UPDATE":
+                return "변경"
+            if x == "LEFT":
+                return "이탈"
+            if x == "REJOIN":
+                return "재참여"
+            if x == "WARN":
+                return "경고"
+            if x == "SUMMARY":
+                return "요약"
+            if x == "INIT":
+                return "초기"
+            return x
+
+        max_n = max(0, int(max_recent_audit_log_rows))
+        logs = logs[-max_n:] if max_n > 0 else []
+
+        # 요약(SUMMARY/WARN) 먼저, 상세(INSERT/UPDATE/LEFT/REJOIN) 다음
+        summary_rows = [r for r in logs if str(r[3] or "").strip().upper() in ("SUMMARY", "WARN")]
+        detail_rows = [r for r in logs if str(r[3] or "").strip().upper() in ("INSERT", "UPDATE", "LEFT", "REJOIN")]
+
+        rows.append([""])
+        rows.append(["🧾 최근 변경 이력(AUDIT_LOG)"])
+        rows.append(["시간", "대상", "탭", "동작", "변경 필드", "변경 요약"])
+
+        for r in (summary_rows + detail_rows):
+            ts = str(r[0] or "").strip()
+            tab = str(r[2] or "").strip()
+            action = str(r[3] or "").strip()
+            fields = str(r[5] or "").strip()
+            old_map = _parse_map(str(r[6] or ""))
+            new_map = _parse_map(str(r[7] or ""))
+
+            target = (
+                str(new_map.get("cafeNickname") or old_map.get("cafeNickname") or "").strip()
+                or str(new_map.get("openchatNickname") or old_map.get("openchatNickname") or "").strip()
+            )
+            if not target:
+                target = "-"
+
+            parts: list[str] = []
+            for f in [x.strip() for x in (fields.split(",") if fields else []) if x.strip()]:
+                o = str(old_map.get(f, "") or "").strip()
+                n = str(new_map.get(f, "") or "").strip()
+                if o == n:
+                    continue
+                if o and n:
+                    parts.append(f"{f}: {o} → {n}")
+                elif n:
+                    parts.append(f"{f}: {n}")
+                elif o:
+                    parts.append(f"{f}: (삭제됨)")
+                else:
+                    parts.append(f"{f}")
+            summary = "; ".join(parts).strip()
+            if not summary:
+                # SUMMARY/WARN 등은 fields에 요약 문자열이 들어오기도 한다.
+                summary = fields
+            if len(summary) > 220:
+                summary = summary[:220] + "…"
+
+            rows.append([ts, target, tab, _action_label(action), fields, summary])
 
     return rows

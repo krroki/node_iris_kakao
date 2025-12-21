@@ -266,3 +266,291 @@ def delete_rows_range(svc, spreadsheet_id: str, sheet_name: str, start_row: int,
         ]
     }
     svc.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req).execute()
+
+
+def _hex_color(hex_str: str) -> dict:
+    h = str(hex_str or "").strip().lstrip("#")
+    if len(h) != 6:
+        return {"red": 1.0, "green": 1.0, "blue": 1.0}
+    try:
+        r = int(h[0:2], 16) / 255.0
+        g = int(h[2:4], 16) / 255.0
+        b = int(h[4:6], 16) / 255.0
+    except Exception:
+        return {"red": 1.0, "green": 1.0, "blue": 1.0}
+    return {"red": r, "green": g, "blue": b}
+
+
+def apply_overview_sheet_format(
+    svc,
+    spreadsheet_id: str,
+    sheet_name: str,
+    values: List[List[str]],
+    *,
+    frozen_rows: int = 16,
+) -> None:
+    """
+    OVERVIEW 탭을 '프로그램 화면'처럼 보기 좋게 만드는 최소 서식 적용.
+    - gridlines 숨김
+    - 상단 타이틀/갱신 행 강조
+    - 섹션 헤더/테이블 헤더 강조
+    - 컬럼 폭/행 높이 기본값 지정
+
+    NOTE: 값 자체는 update_values로 먼저 반영되어 있어야 한다.
+    """
+    if not values:
+        return
+
+    sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+    if sheet_id is None:
+        return
+
+    max_cols = 1
+    for r in values:
+        if isinstance(r, list):
+            max_cols = max(max_cols, len(r))
+    max_cols = max(1, max_cols)
+    end_row = max(1, len(values))
+
+    def _cell(row: list[str], idx: int) -> str:
+        return str(row[idx] if idx < len(row) else "").strip()
+
+    # section header rows: single cell starting with emoji markers we use in audit.py
+    section_prefixes = ("🧭", "📌", "🧩", "🧾")
+    section_rows: list[int] = []
+    table_header_rows: list[int] = []
+    for i, row in enumerate(values):
+        if not isinstance(row, list) or not row:
+            continue
+        a0 = _cell(row, 0)
+        if len(row) == 1 and a0.startswith(section_prefixes):
+            section_rows.append(i)
+        if a0 in ("상태", "방", "시간"):
+            table_header_rows.append(i)
+
+    first_section = min(section_rows) if section_rows else None
+
+    bg_dark = _hex_color("#0F172A")  # slate-900
+    bg_section = _hex_color("#111827")  # gray-900
+    bg_header = _hex_color("#E2E8F0")  # slate-200
+    bg_summary = _hex_color("#F8FAFC")  # slate-50
+    fg_white = _hex_color("#FFFFFF")
+    fg_dark = _hex_color("#0F172A")
+    fg_muted = _hex_color("#CBD5E1")  # slate-300
+
+    def _range(sr: int, er: int, sc: int = 0, ec: int | None = None) -> dict:
+        return {
+            "sheetId": sheet_id,
+            "startRowIndex": max(0, int(sr)),
+            "endRowIndex": max(0, int(er)),
+            "startColumnIndex": max(0, int(sc)),
+            "endColumnIndex": max(0, int(ec if ec is not None else max_cols)),
+        }
+
+    requests: list[dict] = []
+
+    # sheet properties
+    requests.append(
+        {
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {"hideGridlines": True, "frozenRowCount": max(0, int(frozen_rows))},
+                },
+                "fields": "gridProperties.hideGridlines,gridProperties.frozenRowCount",
+            }
+        }
+    )
+
+    # unmerge+merge title/meta rows (A1..max_cols, A2..max_cols)
+    if max_cols > 1:
+        requests.append({"unmergeCells": {"range": _range(0, min(2, end_row), 0, max_cols)}})
+        requests.append({"mergeCells": {"range": _range(0, 1, 0, max_cols), "mergeType": "MERGE_ALL"}})
+        requests.append({"mergeCells": {"range": _range(1, 2, 0, max_cols), "mergeType": "MERGE_ALL"}})
+
+    # column widths (defaults + overrides)
+    requests.append(
+        {
+            "updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": max_cols},
+                "properties": {"pixelSize": 160},
+                "fields": "pixelSize",
+            }
+        }
+    )
+    # A/B/F/J are the most important readability columns for our overview tables.
+    requests.append(
+        {
+            "updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 190},
+                "fields": "pixelSize",
+            }
+        }
+    )
+    if max_cols >= 2:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
+                    "properties": {"pixelSize": 220},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+    if max_cols >= 6:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 5, "endIndex": 6},
+                    "properties": {"pixelSize": 520},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+    if max_cols >= 10:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 9, "endIndex": 10},
+                    "properties": {"pixelSize": 520},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+
+    # row heights (title/meta)
+    requests.append(
+        {
+            "updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": 0, "endIndex": min(1, end_row)},
+                "properties": {"pixelSize": 44},
+                "fields": "pixelSize",
+            }
+        }
+    )
+    if end_row >= 2:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 2},
+                    "properties": {"pixelSize": 28},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+
+    def _repeat(sr: int, er: int, sc: int, ec: int, fmt: dict, fields: str) -> dict:
+        return {
+            "repeatCell": {
+                "range": _range(sr, er, sc, ec),
+                "cell": {"userEnteredFormat": fmt},
+                "fields": fields,
+            }
+        }
+
+    # Title row
+    requests.append(
+        _repeat(
+            0,
+            1,
+            0,
+            max_cols,
+            {
+                "backgroundColor": bg_dark,
+                "textFormat": {"foregroundColor": fg_white, "fontSize": 14, "bold": True},
+                "horizontalAlignment": "LEFT",
+                "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "WRAP",
+            },
+            "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+        )
+    )
+    # Meta row
+    if end_row >= 2:
+        requests.append(
+            _repeat(
+                1,
+                2,
+                0,
+                max_cols,
+                {
+                    "backgroundColor": bg_section,
+                    "textFormat": {"foregroundColor": fg_muted, "fontSize": 10, "bold": False},
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "WRAP",
+                },
+                "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            )
+        )
+
+    # Summary block (before first section header)
+    if first_section is not None and first_section > 2:
+        requests.append(
+            _repeat(
+                2,
+                first_section,
+                0,
+                max_cols,
+                {
+                    "backgroundColor": bg_summary,
+                    "textFormat": {"foregroundColor": fg_dark, "fontSize": 10},
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "WRAP",
+                },
+                "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+            )
+        )
+        # make label column bold
+        requests.append(
+            _repeat(
+                2,
+                first_section,
+                0,
+                1,
+                {"textFormat": {"bold": True}},
+                "userEnteredFormat.textFormat.bold",
+            )
+        )
+
+    # Section headers
+    for r in section_rows:
+        requests.append(
+            _repeat(
+                r,
+                r + 1,
+                0,
+                max_cols,
+                {
+                    "backgroundColor": bg_section,
+                    "textFormat": {"foregroundColor": fg_white, "bold": True, "fontSize": 11},
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "WRAP",
+                },
+                "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            )
+        )
+
+    # Table header rows
+    for r in table_header_rows:
+        requests.append(
+            _repeat(
+                r,
+                r + 1,
+                0,
+                max_cols,
+                {
+                    "backgroundColor": bg_header,
+                    "textFormat": {"foregroundColor": fg_dark, "bold": True, "fontSize": 10},
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "WRAP",
+                },
+                "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            )
+        )
+
+    # Apply
+    svc.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()

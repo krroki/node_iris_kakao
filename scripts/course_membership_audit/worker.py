@@ -17,13 +17,14 @@ from .iris import fetch_loaded_member_count, fetch_openchat_members, fetch_room_
 from .room_infer import infer_room_type_and_course_key
 from .sheets import (
     append_rows,
+    apply_overview_sheet_format,
     batch_update_rows,
     build_sheets_client,
     clear_values,
+    delete_rows_range,
     ensure_sheet_exists,
     get_values,
     move_sheet_to_index,
-    set_sheet_frozen_rows,
     update_values,
 )
 
@@ -1146,6 +1147,27 @@ class CourseMembershipAuditWorker:
         if log_rows:
             append_rows(svc, course.spreadsheet_id, log_tab, log_rows, last_col=_col_letter(len(log_header)))
 
+        # Overview에서 최근 AUDIT_LOG를 바로 확인할 수 있도록 최근 N개를 읽어온다.
+        # (로그는 무한정 커지지 않도록 상한을 두고 초과분은 앞쪽부터 정리)
+        recent_logs: list[list[str]] = []
+        try:
+            keep_rows = 5000  # header 제외, 최신 N개만 유지
+            show_rows = 120  # Overview에서는 build_overview_rows에서 추가로 60개만 표시
+
+            col_a = get_values(svc, course.spreadsheet_id, f"{log_tab}!A:A")
+            total_rows = len(col_a)  # header 포함
+            if keep_rows > 0 and total_rows > (keep_rows + 1):
+                delete_end = max(2, total_rows - keep_rows)
+                delete_rows_range(svc, course.spreadsheet_id, log_tab, 2, delete_end)
+                total_rows = keep_rows + 1
+
+            if total_rows >= 2:
+                end_row = total_rows
+                start_row = max(2, end_row - show_rows + 1)
+                recent_logs = get_values(svc, course.spreadsheet_id, f"{log_tab}!A{start_row}:H{end_row}")
+        except Exception:
+            recent_logs = []
+
         # Overview는 derived view이므로 clear 후 전체 재작성한다.
         overview_rows = audit_mod.build_overview_rows(
             course_key=course.course_key,
@@ -1154,11 +1176,12 @@ class CourseMembershipAuditWorker:
             room_infos=room_infos,
             audit_rows=audit_rows,
             openchat_rows=openchat_rows,
+            recent_audit_log_rows=recent_logs,
         )
         clear_values(svc, course.spreadsheet_id, overview_tab)
         update_values(svc, course.spreadsheet_id, overview_tab, overview_rows)
-        # 상단 요약 + 액션 카드 + 테이블 헤더까지 고정(가독성)
-        set_sheet_frozen_rows(svc, course.spreadsheet_id, overview_tab, 16)
+        # '프로그램 화면'처럼 보기 좋게: gridlines 숨김/타이틀/섹션 헤더/테이블 헤더 강조 + 상단 freeze
+        apply_overview_sheet_format(svc, course.spreadsheet_id, overview_tab, overview_rows, frozen_rows=16)
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()
