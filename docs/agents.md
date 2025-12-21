@@ -94,6 +94,22 @@ if (result === null) {
 
 ---
 
+## 운영 장애: 네이버 카페 창이 여러 개 뜸(중복 크롤링)
+
+### 증상(대표)
+- 네이버 카페 크롤러 창이 2~3개 동시에 뜨거나, 로그인/크롤링이 반복됨
+- 같은 코스의 Sheets 업서트가 짧은 간격으로 여러 번 실행됨
+
+### 원인(대표)
+- `course-membership-audit-worker` **중복 실행**(동일 워커 프로세스가 여러 개 떠 있는 상태)
+
+### 복구(권장)
+1. `windows/start_course_membership_audit_worker.ps1 -Restart`로 1개만 남기고 정리
+2. `node-iris-app/data/course_membership_audit_worker_status.json`에서 `pid`가 1개로 유지되는지 확인
+3. 재발 방지: 워커는 **start 스크립트로만** 관리하고, `python scripts/course_membership_audit_worker.py` 직접 실행은 피한다
+
+---
+
 ## 운영 장애: 공지 이미지 “성공 보고/실제 미발신”
 
 ### 증상

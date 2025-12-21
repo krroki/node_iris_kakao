@@ -18,6 +18,7 @@ $outLog = Join-Path $LogDir 'course_membership_audit_worker.out.log'
 $errLog = Join-Path $LogDir 'course_membership_audit_worker.err.log'
 
 $statusPath = Join-Path $root 'node-iris-app\data\course_membership_audit_worker_status.json'
+$lockPath = Join-Path $root 'node-iris-app\data\locks\course_membership_audit_worker.lock'
 $scriptPath = Join-Path $root 'scripts\course_membership_audit_worker.py'
 
 function Get-WorkerPidFromStatus {
@@ -29,33 +30,51 @@ function Get-WorkerPidFromStatus {
   return $null
 }
 
+function Get-WorkerPidFromLock {
+  try {
+    if (-not (Test-Path $lockPath)) { return $null }
+    $s = (Get-Content -LiteralPath $lockPath -Encoding UTF8 | Select-Object -First 1)
+    $s2 = [string]$s
+    $s2 = $s2.Trim()
+    if ($s2 -match '^[0-9]+$') { return [int]$s2 }
+  } catch {}
+  return $null
+}
+
+function Test-PidAlive {
+  param([int]$ProcessId)
+  try {
+    return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+  } catch {
+    return $false
+  }
+}
+
 function Find-WorkerProcs {
   try {
-    return @(Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" |
-      Where-Object { $_.CommandLine -match 'scripts[/\\\\]course_membership_audit_worker\\.py' } |
-      Select-Object ProcessId,CommandLine)
+    return @(
+      Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" |
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match 'scripts[/\\\\]course_membership_audit_worker\\.py') } |
+        Select-Object ProcessId,CommandLine,CreationDate
+    )
   } catch {
     return @()
   }
 }
 
-$statusPid = Get-WorkerPidFromStatus
-$statusProc = $null
-if ($statusPid) {
-  try {
-    $p = Get-CimInstance Win32_Process -Filter "ProcessId=$statusPid" -ErrorAction SilentlyContinue
-    if ($p -and ($p.CommandLine -match 'scripts[/\\\\]course_membership_audit_worker\\.py')) {
-      $statusProc = [pscustomobject]@{ ProcessId = [int]$p.ProcessId; CommandLine = [string]$p.CommandLine }
-    }
-  } catch {}
-}
-
 $workerProcs = Find-WorkerProcs
+$statusPid = Get-WorkerPidFromStatus
+$lockPid = Get-WorkerPidFromLock
+
+# mainPid는 "status에 기록된 pid"를 우선으로 선택한다(실제 동작/heartbeat 기준).
 $mainPid = $null
-if ($statusProc) {
-  $mainPid = $statusProc.ProcessId
+if ($statusPid -and (Test-PidAlive -ProcessId ([int]$statusPid))) {
+  $mainPid = [int]$statusPid
+} elseif ($lockPid -and (Test-PidAlive -ProcessId ([int]$lockPid))) {
+  $mainPid = [int]$lockPid
 } elseif ($workerProcs.Count -gt 0) {
-  $mainPid = [int]$workerProcs[0].ProcessId
+  # statusPid가 없거나 불일치하면, 가장 최근 생성된 프로세스를 main으로 본다.
+  $mainPid = [int](($workerProcs | Sort-Object CreationDate -Descending | Select-Object -First 1).ProcessId)
 }
 
 if ($workerProcs.Count -gt 1) {
@@ -74,9 +93,26 @@ if ($mainPid) {
     Write-Host ("[course-membership-audit-worker] already running pid={0}; skip start (use -Restart to force)" -f $mainPid) -ForegroundColor Green
     return
   }
+
   Write-Host ("[course-membership-audit-worker] restart requested; stopping existing pid={0}" -f $mainPid) -ForegroundColor Yellow
-  try { Stop-Process -Id $mainPid -Force -ErrorAction SilentlyContinue } catch {}
-  Start-Sleep -Milliseconds 300
+  # Restart 모드에서는 mainPid를 최우선으로 종료하고, 추가로 탐지된 워커도 정리한다.
+  try { Stop-Process -Id ([int]$mainPid) -Force -ErrorAction SilentlyContinue } catch {}
+  foreach ($proc in (Find-WorkerProcs)) {
+    $procPid = [int]$proc.ProcessId
+    if ($procPid -eq [int]$mainPid) { continue }
+    try { Stop-Process -Id $procPid -Force -ErrorAction SilentlyContinue } catch {}
+  }
+
+  $stopDeadline = (Get-Date).AddSeconds(6)
+  do {
+    Start-Sleep -Milliseconds 250
+    $still = Get-Process -Id ([int]$mainPid) -ErrorAction SilentlyContinue
+  } while ($still -and (Get-Date) -lt $stopDeadline)
+
+  if ($null -ne (Get-Process -Id ([int]$mainPid) -ErrorAction SilentlyContinue)) {
+    Write-Host ("[course-membership-audit-worker] FAILED: old worker still running after stop pid={0}" -f $mainPid) -ForegroundColor Red
+    exit 1
+  }
 }
 
 if (-not (Test-Path $scriptPath)) {
@@ -92,7 +128,10 @@ if (-not $py) {
 }
 
 Write-Host ("[course-membership-audit-worker] starting (timeout {0}s)" -f $TimeoutSec) -ForegroundColor Green
-try { Remove-Item -Force -ErrorAction SilentlyContinue $outLog,$errLog | Out-Null } catch {}
+# 기존 로그는 장애 분석에 쓰일 수 있으므로, 재기동이 아닌 일반 start에서는 삭제하지 않는다.
+if ($Restart) {
+  try { Remove-Item -Force -ErrorAction SilentlyContinue $outLog,$errLog | Out-Null } catch {}
+}
 $proc = Start-Process -FilePath $py -ArgumentList @('scripts\course_membership_audit_worker.py') -WorkingDirectory $root -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden -PassThru
 $procId = $proc.Id
 
@@ -121,4 +160,3 @@ if ($ready) {
   Write-Host ("[course-membership-audit-worker] FAILED (process exited). See logs {0} / {1}" -f $outLog, $errLog) -ForegroundColor Red
   exit 1
 }
-

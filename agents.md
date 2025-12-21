@@ -127,6 +127,8 @@
   - roster-worker(선택 기능): `windows/start_roster_worker.ps1 -Restart`
   - openchat-members-sheets-worker(선택 기능): `windows/start_openchat_members_sheets_worker.ps1 -Restart`
   - course-membership-audit-worker(선택 기능): `windows/start_course_membership_audit_worker.ps1 -Restart`
+    - **중복 실행 금지**: 네이버 카페 창이 여러 개 뜨거나(크롤링 2~3회 반복) 업서트가 과도하게 자주 돌면 워커가 중복 실행 중일 수 있다.  
+      반드시 위 재기동 스크립트로만 관리하고, `python scripts/course_membership_audit_worker.py` 직접 실행은 피한다.
   - web(UI): `windows/start_web.ps1 -Mode prod -Port 3100 -ForceKillPort`
 
 - **UI(3100) 남색 배경만 뜨는 증상(중요)**:
@@ -173,7 +175,25 @@
         - SSOT: `docs/adr/ADR-0042-node-iris-logger-handle-leak-emfile-hotfix.md`
   - `runtime.json.features[roomId].welcome === true`가 아니면 welcome은 발신되지 않는다(로그에 `reason=WELCOME_DISABLED`로 표시).
   - `windows/logs/welcome_worker.out.log`에서 `[welcome] 스킵` 사유(`ROOM_NOT_ALLOWED|WELCOME_DISABLED`)를 먼저 확인한다.
-  - `allowedRoomIds`/토글 변경은 welcome-worker가 **최대 60초 내 재연결로 자동 반영**된다(환경변수 `WELCOME_WORKER_STREAM_TTL_MS`). 즉시 반영이 필요하면 `windows/start_welcome_worker.ps1 -Restart`.
+- `allowedRoomIds`/토글 변경은 welcome-worker가 **최대 60초 내 재연결로 자동 반영**된다(환경변수 `WELCOME_WORKER_STREAM_TTL_MS`). 즉시 반영이 필요하면 `windows/start_welcome_worker.ps1 -Restart`.
+
+---
+
+## 0.2) (필수) 공유 워킹트리 멀티세션 규칙(4.pint 준용)
+
+> 이 워킹트리는 **동일한 작업 디렉터리에서 여러 세션/프로세스가 동시에 작업**할 수 있다.  
+> 따라서 “내 작업 범위 밖 파일”은 **절대 건드리지 않는다.**
+
+- 다른 세션 작업물이 보이더라도:
+  - “정리/원복/포맷/리네임/삭제” 같은 행동을 하지 말고 **그냥 냅둔다**.
+  - 필요하면 담당자에게 알리고, 나는 **내 범위만** 진행한다.
+- 공유 워킹트리에서 금지(치명적):
+  - `git restore .`, `git reset --hard`, `git clean -fd` 같은 **전체 원복/삭제**
+  - repo 전체 포맷/린트(예: `npx biome check --write src/`, `prettier --write .` 등)
+  - `git add -A` (다른 세션 변경 파일이 섞일 수 있음)
+- 커밋/포맷은 “내가 바꾼 파일만”:
+  - 스테이징: `git add <내가 바꾼 파일 경로만>`
+  - 포맷/린트: `<도구> <내가 바꾼 파일만>`
 
 ---
 
@@ -249,6 +269,10 @@
       - 자동 실행: `windows/start_all.ps1`(부팅 시 1회) + `windows/watchdog.ps1`(기본 30분 주기)
     - UI(3100)에는 `auth: 적용됨/실패` 태그도 함께 노출된다(`node-iris-app/data/talkapi_auth_apply_status.json`).
       - `Talk-API: 실패`가 보여도 `auth: 적용됨`이 더 최신이면, “실패로 확정”이 아니라 **테스트 방에서 1회 재검증**이 필요한 상태일 수 있다. (런북: `docs/reference/kakao-mentions-and-reply.md`의 “빠른 복구 절차”)
+  - Welcome 오픈프로필 닫기 안내/확인(ADR-0045):
+    - IRIS `db2.open_chat_member.nickname`는 평문이 아니라 base64-like 토큰으로 저장되는 케이스가 있어, **기본닉/비기본닉 분기는 DB nickname을 신뢰하지 않는다.**
+    - 분기 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영해 확인 멘트를 선택한다.
+    - 비기본닉 확인 멘트는 `welcome.followUp.replies[0]`를 재사용할 수 있는데, 템플릿에 `@{entrance}`가 없으면 앞에 `@{entrance} 님`을 자동으로 붙여 **멘션 누락을 방지**한다.
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
     - `ai-worker`는 `runtime.json.features[roomId].ai=true`인 방만 `/logs/stream?rooms=...`로 구독한다.

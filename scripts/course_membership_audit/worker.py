@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import atexit
 import os
 import subprocess
 import threading
@@ -449,6 +450,8 @@ class CourseMembershipAuditWorker:
         self.status_path = self.root / "node-iris-app" / "data" / "course_membership_audit_worker_status.json"
         self.state_path = self.root / "node-iris-app" / "data" / "course_membership_audit_worker_state.json"
         self.lock_path = self.root / "node-iris-app" / "data" / "locks" / "course_membership_audit_worker.lock"
+        self._lock_fp = None
+        self._lock_offset = 4096
 
         self.state: dict = {}
 
@@ -746,44 +749,94 @@ class CourseMembershipAuditWorker:
         except Exception as e:
             self.log("WARN", "state 저장 실패(무시)", err=str(e), path=str(self.state_path))
 
+    def _release_lock(self) -> None:
+        fp = self._lock_fp
+        self._lock_fp = None
+        if not fp:
+            return
+        try:
+            fp.seek(int(self._lock_offset or 0))
+            if os.name == "nt":
+                import msvcrt  # type: ignore
+
+                msvcrt.locking(fp.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl  # type: ignore
+
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fp.close()
+        except Exception:
+            pass
+
     def _acquire_lock(self) -> None:
+        """
+        싱글톤 락(필수)
+        - Windows에서는 `os.kill(pid, 0)`가 프로세스 생존 확인에 신뢰할 수 없어 중복 실행이 발생할 수 있다.
+        - 파일 핸들을 열고 OS 파일 락을 잡아, 프로세스 종료 시 락이 자동 해제되도록 한다.
+        """
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.lock_path.exists():
+        try:
+            try:
+                fp = self.lock_path.open("r+", encoding="utf-8")
+            except FileNotFoundError:
+                fp = self.lock_path.open("w+", encoding="utf-8")
+        except Exception as e:
+            raise SystemExit(f"[오류] lock 파일 열기 실패: {self.lock_path} ({e})")
+
+        try:
+            fp.seek(int(self._lock_offset or 0))
+            if os.name == "nt":
+                import msvcrt  # type: ignore
+
+                msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl  # type: ignore
+
+                fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except Exception:
+            # 다른 프로세스가 락을 잡고 있으면 즉시 종료한다.
+            other_pid = ""
+            try:
+                fp.seek(0)
+                other_pid = (fp.read() or "").strip()
+            except Exception:
+                other_pid = ""
+            try:
+                fp.close()
+            except Exception:
+                pass
+
             hb_age_sec = None
-            pid = 0
-            alive = False
             try:
                 st = _read_json(self.status_path)
                 hb = str(st.get("heartbeatTs") or "").strip()
-                try:
-                    pid = int(st.get("pid") or 0)
-                except Exception:
-                    pid = 0
                 if hb:
                     dt = datetime.fromisoformat(hb.replace("Z", "+00:00")).astimezone(timezone.utc)
                     hb_age_sec = (datetime.now(timezone.utc) - dt).total_seconds()
             except Exception:
                 hb_age_sec = None
 
-            if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except Exception:
-                    alive = False
+            hint_parts = []
+            if other_pid:
+                hint_parts.append(f"pid={other_pid}")
+            if hb_age_sec is not None:
+                hint_parts.append(f"heartbeat age={int(hb_age_sec)}s")
+            hint = f" ({', '.join(hint_parts)})" if hint_parts else ""
+            raise SystemExit(f"[오류] course-membership-audit-worker 중복 실행 감지: {self.lock_path}{hint}")
 
-            # heartbeat가 최근이더라도 PID가 죽어있으면 stale lock으로 간주하고 회수한다.
-            if hb_age_sec is not None and hb_age_sec <= 300 and alive:
-                raise SystemExit(
-                    f"[오류] course-membership-audit-worker 중복 실행 감지(heartbeat age={int(hb_age_sec)}s): {self.lock_path}"
-                )
-
-            try:
-                self.lock_path.unlink()
-            except Exception:
-                raise SystemExit(f"[오류] stale lock 제거 실패: {self.lock_path}")
-
-        self.lock_path.write_text(str(os.getpid()), encoding="utf-8")
+        # 락 유지용 핸들을 인스턴스에 보관한다.
+        self._lock_fp = fp
+        atexit.register(self._release_lock)
+        try:
+            fp.seek(0)
+            fp.truncate()
+            fp.write(str(os.getpid()))
+            fp.flush()
+        except Exception:
+            pass
 
     def _course_state(self, course_key: str) -> dict:
         cs = self.state.get("courses")

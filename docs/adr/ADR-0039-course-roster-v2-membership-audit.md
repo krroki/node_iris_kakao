@@ -104,6 +104,7 @@
   - `node-iris-app/data/course_membership_audit_worker_status.json`
   - `node-iris-app/data/course_membership_audit_worker_state.json`
   - `node-iris-app/data/locks/course_membership_audit_worker.lock`
+  - 중복 실행 방지: lock 파일은 **OS 파일 락(msvcrt/fcntl)** 로 유지되며, 중복 프로세스는 즉시 종료한다.
 - 기동/자동복구:
   - 수동: `windows/start_course_membership_audit_worker.ps1`
   - `windows/start_all.ps1`: 설정 파일 존재 + `worker.enabled=true`일 때만 자동 기동

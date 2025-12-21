@@ -335,6 +335,11 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
   - `node-iris-app/data/course_membership_audit_worker_state.json`
   - `node-iris-app/data/locks/course_membership_audit_worker.lock`
 
+- **네이버 카페 창이 2~3개 뜨거나 로그인이 반복되는 경우(중요)**:
+  - 원인: `course-membership-audit-worker`가 **중복 실행**되어 같은 크롤링이 여러 번 돌고 있는 상태
+  - 조치: `windows/start_course_membership_audit_worker.ps1 -Restart`로 1개만 남기고 정리
+  - 확인: `node-iris-app/data/course_membership_audit_worker_status.json`의 `pid`가 **1개**로 유지되는지 확인
+
 ### 10.3) start_all/watchdog 연동(운영)
 
 - `windows/start_all.ps1`:
