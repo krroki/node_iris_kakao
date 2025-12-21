@@ -110,6 +110,7 @@ class TabsConfig:
     audit: str
     audit_log: str
     overview: str = "OVERVIEW"
+    actions: str = "ACTIONS"
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,7 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
         audit_tab = _safe_str((tabs_raw or {}).get("audit")) or "AUDIT_VIEW"
         audit_log_tab = _safe_str((tabs_raw or {}).get("auditLog") or (tabs_raw or {}).get("audit_log") or (tabs_raw or {}).get("log")) or "AUDIT_LOG"
         overview_tab = _safe_str((tabs_raw or {}).get("overview")) or "OVERVIEW"
+        actions_tab = _safe_str((tabs_raw or {}).get("actions") or (tabs_raw or {}).get("action")) or "ACTIONS"
         tabs = TabsConfig(
             cafe_raw=cafe_tab,
             openchat_raw=openchat_tab,
@@ -241,6 +243,7 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
             audit=audit_tab,
             audit_log=audit_log_tab,
             overview=overview_tab,
+            actions=actions_tab,
         )
 
         grade_raw = v.get("gradeRules") if isinstance(v.get("gradeRules"), dict) else {}

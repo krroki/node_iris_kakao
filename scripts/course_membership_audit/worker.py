@@ -1077,10 +1077,13 @@ class CourseMembershipAuditWorker:
         tabs = course.tabs
         log_tab = getattr(tabs, "audit_log", "") or "AUDIT_LOG"
         overview_tab = getattr(tabs, "overview", "") or "OVERVIEW"
-        for tab in [overview_tab, tabs.cafe_raw, tabs.openchat_raw, tabs.rules_raw, tabs.audit, log_tab]:
+        actions_tab = getattr(tabs, "actions", "") or "ACTIONS"
+        for tab in [overview_tab, actions_tab, tabs.cafe_raw, tabs.openchat_raw, tabs.rules_raw, tabs.audit, log_tab]:
             ensure_sheet_exists(svc, course.spreadsheet_id, tab)
         # overview 탭은 사용성을 위해 항상 "가장 앞"으로 이동한다.
         move_sheet_to_index(svc, course.spreadsheet_id, overview_tab, 0)
+        # ACTIONS 탭은 overview 바로 다음 탭으로 고정(운영자 입장에서 바로 찾기)
+        move_sheet_to_index(svc, course.spreadsheet_id, actions_tab, 1)
 
         log_header = ["ts", "courseKey", "tab", "action", "key", "fields", "old", "new"]
         existing_log = get_values(svc, course.spreadsheet_id, f"{log_tab}!1:1")
@@ -1182,6 +1185,19 @@ class CourseMembershipAuditWorker:
         update_values(svc, course.spreadsheet_id, overview_tab, overview_rows)
         # '프로그램 화면'처럼 보기 좋게: gridlines 숨김/타이틀/섹션 헤더/테이블 헤더 강조 + 상단 freeze
         apply_overview_sheet_format(svc, course.spreadsheet_id, overview_tab, overview_rows, frozen_rows=16)
+
+        # ACTIONS 탭(운영자가 "지금 당장 해야 할 일"을 상세히 확인)
+        actions_rows = audit_mod.build_actions_rows(
+            course_key=course.course_key,
+            now_iso=now_iso,
+            cafe_snapshot=cafe_snapshot,
+            room_infos=room_infos,
+            audit_rows=audit_rows,
+            openchat_rows=openchat_rows,
+        )
+        clear_values(svc, course.spreadsheet_id, actions_tab)
+        update_values(svc, course.spreadsheet_id, actions_tab, actions_rows)
+        apply_overview_sheet_format(svc, course.spreadsheet_id, actions_tab, actions_rows, frozen_rows=8)
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()

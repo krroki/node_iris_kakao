@@ -325,7 +325,7 @@ def apply_overview_sheet_format(
         a0 = _cell(row, 0)
         if len(row) == 1 and a0.startswith(section_prefixes):
             section_rows.append(i)
-        if a0 in ("상태", "방", "시간"):
+        if a0 in ("상태", "방", "시간", "우선", "항목", "카페닉"):
             table_header_rows.append(i)
 
     first_section = min(section_rows) if section_rows else None
