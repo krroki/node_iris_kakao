@@ -106,6 +106,18 @@ def resolve_cafe_nickname_from_openchat(
     if (not s) or (not cafe_nick_set):
         return "", "none"
 
+    # "(카페닉)" 패턴이 맞지만, 괄호 안이 카페닉이 아닌 경우(역전):
+    # - 예: "카페닉(이름마스킹)" 형태로 들어오는 케이스가 있어 prefix를 카페닉 후보로 본다.
+    # - 단, 후보가 cafe_nick_set에 존재(또는 공백 정규화로 유일 매칭)할 때만 사용한다.
+    if "(" in s and ")" in s and s.endswith(")"):
+        prefix = s.rsplit("(", 1)[0].strip()
+        if prefix and prefix in cafe_nick_set:
+            return prefix, "prefix_before_paren"
+        nu = _norm_unique(prefix)
+        if nu:
+            nick, label = nu
+            return nick, f"prefix_before_paren_{label}"
+
     if s in cafe_nick_set:
         return s, "exact"
     nu = _norm_unique(s)
@@ -730,6 +742,12 @@ def build_overview_rows(
             return False
         if "STAFF" in x.upper():
             return True
+        if ("스태프" in x) or ("스탭" in x):
+            return True
+        if ("운영진" in x) or ("운영자" in x) or ("부운영" in x):
+            return True
+        if "매니저" in x:
+            return True
         if x.startswith("조교"):
             return True
         return False
@@ -1233,6 +1251,11 @@ def build_actions_rows(
     missing_records = [d for d in records if str(d.get("status", "")).strip().upper() == "MISSING"]
     ambiguous_records = [d for d in records if str(d.get("status", "")).strip().upper() == "AMBIGUOUS"]
     incomplete_records = [d for d in records if str(d.get("status", "")).strip().upper() == "INCOMPLETE"]
+    staff_cafe_nicks = {
+        str(d.get("cafeNickname") or "").strip()
+        for d in records
+        if str(d.get("track") or "").strip().lower() == "staff" and str(d.get("cafeNickname") or "").strip()
+    }
 
     unexpected_premium_records: list[dict[str, str]] = []
     for d in records:
@@ -1295,6 +1318,12 @@ def build_actions_rows(
         if not x:
             return False
         if "STAFF" in x.upper():
+            return True
+        if ("스태프" in x) or ("스탭" in x):
+            return True
+        if ("운영진" in x) or ("운영자" in x) or ("부운영" in x):
+            return True
+        if "매니저" in x:
             return True
         if x.startswith("조교"):
             return True
@@ -1365,6 +1394,8 @@ def build_actions_rows(
             _attach_openchat(parsed, rt, nick)
 
         staff_like = _looks_like_staff_nick(nick)
+        if resolved and resolved in staff_cafe_nicks:
+            continue
         if staff_like:
             continue
 
