@@ -31,6 +31,29 @@ def extract_cafe_nickname_from_openchat(nickname: str) -> str:
     return ""
 
 
+# 이름 마스킹 규칙(권장): "첫 글자 + @ 반복 + 마지막 글자"
+# - 3글자 이름: 정@록
+# - 4글자 이름: 정@@록
+_NAME_MASK_RE = re.compile(r"^[^@\s]{1}[@]{1,10}[^@\s]{1}$")
+
+
+def extract_name_mask_prefix(nickname: str) -> str:
+    s = str(nickname or "").strip()
+    if not s:
+        return ""
+    m = _CAFE_NICK_RE.search(s)
+    if not m:
+        return ""
+    return s[: m.start()].strip()
+
+
+def is_valid_name_mask_prefix(prefix: str) -> bool:
+    s = str(prefix or "").strip()
+    if not s:
+        return False
+    return bool(_NAME_MASK_RE.match(s))
+
+
 def classify_track(grade: str, rules: GradeRules) -> str:
     g = str(grade or "").strip()
     if g and g in set(rules.staff_grades):
@@ -515,10 +538,27 @@ def build_overview_rows(
             if _looks_like_cipher_nick(nick):
                 cipher_cnt += 1
             else:
-                nick_bad.append([room_label, nick, "", "괄호(카페닉) 형식이 아니에요. 예: 홍길동(카페닉)"])
+                nick_bad.append(
+                    [
+                        room_label,
+                        nick,
+                        "",
+                        "닉네임 끝에 (카페닉) 형식이 필요해요. 예) 정@록(카페닉), 정@@록(카페닉)",
+                    ]
+                )
             continue
+        prefix = extract_name_mask_prefix(nick)
+        if prefix and (not is_valid_name_mask_prefix(prefix)):
+            nick_bad.append(
+                [
+                    room_label,
+                    nick,
+                    parsed,
+                    "이름 마스킹(@) 형식이 아니에요. 예) 정@록(카페닉), 정@@록(카페닉)",
+                ]
+            )
         if parsed not in cafe_nick_set:
-            nick_unknown.append([room_label, nick, parsed, "카페 명단에 없는 카페닉이에요(닉네임 불일치/미가입 가능)."])
+            nick_unknown.append([room_label, nick, parsed, "카페 명단에 없는 카페닉이에요(오타/변경 가능)."])
 
     if max_nickname_issue_rows > 0:
         nick_bad = nick_bad[: int(max_nickname_issue_rows)]
