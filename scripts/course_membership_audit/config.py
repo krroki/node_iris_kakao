@@ -106,6 +106,7 @@ class WorkerConfig:
 class TabsConfig:
     cafe_raw: str
     openchat_raw: str
+    ssot_raw: str
     rules_raw: str
     audit: str
     audit_log: str
@@ -117,6 +118,19 @@ class TabsConfig:
 class GradeRules:
     premium_grades: list[str]
     staff_grades: list[str]
+
+
+@dataclass(frozen=True)
+class PaymentSsotConfig:
+    spreadsheet_id_raw: str
+    spreadsheet_id: str
+    sheet_name: str
+    header_row: int
+    grade_col: str
+    nickname_col: str
+    id_col: str
+    kind_col: str
+    exclude_kinds: list[str]
 
 
 @dataclass(frozen=True)
@@ -139,6 +153,7 @@ class CourseConfig:
     tabs: TabsConfig
     grade_rules: GradeRules
     rooms: RoomsOverride
+    payment_ssot: Optional[PaymentSsotConfig] = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +246,7 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
         tabs_raw = v.get("tabs") if isinstance(v.get("tabs"), dict) else (sheets_raw.get("tabs") if isinstance(sheets_raw.get("tabs"), dict) else {})
         cafe_tab = _safe_str((tabs_raw or {}).get("cafeRaw")) or "CAFE_RAW"
         openchat_tab = _safe_str((tabs_raw or {}).get("openchatRaw")) or "OPENCHAT_RAW"
+        ssot_tab = _safe_str((tabs_raw or {}).get("ssotRaw") or (tabs_raw or {}).get("paymentRaw") or (tabs_raw or {}).get("ssot") or (tabs_raw or {}).get("payment") or "") or "SSOT_RAW"
         rules_tab = _safe_str((tabs_raw or {}).get("rulesRaw")) or "RULES_RAW"
         audit_tab = _safe_str((tabs_raw or {}).get("audit")) or "AUDIT_VIEW"
         audit_log_tab = _safe_str((tabs_raw or {}).get("auditLog") or (tabs_raw or {}).get("audit_log") or (tabs_raw or {}).get("log")) or "AUDIT_LOG"
@@ -239,6 +255,7 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
         tabs = TabsConfig(
             cafe_raw=cafe_tab,
             openchat_raw=openchat_tab,
+            ssot_raw=ssot_tab,
             rules_raw=rules_tab,
             audit=audit_tab,
             audit_log=audit_log_tab,
@@ -258,6 +275,23 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
             premium=_safe_str(rooms_raw.get("premium")),
         )
 
+        pay_raw = v.get("paymentSsot") if isinstance(v.get("paymentSsot"), dict) else {}
+        pay_spreadsheet_raw = _safe_str(pay_raw.get("spreadsheetId") or pay_raw.get("sheetId") or pay_raw.get("spreadsheet_id") or "")
+        pay_spreadsheet_id = parse_spreadsheet_id(pay_spreadsheet_raw)
+        payment_ssot = None
+        if pay_spreadsheet_id:
+            payment_ssot = PaymentSsotConfig(
+                spreadsheet_id_raw=pay_spreadsheet_raw,
+                spreadsheet_id=pay_spreadsheet_id,
+                sheet_name=_safe_str(pay_raw.get("sheetName") or pay_raw.get("tab") or pay_raw.get("sheet") or "종합") or "종합",
+                header_row=max(1, _safe_int(pay_raw.get("headerRow") or pay_raw.get("header_row"), 19)),
+                grade_col=_safe_str(pay_raw.get("gradeCol") or pay_raw.get("gradeColumn") or "카페 등급") or "카페 등급",
+                nickname_col=_safe_str(pay_raw.get("nicknameCol") or pay_raw.get("nicknameColumn") or "닉네임") or "닉네임",
+                id_col=_safe_str(pay_raw.get("idCol") or pay_raw.get("idColumn") or pay_raw.get("userIdCol") or "아이디") or "아이디",
+                kind_col=_safe_str(pay_raw.get("kindCol") or pay_raw.get("kindColumn") or "구분") or "구분",
+                exclude_kinds=_norm_str_list(pay_raw.get("excludeKinds")) or ["환불"],
+            )
+
         courses[ck] = CourseConfig(
             course_key=ck,
             enabled=enabled_course,
@@ -267,6 +301,7 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
             tabs=tabs,
             grade_rules=grade_rules,
             rooms=rooms,
+            payment_ssot=payment_ssot,
         )
 
     return p, AuditConfig(version=version, worker=worker, courses=courses)

@@ -25,8 +25,10 @@
 
 ## 2) 현재 상태(2025-12-21 기준)
 
-- 결제 SSOT 시트는 현재 서비스 계정으로 **API 읽기 권한이 없는 상태**라 연동을 보류한다.
-- 공유가 정상화되면 아래 순서로 검증/연동을 재개한다.
+- 결제 SSOT 시트에 서비스 계정 이메일을 **Viewer**로 공유하면 Sheets API **읽기 가능**을 확인했다.
+- `course-membership-audit-worker`에서 코스별 `paymentSsot.spreadsheetId`를 설정하면:
+  - 결제 SSOT → `SSOT_RAW` 탭 업서트
+  - `OVERVIEW`/`ACTIONS`/`AUDIT_VIEW`를 **결제 SSOT 기준**으로 산출한다.
 
 ---
 
@@ -34,9 +36,9 @@
 
 1. 결제 SSOT 시트에 서비스 계정 이메일을 **Viewer**로 공유한다.
 2. 로컬에 `data/gcp_service_account.json`이 존재하는지 확인한다.
-3. Sheets API로 `spreadsheets.get` / `values.get`이 되는지 확인한다.
-4. 결제 SSOT 시트에서 “종합/정규화된 탭”의 **19행 이후**(운영 데이터 시작 구간)을 기준으로 파싱/정규화 규칙을 확정한다.
-5. 확정된 스키마를 `course-membership-audit-worker`의 입력으로 합류한다.
+3. `data/course_membership_audit.json`에서 대상 코스에 `paymentSsot.spreadsheetId`를 등록한다.
+4. UI(3100)에서 “1회 업서트”를 실행한다.
+5. 코스 스프레드시트에서 `SSOT_RAW` / `OVERVIEW` / `ACTIONS`가 업데이트되는지 확인한다.
 
 ---
 
@@ -80,4 +82,3 @@
 - 결제 SSOT는 **절대 쓰기 금지**(read-only).
 - 키 파일/토큰 등 민감정보는 Git에 커밋 금지.
 - 연동 실패/권한 이슈는 운영방이 아니라 테스트 방/로그로만 남긴다.
-

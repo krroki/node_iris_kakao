@@ -54,10 +54,14 @@
   - (선택) 자동 로딩: `data/course_membership_audit.json`의 `worker.openchatAutoLoad.enabled=true`로 켜면,
     v2 워커가 **DB 미완전(INCOMPLETE)** 상태에서 `openchat_load_members.ps1`를 **쿨다운/순차 실행**으로 자동 시도한다.
 
-### 3.3) 결제 SSOT(추가 예정)
+### 3.3) 결제 SSOT(구현됨)
 
 - 목적: 결제(일반/프리미엄) 정보를 SSOT로 두고 트랙 확정/누락 탐지/운영 액션 도출에 활용한다.
 - 결제 SSOT 시트는 **read-only**로 연동한다(서비스 계정 Viewer 공유로 충분).
+- 설정: `data/course_membership_audit.json`의 코스 설정에 `paymentSsot.spreadsheetId`만 넣으면 된다. (탭/헤더/컬럼명은 기본값 사용)
+- 결과:
+  - 코스 스프레드시트의 `SSOT_RAW` 탭에 결제 SSOT 원본이 업서트된다.
+  - `OVERVIEW`/`ACTIONS`/`AUDIT_VIEW`는 결제 SSOT 기준으로 산출된다.
 - 상세 설계/운영: `docs/reference/payment-ssot-google-sheets.md`
 
 ---

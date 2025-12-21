@@ -876,6 +876,143 @@ class CourseMembershipAuditWorker:
         default = (self.root / "data" / "gcp_service_account.json").resolve()
         return str(default)
 
+    def _fetch_payment_ssot_records(self, svc: Any, course: CourseConfig) -> tuple[list[dict], dict[str, int]]:
+        """
+        결제/수기 SSOT(구글 시트)에서 코스 멤버 목록을 읽어온다.
+
+        반환 레코드 스키마(최소):
+          - ssotUserId, ssotNickname, ssotGrade, ssotKind, ssotTrack, sourceRow
+
+        NOTE:
+          - 읽기 실패 시 fallback 하지 않는다(SSOT가 흔들리면 전체 판단이 깨짐).
+          - 개인정보가 포함될 수 있으므로 여기서는 개별 행을 로그로 남기지 않는다.
+        """
+        pay = getattr(course, "payment_ssot", None)
+        if not pay:
+            return [], {"total": 0}
+
+        def _norm(s: str) -> str:
+            return audit_mod.normalize_cafe_nickname(str(s or "")).lower()
+
+        sheet_name = str(getattr(pay, "sheet_name", "") or "").strip()
+        header_row = int(getattr(pay, "header_row", 1) or 1)
+
+        header_range = f"{sheet_name}!{header_row}:{header_row}"
+        values = get_values(svc, pay.spreadsheet_id, header_range)
+        header = values[0] if (values and isinstance(values[0], list)) else []
+        header_norm = {_norm(str(v)): i for i, v in enumerate(header) if str(v or "").strip()}
+
+        def _idx(col_name: str) -> int:
+            k = _norm(col_name)
+            if not k:
+                return -1
+            return int(header_norm.get(k, -1))
+
+        idx_grade = _idx(pay.grade_col)
+        idx_nick = _idx(pay.nickname_col)
+        idx_id = _idx(pay.id_col)
+        idx_kind = _idx(pay.kind_col)
+
+        missing_cols: list[str] = []
+        if idx_id < 0:
+            missing_cols.append(str(pay.id_col))
+        if idx_nick < 0:
+            missing_cols.append(str(pay.nickname_col))
+        if idx_grade < 0:
+            missing_cols.append(str(pay.grade_col))
+        if idx_kind < 0:
+            missing_cols.append(str(pay.kind_col))
+        if missing_cols:
+            raise SystemExit(
+                f"결제 SSOT 헤더({sheet_name} {header_row}행)에서 컬럼을 찾지 못했어요: {', '.join(missing_cols)}"
+            )
+
+        # 데이터(헤더 다음 행부터) - 행 단위로 읽는다
+        # NOTE: row-only range는 trailing empty cells가 생략될 수 있으므로 index 접근 시 길이 체크 필요
+        data_start = header_row + 1
+        data_end = max(data_start, data_start + 5000)
+        data_range = f"{sheet_name}!{data_start}:{data_end}"
+        rows = get_values(svc, pay.spreadsheet_id, data_range)
+
+        exclude_raw = [str(x or "").strip() for x in (pay.exclude_kinds or []) if str(x or "").strip()]
+        exclude_keys = [_norm(x) for x in exclude_raw if _norm(x)]
+
+        def _cell(row: list, i: int) -> str:
+            if i < 0:
+                return ""
+            if i >= len(row):
+                return ""
+            return str(row[i] or "").strip()
+
+        def _should_exclude(kind_raw: str) -> bool:
+            k = _norm(kind_raw)
+            if not k:
+                return False
+            for ex in exclude_keys:
+                if ex and ex in k:
+                    return True
+            return False
+
+        stats: dict[str, int] = {
+            "total": 0,
+            "kept": 0,
+            "excluded": 0,
+            "missingId": 0,
+            "missingNickname": 0,
+            "deduped": 0,
+            "staff": 0,
+            "premium": 0,
+            "normal": 0,
+        }
+
+        by_id: dict[str, dict] = {}
+        order: list[str] = []
+
+        for offset, row in enumerate(rows or []):
+            if not isinstance(row, list):
+                continue
+            stats["total"] += 1
+
+            ssot_user_id = _cell(row, idx_id)
+            if not ssot_user_id:
+                stats["missingId"] += 1
+                continue
+
+            ssot_nick = _cell(row, idx_nick)
+            if not ssot_nick:
+                stats["missingNickname"] += 1
+
+            ssot_grade = _cell(row, idx_grade)
+            ssot_kind = _cell(row, idx_kind)
+
+            if _should_exclude(ssot_kind):
+                stats["excluded"] += 1
+                continue
+
+            ssot_track = audit_mod.classify_track_from_payment(ssot_grade, ssot_kind)
+            stats[ssot_track] = int(stats.get(ssot_track) or 0) + 1
+
+            rec = {
+                "ssotUserId": ssot_user_id,
+                "ssotNickname": ssot_nick,
+                "ssotGrade": ssot_grade,
+                "ssotKind": ssot_kind,
+                "ssotTrack": ssot_track,
+                "sourceRow": str(data_start + offset),
+            }
+
+            if ssot_user_id in by_id:
+                stats["deduped"] += 1
+                # 최신(더 아래 행)이 우선이라고 가정하고 overwrite
+                by_id[ssot_user_id] = rec
+            else:
+                by_id[ssot_user_id] = rec
+                order.append(ssot_user_id)
+
+        out: list[dict] = [by_id[i] for i in order if i in by_id]
+        stats["kept"] = len(out)
+        return out, stats
+
     def _infer_rooms_for_course(self, course_key: str, rooms: list[dict]) -> Tuple[Optional[dict], str]:
         grouped: dict[str, list[dict]] = {"chat": [], "notice": [], "premium": []}
         for r in rooms:
@@ -1029,6 +1166,22 @@ class CourseMembershipAuditWorker:
         sa_json = self._resolve_service_account_json()
         svc = build_sheets_client(sa_json)
 
+        # payment ssot (optional)
+        ssot_records: list[dict] = []
+        ssot_stats: dict[str, int] = {}
+        if getattr(course, "payment_ssot", None):
+            self._set_course_progress(course_key=course.course_key, stage="SSOT", message="결제 SSOT(결제 확인 시트) 불러오는 중", pct=78)
+            ssot_records, ssot_stats = self._fetch_payment_ssot_records(svc, course)
+            if ssot_records:
+                self._append_course_event(
+                    course_key=course.course_key,
+                    level="INFO",
+                    message=f"결제 SSOT {len(ssot_records)}명 불러옴(일반 {ssot_stats.get('normal',0)}, 프리미엄 {ssot_stats.get('premium',0)}, 운영진 {ssot_stats.get('staff',0)})",
+                    stage="SSOT",
+                    pct=82,
+                )
+                self._save_state()
+
         # build rows
         worker_info = {
             "intervalSec": str(interval_sec),
@@ -1047,12 +1200,14 @@ class CourseMembershipAuditWorker:
             for it in cafe_members
             if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
         }
+        ssot_nick_set = {str(r.get("ssotNickname") or "").strip() for r in (ssot_records or []) if isinstance(r, dict) and str(r.get("ssotNickname") or "").strip()}
+        canonical_cafe_nick_set = audit_mod.build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
         openchat_rows = audit_mod.build_openchat_raw_rows(
             course_key=course.course_key,
             fetched_at=openchat_fetched_at,
             room_infos=room_infos,
             members_by_room=members_by_room,
-            cafe_nick_set=cafe_nick_set,
+            cafe_nick_set=canonical_cafe_nick_set,
         )
         rules_rows = audit_mod.build_rules_raw_rows(
             course_key=course.course_key,
@@ -1071,14 +1226,16 @@ class CourseMembershipAuditWorker:
             room_infos=room_infos,
             members_by_room=members_by_room,
             openchat_fetched_at=openchat_fetched_at,
+            ssot_records=ssot_records,
         )
+        ssot_rows = audit_mod.build_ssot_raw_rows(course_key=course.course_key, fetched_at=now_iso, ssot_records=ssot_records) if ssot_records else [["courseKey", "fetchedAt", "ssotUserId", "ssotNickname", "ssotGrade", "ssotTrack", "ssotKind", "sourceRow"]]
 
         # upsert(no clear) + change history
         tabs = course.tabs
         log_tab = getattr(tabs, "audit_log", "") or "AUDIT_LOG"
         overview_tab = getattr(tabs, "overview", "") or "OVERVIEW"
         actions_tab = getattr(tabs, "actions", "") or "ACTIONS"
-        for tab in [overview_tab, actions_tab, tabs.cafe_raw, tabs.openchat_raw, tabs.rules_raw, tabs.audit, log_tab]:
+        for tab in [overview_tab, actions_tab, tabs.cafe_raw, tabs.openchat_raw, getattr(tabs, "ssot_raw", "") or "SSOT_RAW", tabs.rules_raw, tabs.audit, log_tab]:
             ensure_sheet_exists(svc, course.spreadsheet_id, tab)
         # overview 탭은 사용성을 위해 항상 "가장 앞"으로 이동한다.
         move_sheet_to_index(svc, course.spreadsheet_id, overview_tab, 0)
@@ -1122,6 +1279,20 @@ class CourseMembershipAuditWorker:
         _upsert_sheet_rows(
             svc=svc,
             spreadsheet_id=course.spreadsheet_id,
+            sheet_name=getattr(tabs, "ssot_raw", "") or "SSOT_RAW",
+            rows=ssot_rows,
+            key_cols=["ssotUserId"],
+            now_iso=now_iso,
+            extra_cols=extra_cols,
+            ignore_update_cols={"fetchedAt"},
+            log_fields=["ssotNickname", "ssotGrade", "ssotTrack", "present"],
+            log_rows=log_rows,
+            course_key=course.course_key,
+            max_detail_logs=0,
+        )
+        _upsert_sheet_rows(
+            svc=svc,
+            spreadsheet_id=course.spreadsheet_id,
             sheet_name=tabs.rules_raw,
             rows=rules_rows,
             key_cols=["key"],
@@ -1138,11 +1309,11 @@ class CourseMembershipAuditWorker:
             spreadsheet_id=course.spreadsheet_id,
             sheet_name=tabs.audit,
             rows=audit_rows,
-            key_cols=["cafeUserId"],
+            key_cols=["auditKey"],
             now_iso=now_iso,
             extra_cols=extra_cols,
             ignore_update_cols={"cafeUpdatedAt", "openchatUpdatedAt"},
-            log_fields=["cafeNickname", "grade", "track", "missingRooms", "auditStatus", "present"],
+            log_fields=["cafeNickname", "grade", "track", "ssotPresent", "inCafe", "missingRooms", "auditStatus", "present"],
             log_rows=log_rows,
             course_key=course.course_key,
         )
@@ -1180,6 +1351,7 @@ class CourseMembershipAuditWorker:
             audit_rows=audit_rows,
             openchat_rows=openchat_rows,
             recent_audit_log_rows=recent_logs,
+            ssot_records=ssot_records,
         )
         clear_values(svc, course.spreadsheet_id, overview_tab)
         update_values(svc, course.spreadsheet_id, overview_tab, overview_rows)
@@ -1194,6 +1366,7 @@ class CourseMembershipAuditWorker:
             room_infos=room_infos,
             audit_rows=audit_rows,
             openchat_rows=openchat_rows,
+            ssot_records=ssot_records,
         )
         clear_values(svc, course.spreadsheet_id, actions_tab)
         update_values(svc, course.spreadsheet_id, actions_tab, actions_rows)
