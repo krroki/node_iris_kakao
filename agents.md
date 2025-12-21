@@ -63,7 +63,7 @@
 - `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 - `docs/adr/ADR-0039-course-roster-v2-membership-audit.md` – 강의 운영 v2(카페 자동 갱신 + 등급 기반 참여 점검 + 통합 시트) 결정
-- `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2: 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear) 운영/설정
+- `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2: 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear) + OVERVIEW 액션 카드/닉네임 변경 요청(보조 매칭 포함)
 
 ---
 

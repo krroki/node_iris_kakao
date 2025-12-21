@@ -987,11 +987,18 @@ class CourseMembershipAuditWorker:
         }
 
         cafe_rows = audit_mod.build_cafe_raw_rows(course_key=course.course_key, cafe_snapshot=cafe_snapshot, rules=course.grade_rules)
+        cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
+        cafe_nick_set = {
+            str(it.get("cafeNickname") or "").strip()
+            for it in cafe_members
+            if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
+        }
         openchat_rows = audit_mod.build_openchat_raw_rows(
             course_key=course.course_key,
             fetched_at=openchat_fetched_at,
             room_infos=room_infos,
             members_by_room=members_by_room,
+            cafe_nick_set=cafe_nick_set,
         )
         rules_rows = audit_mod.build_rules_raw_rows(
             course_key=course.course_key,
@@ -1097,8 +1104,8 @@ class CourseMembershipAuditWorker:
         )
         clear_values(svc, course.spreadsheet_id, overview_tab)
         update_values(svc, course.spreadsheet_id, overview_tab, overview_rows)
-        # 상단 요약 + 테이블 헤더까지 고정(가독성)
-        set_sheet_frozen_rows(svc, course.spreadsheet_id, overview_tab, 9)
+        # 상단 요약 + 액션 카드 + 테이블 헤더까지 고정(가독성)
+        set_sheet_frozen_rows(svc, course.spreadsheet_id, overview_tab, 16)
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()
