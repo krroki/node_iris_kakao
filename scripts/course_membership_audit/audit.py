@@ -719,6 +719,7 @@ def build_actions_rows(
         target: str,
         action: str,
         *,
+        reason: str = "",
         room: str = "",
         rec: str = "",
         current: str = "",
@@ -728,6 +729,7 @@ def build_actions_rows(
                 "priority": int(priority),
                 "target": str(target or "").strip(),
                 "action": str(action or "").strip(),
+                "reason": str(reason or "").strip(),
                 "room": str(room or "").strip(),
                 "rec": str(rec or "").strip(),
                 "current": str(current or "").strip(),
@@ -742,13 +744,13 @@ def build_actions_rows(
         return f"진행률 {x}"
 
     if chat_inc:
-        _add(0, "사담방", "멤버 목록 다시 불러오기", room="사담방", current=_progress(chat_load))
+        _add(0, "사담방", "멤버 목록 다시 불러오기", reason="멤버 목록이 덜 불러와짐", room="사담방", current=_progress(chat_load))
     if notice_inc:
-        _add(0, "공지방", "멤버 목록 다시 불러오기", room="공지방", current=_progress(notice_load))
+        _add(0, "공지방", "멤버 목록 다시 불러오기", reason="멤버 목록이 덜 불러와짐", room="공지방", current=_progress(notice_load))
     if premium_inc:
-        _add(0, "프리미엄방", "멤버 목록 다시 불러오기", room="프리미엄방", current=_progress(premium_load))
+        _add(0, "프리미엄방", "멤버 목록 다시 불러오기", reason="멤버 목록이 덜 불러와짐", room="프리미엄방", current=_progress(premium_load))
     if cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
-        _add(0, "톡방", "닉네임이 ??? 로 깨져 보이는지 확인", current=f"{cipher_cnt}명")
+        _add(0, "톡방", "닉네임이 ??? 로 깨져 보이는지 확인", reason="닉네임이 ??? 로 표시됨", current=f"{cipher_cnt}명")
 
     room_order = {"사담방": 1, "공지방": 2, "프리미엄방": 3}
 
@@ -775,21 +777,31 @@ def build_actions_rows(
         current = _matched_nicks_for(cafe_nick)
 
         if (not in_cafe) and miss:
-            _add(1, cafe_nick, "카페 가입 확인 후 톡방 입장 안내", room=miss, current=current)
+            _add(1, cafe_nick, "카페 가입 확인 후 톡방 입장 안내", reason="카페 미가입 / 톡방 미입장", room=miss, current=current)
         elif not in_cafe:
-            _add(1, cafe_nick, "카페 가입 확인", current=current)
+            _add(1, cafe_nick, "카페 가입 확인", reason="카페 미가입", current=current)
         elif miss:
-            _add(1, cafe_nick, "톡방 입장 안내", room=miss, current=current)
+            _add(1, cafe_nick, "톡방 입장 안내", reason="톡방 미입장", room=miss, current=current)
 
         if st == "AMBIGUOUS":
-            _add(2, cafe_nick, "동명이인 확인", current=current)
+            _add(2, cafe_nick, "동명이인 확인", reason="동명이인 의심", current=current)
 
         if track == "normal" and in_premium:
-            _add(2, cafe_nick, "프리미엄방 정리 - 일반반", room="프리미엄방", current=current)
+            _add(2, cafe_nick, "프리미엄방 정리", reason="일반반인데 프리미엄방 참여중", room="프리미엄방", current=current)
 
         if cafe_nick in nick_change_groups:
             g = nick_change_groups.get(cafe_nick) if cafe_nick else None
             if isinstance(g, dict):
+                issues = sorted([str(x).strip() for x in (g.get("issues") or []) if str(x).strip()])
+                issue_map = {
+                    "슬래시(/)": "슬래시(/) 사용",
+                    "카페닉 변경": "카페닉 불일치",
+                    "이름 마스킹": "이름 마스킹 규칙 불일치",
+                    "형식": "형식 불일치",
+                    "괄호 없음": "괄호(카페닉) 없음",
+                }
+                issue_text = ", ".join([issue_map.get(x, x) for x in issues if x])
+
                 rooms = list(g.get("rooms") or [])
                 rooms_sorted = sorted([str(x).strip() for x in rooms if str(x).strip()], key=lambda x: (room_order.get(x, 9), x))
                 rooms_text = ", ".join(rooms_sorted)
@@ -809,7 +821,8 @@ def build_actions_rows(
                 _add(
                     2,
                     cafe_nick,
-                    "바꿀 닉네임으로 변경 요청",
+                    "닉네임 변경 요청",
+                    reason=issue_text,
                     room=rooms_text,
                     rec=rec,
                     current=ex_text or current,
@@ -825,7 +838,7 @@ def build_actions_rows(
             if not cafe_nick:
                 continue
             current = _matched_nicks_for(cafe_nick)
-            _add(2, cafe_nick, "결제 시트 확인", current=current)
+            _add(2, cafe_nick, "결제 시트 확인", reason="결제 기록 없음", current=current)
 
     # 3) 참여 확인 불가(닉네임)
     for key in sorted(list(unknown_groups.keys()), key=lambda x: normalize_cafe_nickname(x)):
@@ -847,6 +860,7 @@ def build_actions_rows(
             2,
             str(key or "").strip(),
             "카페 닉네임 확인",
+            reason="카페 명단에 없음",
             room=", ".join(rooms),
             rec=_recommend_nickname("", "", str(key or "").strip(), ""),
             current=current,
@@ -856,7 +870,14 @@ def build_actions_rows(
         if not isinstance(r, list) or len(r) < 2:
             continue
         room_label, nick = r[:2]
-        _add(2, str(nick or "").strip(), "카페 닉네임 확인", room=str(room_label or "").strip(), current=str(nick or "").strip())
+        _add(
+            2,
+            str(nick or "").strip(),
+            "카페 닉네임 확인",
+            reason="괄호(카페닉) 없음",
+            room=str(room_label or "").strip(),
+            current=str(nick or "").strip(),
+        )
 
     # 정렬/집계
     def _t(item: dict[str, object], k: str) -> str:
@@ -871,9 +892,9 @@ def build_actions_rows(
                 "카페 가입 확인 후 톡방 입장 안내": 30,
                 "카페 가입 확인": 40,
                 "톡방 입장 안내": 50,
-                "바꿀 닉네임으로 변경 요청": 60,
+                "닉네임 변경 요청": 60,
                 "동명이인 확인": 70,
-                "프리미엄방 정리 - 일반반": 80,
+                "프리미엄방 정리": 80,
                 "결제 시트 확인": 90,
                 "카페 닉네임 확인": 100,
             }.get(_t(it, "action"), 999),
@@ -896,7 +917,7 @@ def build_actions_rows(
 
     # "섹션(📌)"을 여러 번 반복하면 화면이 지저분해져서,
     # 단일 표 + "구분(지금/오늘/확인/정리)" 컬럼으로 단순화한다.
-    rows.append(["우선순위", "해야 할 일", "대상", "필요한 방", "바꿀 닉네임", "현재 닉네임"])
+    rows.append(["우선순위", "해야 할 일", "사유", "대상", "필요한 방", "바꿀 닉네임", "현재 닉네임"])
 
     def _one_line(s: str) -> str:
         parts = [x.strip() for x in str(s or "").splitlines() if x.strip()]
@@ -917,6 +938,7 @@ def build_actions_rows(
             [
                 label,
                 _t(it, "action"),
+                _t(it, "reason"),
                 _t(it, "target"),
                 _t(it, "room"),
                 _t(it, "rec"),
@@ -926,7 +948,7 @@ def build_actions_rows(
 
     # 아무 것도 없으면 최소 메시지 1행은 남긴다.
     if len(rows) <= 6:
-        rows.append(["정리", "", "없음", "", "", ""])
+        rows.append(["정리", "없음", "", "", "", "", ""])
 
     return rows
 

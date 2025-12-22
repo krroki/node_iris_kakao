@@ -108,7 +108,7 @@
     - `<crawler_repo>\config\settings.json`
   - 시트 탭(코스당 1개 스프레드시트 문서):
   - `CAFE_RAW` / `OPENCHAT_RAW` / `SSOT_RAW` / `RULES_RAW` / `AUDIT_VIEW` / `OVERVIEW` / `ACTIONS` / `AUDIT_LOG` (기본값, 코스별 override 가능)
-  - `ACTIONS`: 단일 표 “할 일 큐” + `우선순위(지금/오늘/확인/정리)` 컬럼(해야 할 일/대상/필요한 방/바꿀 닉네임/현재 닉네임)
+  - `ACTIONS`: 단일 표 “할 일 큐” + `우선순위(지금/오늘/확인/정리)` 컬럼(해야 할 일/사유/대상/필요한 방/바꿀 닉네임/현재 닉네임)
 - 상태/락:
   - `node-iris-app/data/course_membership_audit_worker_status.json`
   - `node-iris-app/data/course_membership_audit_worker_state.json`
