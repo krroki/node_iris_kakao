@@ -648,7 +648,7 @@ def apply_actions_sheet_format(
         if not isinstance(row, list) or not row:
             continue
         a0 = _cell(row, 0)
-        if summary_row is None and a0.startswith("지금 "):
+        if summary_row is None and (a0.startswith("지금 ") or a0.startswith("총 ")):
             summary_row = i
         if header_row is None and a0 in ("구분", "대상", "분류", "우선순위"):
             header_row = i

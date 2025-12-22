@@ -902,17 +902,44 @@ def build_actions_rows(
         )
     )
 
-    counts: dict[str, int] = {"지금": 0, "오늘": 0, "확인": 0, "정리": 0}
-    by_label: dict[str, list[dict[str, object]]] = {"지금": [], "오늘": [], "확인": [], "정리": []}
-    for it in action_items:
-        p = int(it.get("priority") or 9)
-        label = _priority_label(p)
-        if label not in by_label:
-            label = "정리"
-        by_label[label].append(it)
-        counts[label] = int(counts.get(label) or 0) + 1
+    # 상단 요약(운영자용): '우선순위' 건수 대신, 실제 할 일 종류 기준으로 요약한다.
+    # - 0/0/0 같은 값은 의미가 없어서, "무엇을 하면 되는지"로 바로 읽히게 만든다.
+    def _count_actions(names: list[str]) -> int:
+        s = {str(x or "").strip() for x in (names or []) if str(x or "").strip()}
+        if not s:
+            return 0
+        return sum(1 for it in action_items if _t(it, "action") in s)
 
-    rows.append([f"지금 {counts['지금']}", f"오늘 {counts['오늘']}", f"확인 {counts['확인']}", f"정리 {counts['정리']}"])
+    total_cnt = len(action_items)
+    entry_cnt = _count_actions(["카페 가입 확인 후 톡방 입장 안내", "카페 가입 확인", "톡방 입장 안내"])
+    nick_cnt = _count_actions(["닉네임 변경 요청"])
+    pay_cnt = _count_actions(["결제 시트 확인"])
+    cafe_nick_cnt = _count_actions(["카페 닉네임 확인"])
+    perm_cnt = _count_actions(["프리미엄방 정리"])
+    data_cnt = _count_actions(["멤버 목록 다시 불러오기", "닉네임이 ??? 로 깨져 보이는지 확인"])
+    other_cnt = max(0, total_cnt - (entry_cnt + nick_cnt + pay_cnt + cafe_nick_cnt + perm_cnt + data_cnt))
+
+    def _s(label: str, n: int) -> str:
+        return f"{label} {n}건" if int(n) > 0 else ""
+
+    tail_parts: list[str] = []
+    if int(data_cnt) > 0:
+        tail_parts.append(_s("데이터 점검", int(data_cnt)))
+    if int(other_cnt) > 0:
+        tail_parts.append(_s("기타", int(other_cnt)))
+    tail = " · ".join([x for x in tail_parts if x])
+
+    rows.append(
+        [
+            f"총 {total_cnt}건",
+            _s("입장 안내", entry_cnt),
+            _s("닉네임 변경", nick_cnt),
+            _s("결제 확인", pay_cnt),
+            _s("카페닉 확인", cafe_nick_cnt),
+            _s("권한 정리", perm_cnt),
+            tail,
+        ]
+    )
     rows.append([""])
 
     # "섹션(📌)"을 여러 번 반복하면 화면이 지저분해져서,
