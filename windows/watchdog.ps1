@@ -32,8 +32,8 @@ param(
   # 정적 자산 404(빈 화면) 같은 케이스는 1~2회 체크만 실패해도 실사용에 문제가 되므로 기본 임계치를 낮춘다.
   [int]$WebFailThreshold = 2,
   # Web UI의 "봇/워커 프로세스" 카드가 실패하는 상태(= /api/bot/processes 장애)를 감지해 web만 자동 복구한다.
-  [int]$BotProcessesApiCheckIntervalSec = 60,
-  [int]$BotProcessesApiFailThreshold = 3,
+  [int]$BotProcessesApiCheckIntervalSec = 30,
+  [int]$BotProcessesApiFailThreshold = 2,
   [int]$BotProcessesApiTimeoutSec = 6,
   [int]$KbRestartCooldownSec = 180,
   [int]$KbPostgresEnsureCooldownSec = 60,
