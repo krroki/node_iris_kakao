@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import atexit
 import os
+import re
 import subprocess
 import threading
 import time
@@ -944,6 +945,22 @@ class CourseMembershipAuditWorker:
                 return ""
             return str(row[i] or "").strip()
 
+        def _split_nickname_change(raw: str) -> tuple[str, list[str]]:
+            """
+            운영자가 결제 시트에 'old->new' 형태로 기록한 경우를 지원한다.
+            - 현재 닉네임: 마지막 토큰(= new)
+            - 이전 닉네임: 그 이전 토큰들(= old...)
+            """
+            s = str(raw or "").strip()
+            if not s:
+                return "", []
+            parts = [p.strip() for p in re.split(r"\s*(?:->|→)\s*", s) if str(p or "").strip()]
+            if len(parts) <= 1:
+                return s, []
+            cur = parts[-1]
+            prev = [p for p in parts[:-1] if p]
+            return cur, prev
+
         def _should_exclude(kind_raw: str) -> bool:
             k = _norm(kind_raw)
             if not k:
@@ -978,7 +995,8 @@ class CourseMembershipAuditWorker:
                 stats["missingId"] += 1
                 continue
 
-            ssot_nick = _cell(row, idx_nick)
+            ssot_nick_raw = _cell(row, idx_nick)
+            ssot_nick, ssot_aliases = _split_nickname_change(ssot_nick_raw)
             if not ssot_nick:
                 stats["missingNickname"] += 1
 
@@ -995,6 +1013,7 @@ class CourseMembershipAuditWorker:
             rec = {
                 "ssotUserId": ssot_user_id,
                 "ssotNickname": ssot_nick,
+                "ssotNicknameAliases": ssot_aliases,
                 "ssotGrade": ssot_grade,
                 "ssotKind": ssot_kind,
                 "ssotTrack": ssot_track,
@@ -1200,7 +1219,13 @@ class CourseMembershipAuditWorker:
             for it in cafe_members
             if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
         }
-        ssot_nick_set = {str(r.get("ssotNickname") or "").strip() for r in (ssot_records or []) if isinstance(r, dict) and str(r.get("ssotNickname") or "").strip()}
+        ssot_nick_set: set[str] = set()
+        for r in (ssot_records or []) if isinstance(ssot_records, list) else []:
+            if not isinstance(r, dict):
+                continue
+            for nn in audit_mod.iter_ssot_nickname_variants(r):
+                if nn:
+                    ssot_nick_set.add(str(nn).strip())
         canonical_cafe_nick_set = audit_mod.build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
         openchat_rows = audit_mod.build_openchat_raw_rows(
             course_key=course.course_key,

@@ -97,6 +97,65 @@ def build_canonical_cafe_nick_set(cafe_nicks: set[str], ssot_nicks: set[str]) ->
     return set(by_norm.values())
 
 
+def iter_ssot_nickname_variants(ssot_record: dict) -> list[str]:
+    """
+    결제/수기 SSOT에서 한 사람의 닉네임이 변경된 경우(예: old->new) 지원을 위해,
+    현재 닉네임 + 이전 닉네임(aliases)을 모두 반환한다.
+    """
+    if not isinstance(ssot_record, dict):
+        return []
+    out: list[str] = []
+    cur = str(ssot_record.get("ssotNickname") or "").strip()
+    if cur:
+        out.append(cur)
+    aliases = ssot_record.get("ssotNicknameAliases")
+    if isinstance(aliases, list):
+        for a in aliases:
+            s = str(a or "").strip()
+            if s and s not in out:
+                out.append(s)
+    elif isinstance(aliases, str):
+        # 방어적: 과거 포맷(문자열) 호환
+        for a in [x.strip() for x in aliases.split(",") if x.strip()]:
+            if a and a not in out:
+                out.append(a)
+    return out
+
+
+def build_ssot_nickname_alias_map(ssot_records: list[dict]) -> dict[str, str]:
+    """
+    ssotNicknameAliases(이전 닉) -> ssotNickname(현재 닉) 매핑을 만든다.
+    - 키는 normalize(공백 제거) 기준으로 저장한다.
+    - 같은 alias가 여러 current로 매핑되면(충돌) 안전을 위해 해당 alias는 매핑에서 제거한다.
+    """
+    by_alias_norm: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for r in ssot_records or []:
+        if not isinstance(r, dict):
+            continue
+        cur = str(r.get("ssotNickname") or "").strip()
+        if not cur:
+            continue
+        cur_norm = normalize_cafe_nickname(cur)
+        if not cur_norm:
+            continue
+        for a in iter_ssot_nickname_variants(r)[1:]:
+            alias = str(a or "").strip()
+            if not alias:
+                continue
+            alias_norm = normalize_cafe_nickname(alias)
+            if not alias_norm or alias_norm == cur_norm:
+                continue
+            prev = by_alias_norm.get(alias_norm)
+            if prev and prev != cur:
+                conflicts.add(alias_norm)
+                continue
+            by_alias_norm[alias_norm] = cur
+    for k in conflicts:
+        by_alias_norm.pop(k, None)
+    return by_alias_norm
+
+
 def parse_cafe_nickname_from_openchat(nickname: str) -> tuple[str, str]:
     """
     Returns:
@@ -281,6 +340,510 @@ def build_ssot_raw_rows(*, course_key: str, fetched_at: str, ssot_records: list[
                 str(r.get("sourceRow") or "").strip(),
             ]
         )
+    return rows
+
+
+def build_actions_rows(
+    *,
+    course_key: str,
+    now_iso: str,
+    cafe_snapshot: dict,
+    room_infos: dict[str, dict],
+    audit_rows: List[List[str]],
+    openchat_rows: List[List[str]],
+    ssot_records: list[dict] | None = None,
+    max_rows_per_section: int = 300,
+    max_nickname_issue_rows: int = 600,
+) -> List[List[str]]:
+    """
+    ACTIONS 탭(derived view)
+    - "사용 방법" 같은 안내 문장은 넣지 않는다.
+    - 운영자가 바로 처리할 '할 일'만 보여준다.
+    """
+
+    # --- SSOT alias + canonical cafe nick set ---
+    cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
+    cafe_nick_set = {
+        str(it.get("cafeNickname") or "").strip()
+        for it in cafe_members
+        if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
+    }
+
+    ssot_list = [r for r in (ssot_records or []) if isinstance(r, dict)]
+    ssot_nick_set: set[str] = set()
+    for r in ssot_list:
+        for nn in iter_ssot_nickname_variants(r):
+            if nn:
+                ssot_nick_set.add(nn)
+    ssot_alias_map = build_ssot_nickname_alias_map(ssot_list)
+    cafe_nick_set = build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
+
+    # --- helpers ---
+    def _h2i(header: list[str]) -> dict[str, int]:
+        return {str(h).strip(): i for i, h in enumerate(header or []) if str(h).strip()}
+
+    def _cell(row: list[str], idx: int | None) -> str:
+        if idx is None:
+            return ""
+        return str(row[idx] if idx < len(row) else "").strip()
+
+    def _is_true(v: str) -> bool:
+        return str(v or "").strip().upper() == "TRUE"
+
+    def _track_label(s: str) -> str:
+        x = str(s or "").strip().lower()
+        if x == "premium":
+            return "프리미엄"
+        if x == "staff":
+            return "운영진"
+        if x == "normal":
+            return "일반"
+        return x or ""
+
+    def _priority_label(p: int) -> str:
+        n = int(p)
+        if n <= 0:
+            return "P0"
+        if n == 1:
+            return "P1"
+        if n == 2:
+            return "P2"
+        return "P3"
+
+    def _prio_key(s: str) -> int:
+        x = str(s or "").strip().upper()
+        if x == "P0":
+            return 0
+        if x == "P1":
+            return 1
+        if x == "P2":
+            return 2
+        return 3
+
+    def _join_short(xs: list[str], *, limit: int = 2) -> str:
+        ys = [str(x).strip() for x in (xs or []) if str(x).strip()]
+        if not ys:
+            return ""
+        if len(ys) <= limit:
+            return ", ".join(ys)
+        return ", ".join(ys[:limit]) + f" 외 {len(ys) - limit}명"
+
+    # --- room completeness (P0) ---
+    def _room_load(rt: str) -> tuple[str, bool]:
+        info = room_infos.get(rt) if isinstance(room_infos.get(rt), dict) else {}
+        active = info.get("activeMembersCount")
+        loaded = info.get("loadedMembersCount")
+        try:
+            a = int(active) if active is not None and str(active).strip() != "" else None
+        except Exception:
+            a = None
+        try:
+            l = int(loaded) if loaded is not None and str(loaded).strip() != "" else None
+        except Exception:
+            l = None
+        incomplete = bool(info.get("incomplete")) or (a is not None and l is not None and l < a)
+        if a is None and l is None:
+            return "—", incomplete
+        if a is None:
+            return f"{l}/—", incomplete
+        if l is None:
+            return f"—/{a}", incomplete
+        return f"{l}/{a}", incomplete
+
+    chat_load, chat_inc = _room_load("chat")
+    notice_load, notice_inc = _room_load("notice")
+    premium_load, premium_inc = _room_load("premium")
+
+    # --- audit view rows ---
+    audit_header = audit_rows[0] if audit_rows else []
+    ai = _h2i(audit_header)
+
+    def _d(row: list[str]) -> dict[str, str]:
+        return {
+            "status": _cell(row, ai.get("auditStatus")),
+            "cafeNickname": _cell(row, ai.get("cafeNickname")),
+            "grade": _cell(row, ai.get("grade")),
+            "track": _cell(row, ai.get("track")),
+            "ssotPresent": _cell(row, ai.get("ssotPresent")),
+            "inCafe": _cell(row, ai.get("inCafe")),
+            "missingRooms": _cell(row, ai.get("missingRooms")),
+            "in_chat": _cell(row, ai.get("in_chat")),
+            "in_notice": _cell(row, ai.get("in_notice")),
+            "in_premium": _cell(row, ai.get("in_premium")),
+        }
+
+    records: list[dict[str, str]] = [_d(r) for r in (audit_rows[1:] if len(audit_rows) > 1 else []) if isinstance(r, list)]
+    has_ssot = ai.get("ssotPresent") is not None
+    ssot_view = [d for d in records if _is_true(d.get("ssotPresent", ""))] if has_ssot else list(records)
+    ssot_missing = [d for d in records if has_ssot and (not _is_true(d.get("ssotPresent", "")))]
+
+    staff_norm_set = {
+        normalize_cafe_nickname(str(d.get("cafeNickname") or "").strip())
+        for d in records
+        if str(d.get("track") or "").strip().lower() == "staff" and str(d.get("cafeNickname") or "").strip()
+    }
+
+    # --- openchat nickname issues + examples ---
+    oc_header = openchat_rows[0] if openchat_rows else []
+    oi = _h2i(oc_header)
+    idx_room_type = oi.get("roomType")
+    idx_room_label = oi.get("roomLabel")
+    idx_openchat_nick = oi.get("openchatNickname")
+    idx_parsed = oi.get("parsedCafeNickname")
+    idx_parsed_src = oi.get("parsedCafeNicknameSource")
+    idx_resolved = oi.get("resolvedCafeNickname")
+    idx_name_mask_prefix = oi.get("nameMaskPrefix")
+    idx_name_mask_ok = oi.get("nameMaskOk")
+
+    openchat_by_cafe: dict[str, dict[str, list[str]]] = {}
+
+    def _attach_openchat(cafe_nick: str, rt: str, openchat_nick: str) -> None:
+        cn = str(cafe_nick or "").strip()
+        if not cn:
+            return
+        t = str(rt or "").strip().lower()
+        if t not in ("chat", "notice", "premium"):
+            return
+        nn = str(openchat_nick or "").strip()
+        if not nn:
+            return
+        if cn not in openchat_by_cafe:
+            openchat_by_cafe[cn] = {"chat": [], "notice": [], "premium": []}
+        openchat_by_cafe[cn][t].append(nn)
+
+    _cipher_re = re.compile(r"^[A-Za-z0-9+/=]{16,}$")
+
+    def _looks_like_cipher_nick(s: str) -> bool:
+        x = str(s or "").strip()
+        if not x:
+            return False
+        if "(" in x or ")" in x:
+            return False
+        if re.search(r"[가-힣ㄱ-ㅎㅏ-ㅣ]", x):
+            return False
+        if not _cipher_re.match(x):
+            return False
+        if ("=" in x) or ("/" in x) or ("+" in x):
+            return True
+        return False
+
+    def _looks_like_staff_nick(s: str) -> bool:
+        x = str(s or "").strip()
+        if not x:
+            return False
+        if "STAFF" in x.upper():
+            return True
+        for kw in ("스태프", "스탭", "운영진", "운영자", "부운영", "매니저", "조교", "카페스탭"):
+            if kw in x:
+                return True
+        return False
+
+    def _recommend_nickname(openchat_nick: str, parsed_src: str, resolved_cafe_nick: str, name_mask_prefix: str) -> str:
+        cafe_nick = str(resolved_cafe_nick or "").strip()
+        if not cafe_nick:
+            return ""
+        src = str(parsed_src or "").strip().lower()
+        if src == "slash" and "/" in str(openchat_nick or ""):
+            prefix = str(openchat_nick).rsplit("/", 1)[0].strip()
+            if prefix and is_valid_name_mask_prefix(prefix):
+                return f"{prefix}({cafe_nick})"
+        if src == "paren":
+            prefix = str(name_mask_prefix or "").strip()
+            if prefix and is_valid_name_mask_prefix(prefix):
+                return f"{prefix}({cafe_nick})"
+        return f"이름 사이 @({cafe_nick})"
+
+    nick_change_groups: dict[str, dict[str, object]] = {}
+    unknown_groups: dict[str, dict[str, object]] = {}
+    unmatched_rows: list[list[str]] = []
+    cipher_cnt = 0
+    total_openchat_rows = max(0, len(openchat_rows) - 1)
+
+    for r in openchat_rows[1:] if len(openchat_rows) > 1 else []:
+        rt = _cell(r, idx_room_type)
+        room_label = _cell(r, idx_room_label) or ROOM_LABEL.get(str(rt or "").strip().lower(), str(rt or "").strip())
+        nick = _cell(r, idx_openchat_nick)
+        parsed = _cell(r, idx_parsed)
+        parsed_src = _cell(r, idx_parsed_src)
+        resolved_raw = _cell(r, idx_resolved)
+        name_mask_prefix = _cell(r, idx_name_mask_prefix)
+        name_mask_ok = str(_cell(r, idx_name_mask_ok) or "").strip().upper()
+
+        resolved = str(resolved_raw or "").strip()
+        if resolved:
+            k0 = normalize_cafe_nickname(resolved)
+            resolved = str(ssot_alias_map.get(k0) or resolved).strip()
+
+        if resolved:
+            _attach_openchat(resolved, rt, nick)
+        elif parsed and parsed in cafe_nick_set:
+            _attach_openchat(parsed, rt, nick)
+
+        # 운영진 닉네임은 액션/이슈에서 제외
+        if resolved:
+            rk = normalize_cafe_nickname(resolved)
+            if rk and rk in staff_norm_set:
+                continue
+        if _looks_like_staff_nick(nick):
+            continue
+
+        # 닉네임 형식/카페닉 변경/슬래시 등
+        needs_change = False
+        if resolved:
+            ps = str(parsed_src or "").strip().lower()
+            if ps != "paren":
+                needs_change = True
+            elif name_mask_ok != "TRUE":
+                needs_change = True
+            elif parsed and str(parsed).strip() != resolved:
+                needs_change = True
+
+        if resolved and needs_change:
+            cn = resolved
+            g = nick_change_groups.get(cn)
+            if not isinstance(g, dict):
+                g = {"rooms": set(), "issues": set(), "examples": {}, "bestRec": ""}
+                nick_change_groups[cn] = g
+            if isinstance(g.get("rooms"), set):
+                g["rooms"].add(str(room_label or "").strip())
+
+            src = str(parsed_src or "").strip().lower()
+            if src == "slash":
+                issue = "슬래시(/)"
+            elif src == "paren" and parsed and str(parsed).strip() != resolved:
+                issue = "카페닉 변경"
+            elif src == "paren" and name_mask_ok != "TRUE":
+                issue = "이름 마스킹"
+            elif src == "paren":
+                issue = "형식"
+            else:
+                issue = "괄호 없음"
+            if isinstance(g.get("issues"), set):
+                g["issues"].add(issue)
+
+            if isinstance(g.get("examples"), dict):
+                rl = str(room_label or "").strip()
+                if rl and rl not in g["examples"]:
+                    g["examples"][rl] = str(nick or "").strip()
+
+            rec = _recommend_nickname(nick, parsed_src, resolved, name_mask_prefix)
+            cur_best = str(g.get("bestRec") or "").strip()
+            if rec and ((not cur_best) or (rec.startswith("이름 사이 @") and not cur_best.startswith("이름 사이 @"))):
+                g["bestRec"] = rec
+            continue
+
+        if not resolved:
+            if parsed:
+                g = unknown_groups.get(parsed)
+                if not isinstance(g, dict):
+                    g = {"rooms": set(), "examples": {}}
+                    unknown_groups[parsed] = g
+                if isinstance(g.get("rooms"), set):
+                    g["rooms"].add(str(room_label or "").strip())
+                if isinstance(g.get("examples"), dict):
+                    rl = str(room_label or "").strip()
+                    if rl and rl not in g["examples"]:
+                        g["examples"][rl] = str(nick or "").strip()
+            else:
+                if _looks_like_cipher_nick(nick):
+                    cipher_cnt += 1
+                else:
+                    unmatched_rows.append([room_label, nick])
+
+    if max_nickname_issue_rows > 0:
+        # 이슈가 너무 많으면 표가 망가져서 제한한다.
+        max_n = int(max_nickname_issue_rows)
+        # nick_change_groups는 person table에서만 쓰이므로 그대로 두고, unmatched/unknown만 제한한다.
+        unmatched_rows = unmatched_rows[:max_n]
+        # unknown_groups는 key 수가 커질 수 있으니 예시/방 합치기만 하고 rows 출력에서 제한한다.
+
+    def _room_mark_simple(track: str, rt: str, in_room: bool) -> str:
+        t = str(track or "").strip().lower()
+        r = str(rt or "").strip().lower()
+        if r in ("chat", "notice"):
+            required = t in ("normal", "premium")
+            if required:
+                inc = chat_inc if r == "chat" else notice_inc
+                if inc:
+                    return "목록 미완료"
+                return "참여" if in_room else "미참여"
+            return "참여" if in_room else ""
+        if r == "premium":
+            if t == "premium":
+                if premium_inc:
+                    return "목록 미완료"
+                return "참여" if in_room else "미참여"
+            if t == "normal":
+                return "참여(확인)" if in_room else "정상"
+            return "참여" if in_room else ""
+        return ""
+
+    def _matched_nicks_for(cafe_nick: str) -> str:
+        cn = str(cafe_nick or "").strip()
+        m = openchat_by_cafe.get(cn) if cn else None
+        if not isinstance(m, dict):
+            return ""
+        parts: list[str] = []
+        for rt in ["chat", "notice", "premium"]:
+            xs = m.get(rt) if isinstance(m.get(rt), list) else []
+            s = _join_short([str(x) for x in xs], limit=2)
+            if s:
+                parts.append(f"{ROOM_LABEL.get(rt, rt)}: {s}")
+        return "\n".join(parts)
+
+    # --- build rows ---
+    rows: List[List[str]] = []
+    rows.append([f"{course_key} - 해야 할 일"])
+    rows.append([f"마지막 업데이트 {now_iso}"])
+    rows.append([""])
+
+    p0_rows: list[list[str]] = []
+    if chat_inc:
+        p0_rows.append([_priority_label(0), "사담방", "멤버 목록 갱신", chat_load])
+    if notice_inc:
+        p0_rows.append([_priority_label(0), "공지방", "멤버 목록 갱신", notice_load])
+    if premium_inc:
+        p0_rows.append([_priority_label(0), "프리미엄방", "멤버 목록 갱신", premium_load])
+    if cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
+        p0_rows.append([_priority_label(0), "톡방 닉네임", "닉네임 확인", f"{cipher_cnt}명"])
+
+    person_rows: list[list[str]] = []
+
+    def _push_person(d: dict[str, str], *, extra_tasks: list[str] | None = None, force_priority: int | None = None) -> None:
+        track = str(d.get("track") or "").strip().lower()
+        if track == "staff":
+            return
+
+        st = str(d.get("status") or "").strip().upper()
+        cafe_nick = str(d.get("cafeNickname") or "").strip()
+        in_cafe = _is_true(d.get("inCafe", "TRUE"))
+        in_chat = _is_true(d.get("in_chat", ""))
+        in_notice = _is_true(d.get("in_notice", ""))
+        in_premium = _is_true(d.get("in_premium", ""))
+
+        tasks: list[str] = []
+        priority = 3
+
+        if st == "INCOMPLETE":
+            tasks.append("멤버 목록 갱신")
+            priority = min(priority, 0)
+        if not in_cafe:
+            tasks.append("카페 가입 확인")
+            priority = min(priority, 1)
+
+        miss = str(d.get("missingRooms") or "").strip()
+        if miss:
+            for part in [x.strip() for x in miss.split(",") if x.strip()]:
+                tasks.append(f"{part} 입장")
+            priority = min(priority, 1)
+
+        if st == "AMBIGUOUS":
+            tasks.append("동명이인 확인")
+            priority = min(priority, 2)
+
+        if track == "normal" and in_premium:
+            tasks.append("프리미엄방 권한 확인")
+            priority = min(priority, 2)
+
+        if cafe_nick and cafe_nick in nick_change_groups:
+            tasks.append("닉네임 수정")
+            priority = min(priority, 2)
+
+        if extra_tasks:
+            for t in extra_tasks:
+                s = str(t or "").strip()
+                if s and s not in tasks:
+                    tasks.append(s)
+            if force_priority is not None:
+                priority = min(priority, int(force_priority))
+
+        if not tasks:
+            return
+
+        rec = ""
+        g = nick_change_groups.get(cafe_nick) if cafe_nick else None
+        if isinstance(g, dict):
+            rec = str(g.get("bestRec") or "").strip()
+
+        person_rows.append(
+            [
+                _priority_label(int(force_priority) if force_priority is not None else priority),
+                cafe_nick,
+                _track_label(track),
+                "가입" if in_cafe else "미가입",
+                _room_mark_simple(track, "chat", in_chat),
+                _room_mark_simple(track, "notice", in_notice),
+                _room_mark_simple(track, "premium", in_premium),
+                "\n".join(tasks),
+                _matched_nicks_for(cafe_nick),
+                rec,
+            ]
+        )
+
+    for d in ssot_view:
+        _push_person(d)
+    if has_ssot:
+        for d in ssot_missing:
+            _push_person(d, extra_tasks=["결제 시트 확인"], force_priority=2)
+
+    person_rows.sort(key=lambda r: (_prio_key(r[0] if r else ""), normalize_cafe_nickname(str(r[1] if len(r) > 1 else ""))))
+
+    p0_cnt = len(p0_rows)
+    p1_cnt = sum(1 for r in person_rows if r and str(r[0]).strip().upper() == "P1")
+    p2_cnt = sum(1 for r in person_rows if r and str(r[0]).strip().upper() == "P2")
+    p3_cnt = sum(1 for r in person_rows if r and str(r[0]).strip().upper() == "P3")
+
+    rows.append(["P0", str(p0_cnt), "P1", str(p1_cnt), "P2", str(p2_cnt), "P3", str(p3_cnt)])
+    rows.append([""])
+
+    rows.append(["📌 먼저"])
+    rows.append(["우선", "대상", "해야 할 일", "현재 상태"])
+    if p0_rows:
+        rows.extend(p0_rows)
+    else:
+        rows.append(["P0", "없음", "", ""])
+
+    rows.append([""])
+    rows.append(["📌 사람별"])
+    rows.append(["우선", "카페닉", "구분", "카페", "사담방", "공지방", "프리미엄방", "해야 할 일", "현재 톡닉", "요청 닉네임"])
+    if person_rows:
+        limit = max(0, int(max_rows_per_section))
+        rows.extend(person_rows[:limit] if limit else [])
+        if limit and len(person_rows) > limit:
+            rows.append([f"(표시 제한: {limit}/{len(person_rows)})", "", "", "", "", "", "", "", "", ""])
+    else:
+        rows.append(["P3", "없음", "", "", "", "", "", "", "", ""])
+
+    rows.append([""])
+    rows.append(["🧩 참여 확인 불가(닉네임)"])
+    rows.append(["우선", "방", "현재 톡닉", "추출값", "해야 할 일", "요청 닉네임"])
+
+    issue_rows: list[list[str]] = []
+    room_order = {"사담방": 1, "공지방": 2, "프리미엄방": 3}
+
+    # 괄호/슬래시에서 추출된 카페닉이 카페 명단에 없는 경우
+    for key in sorted(list(unknown_groups.keys()), key=lambda x: normalize_cafe_nickname(x)):
+        g = unknown_groups.get(key) or {}
+        rooms = sorted([str(x).strip() for x in (g.get("rooms") or []) if str(x).strip()], key=lambda x: (room_order.get(x, 9), x))
+        ex = g.get("examples") if isinstance(g.get("examples"), dict) else {}
+        sample = str(ex.get(rooms[0]) or "").strip() if rooms else ""
+        issue_rows.append(["P2", ", ".join(rooms), sample, key, "카페닉 확인", f"이름 사이 @({key})"])
+
+    # 카페닉을 추출할 수 없는 경우
+    for r in unmatched_rows:
+        if not isinstance(r, list) or len(r) < 2:
+            continue
+        room_label, nick = r[:2]
+        issue_rows.append(["P2", str(room_label or "").strip(), str(nick or "").strip(), "", "닉네임 확인", ""])
+
+    if issue_rows:
+        limit2 = max(0, int(max_rows_per_section))
+        rows.extend(issue_rows[:limit2] if limit2 else [])
+        if limit2 and len(issue_rows) > limit2:
+            rows.append([f"(표시 제한: {limit2}/{len(issue_rows)})", "", "", "", "", ""])
+    else:
+        rows.append(["P3", "없음", "", "", "", ""])
+
     return rows
 
 
@@ -494,8 +1057,13 @@ def build_audit_view_rows(
         if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
     }
     ssot_list = [r for r in (ssot_records or []) if isinstance(r, dict)]
-    ssot_nick_set = {str(r.get("ssotNickname") or "").strip() for r in ssot_list if str(r.get("ssotNickname") or "").strip()}
+    ssot_nick_set: set[str] = set()
+    for r in ssot_list:
+        for nn in iter_ssot_nickname_variants(r):
+            if nn:
+                ssot_nick_set.add(nn)
     canonical_cafe_nick_set = build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
+    ssot_alias_map = build_ssot_nickname_alias_map(ssot_list)
     cafe_nick_index = build_cafe_nickname_index(canonical_cafe_nick_set)
 
     # room completeness(방 단위): requiredRooms에만 적용해야 normal/premium 판정이 과도하게 INCOMPLETE로 굳지 않는다.
@@ -514,6 +1082,10 @@ def build_audit_view_rows(
             cafe_nick, _src = resolve_cafe_nickname_from_openchat(nick, canonical_cafe_nick_set, cafe_nick_index)
             if not cafe_nick:
                 continue
+            # 결제 SSOT에서 'old->new'로 닉 변경이 기록된 경우, old도 같은 사람으로 인식되게 canonicalize한다.
+            k0 = normalize_cafe_nickname(cafe_nick)
+            canonical = ssot_alias_map.get(k0) if k0 else None
+            cafe_nick = canonical or cafe_nick
             k = normalize_cafe_nickname(cafe_nick)
             if not k:
                 continue
@@ -594,12 +1166,12 @@ def build_audit_view_rows(
     # ssot index: norm nick -> record
     ssot_by_norm: dict[str, dict] = {}
     for r in ssot_list:
-        nn = str(r.get("ssotNickname") or "").strip()
-        k = normalize_cafe_nickname(nn)
-        if not k:
-            continue
-        if k not in ssot_by_norm:
-            ssot_by_norm[k] = r
+        for nn in iter_ssot_nickname_variants(r):
+            k = normalize_cafe_nickname(nn)
+            if not k:
+                continue
+            if k not in ssot_by_norm:
+                ssot_by_norm[k] = r
 
     # 1) SSOT(결제) 기준 멤버
     for r in ssot_list:
@@ -607,10 +1179,21 @@ def build_audit_view_rows(
         ssot_kind = str(r.get("ssotKind") or "").strip()
         ssot_grade = str(r.get("ssotGrade") or "").strip()
         ssot_track = str(r.get("ssotTrack") or "").strip() or classify_track_from_payment(ssot_grade, ssot_kind)
-        ssot_nick = str(r.get("ssotNickname") or "").strip()
+        variants = iter_ssot_nickname_variants(r)
+        ssot_nick = str((variants[0] if variants else "") or "").strip()
+        alias_norms = [normalize_cafe_nickname(x) for x in (variants[1:] if len(variants) > 1 else []) if normalize_cafe_nickname(x)]
         norm = normalize_cafe_nickname(ssot_nick)
+        if not norm and alias_norms:
+            # current 닉이 비어있는 예외 케이스: alias를 임시 식별자로 사용
+            norm = alias_norms[0]
+            ssot_nick = str(variants[1] if len(variants) > 1 else "").strip()
 
         cafe_match = (cafe_by_norm.get(norm) or []) if norm else []
+        if not cafe_match and alias_norms:
+            for ak in alias_norms:
+                cafe_match = cafe_by_norm.get(ak) or []
+                if cafe_match:
+                    break
         in_cafe = bool(cafe_match)
         cafe_user_id = str((cafe_match[0].get("cafeUserId") if cafe_match else "") or "").strip()
         cafe_grade_actual = str((cafe_match[0].get("grade") if cafe_match else "") or "").strip()
@@ -763,15 +1346,15 @@ def build_overview_rows(
     def _status_label(s: str) -> str:
         x = str(s or "").strip().upper()
         if x == "OK":
-            return "✅ OK"
+            return "정상"
         if x == "MISSING":
-            return "❌ 누락"
+            return "필수 누락"
         if x == "AMBIGUOUS":
-            return "⚠️ 중복"
+            return "중복"
         if x == "INCOMPLETE":
-            return "⏳ 목록 불완료"
+            return "목록 미완료"
         if x == "STAFF":
-            return "👤 운영진"
+            return "운영진"
         return x or ""
 
     def _track_label(s: str) -> str:
@@ -794,18 +1377,18 @@ def build_overview_rows(
         m = str(mode or "").strip().lower()
         if m == "required":
             if in_room:
-                return "✅ 참여"
+                return "참여"
             if incomplete:
-                return "⏳ 목록 불완료"
-            return "❌ 미참여"
+                return "목록 미완료"
+            return "미참여"
         if m == "forbidden":
             if in_room:
-                return "⚠️ 참여(비정상)"
-            return "✅ 정상"
+                return "참여(확인)"
+            return "정상"
         # optional
         if in_room:
-            return "✅ 참여(참고)"
-        return "—"
+            return "참여"
+        return ""
 
     # room completeness
     def _room_load(rt: str) -> tuple[str, bool]:
@@ -989,6 +1572,42 @@ def build_overview_rows(
             return True
         return False
 
+    def _coerce_name_mask_prefix(raw_prefix: str) -> str:
+        s = str(raw_prefix or "").strip()
+        if not s:
+            return ""
+        if is_valid_name_mask_prefix(s):
+            return s
+        s2 = re.sub(r"\s+", "", s)
+        if not s2:
+            return ""
+        chars = [ch for ch in s2 if ch != "@"]
+        if len(chars) < 2:
+            return ""
+        first = chars[0]
+        last = chars[-1]
+        if first == "@" or last == "@":
+            return ""
+        at_cnt = max(1, len(chars) - 2)
+        cand = f"{first}{'@' * at_cnt}{last}"
+        return cand if is_valid_name_mask_prefix(cand) else ""
+
+    def _recommend_nickname(openchat_nick: str, parsed_src: str, resolved_cafe_nick: str) -> str:
+        cafe_nick = str(resolved_cafe_nick or "").strip()
+        if not cafe_nick:
+            return ""
+        src = str(parsed_src or "").strip().lower()
+        raw_prefix = ""
+        if src == "slash" and "/" in str(openchat_nick or ""):
+            raw_prefix = str(openchat_nick).rsplit("/", 1)[0].strip()
+        elif src == "paren":
+            raw_prefix = extract_name_mask_prefix(str(openchat_nick or ""))
+        prefix = _coerce_name_mask_prefix(raw_prefix) or raw_prefix
+        prefix = prefix.strip()
+        if prefix and is_valid_name_mask_prefix(prefix):
+            return f"{prefix}({cafe_nick})"
+        return f"이름마스킹(@)({cafe_nick})"
+
     oc_header = openchat_rows[0] if openchat_rows else []
     oi = _h2i(oc_header)
     idx_room_label = oi.get("roomLabel")
@@ -1001,14 +1620,14 @@ def build_overview_rows(
     idx_needs_change = oi.get("needsNicknameChange")
     idx_name_mask_ok = oi.get("nameMaskOk")
 
+    ssot_list2 = [r for r in (ssot_records or []) if isinstance(r, dict)]
+    ssot_alias_map2 = build_ssot_nickname_alias_map(ssot_list2)
     ssot_norm_set: set[str] = set()
-    for r in (ssot_records or []):
-        if not isinstance(r, dict):
-            continue
-        nn = str(r.get("ssotNickname") or "").strip()
-        k = normalize_cafe_nickname(nn)
-        if k:
-            ssot_norm_set.add(k)
+    for r in ssot_list2:
+        for nn in iter_ssot_nickname_variants(r):
+            k = normalize_cafe_nickname(nn)
+            if k:
+                ssot_norm_set.add(k)
 
     nick_change: list[list[str]] = []
     nick_unmatched: list[list[str]] = []
@@ -1026,34 +1645,15 @@ def build_overview_rows(
         "premium": {"total": 0, "matched": 0, "needsChange": 0, "unmatched": 0},
     }
 
-    def _nick_change_reason(*, parsed_src: str, resolved_src: str, name_mask_ok: str) -> str:
-        ps = str(parsed_src or "").strip().lower()
-        rs = str(resolved_src or "").strip().lower()
-        mk = str(name_mask_ok or "").strip().upper()
-        if ps == "paren" and mk == "FALSE":
-            return "이름 마스킹(@) 형식"
-        if rs == "slash" or ps == "slash":
-            return "슬래시(/) 형식"
-        if rs == "exact":
-            return "괄호(카페닉) 누락"
-        if rs == "token":
-            return "공백 토큰 형식"
-        if rs == "after_paren":
-            return "괄호 위치 변형"
-        if rs == "broken_paren":
-            return "괄호 누락"
-        return rs or ps or "형식"
-
     for r in openchat_rows[1:] if len(openchat_rows) > 1 else []:
         rt = _cell(r, idx_room_type)
         room_label = _cell(r, idx_room_label) or ROOM_LABEL.get(rt, rt)
         nick = _cell(r, idx_openchat_nick)
         parsed = _cell(r, idx_parsed)
         parsed_src = _cell(r, idx_parsed_src)
-        resolved = _cell(r, idx_resolved)
+        resolved_raw = _cell(r, idx_resolved)
         resolved_src = _cell(r, idx_resolved_src)
-        needs_change = _is_true(_cell(r, idx_needs_change))
-        name_mask_ok = _cell(r, idx_name_mask_ok)
+        name_mask_ok = str(_cell(r, idx_name_mask_ok) or "").strip().upper()
 
         if not nick:
             continue
@@ -1061,51 +1661,77 @@ def build_overview_rows(
         total_openchat_rows += 1
         staff_like = _looks_like_staff_nick(nick)
 
+        resolved = str(resolved_raw or "").strip()
+        if resolved:
+            k0 = normalize_cafe_nickname(resolved)
+            resolved = ssot_alias_map2.get(k0) or resolved
+
+        # "변경 요청 필요" 판정:
+        # - 기본 규칙: (이름마스킹@)(카페닉)
+        # - 단, 결제 시트에 old->new로 기록된 경우 old도 참여로 인식하지만, 닉네임은 new로 변경 요청한다.
+        needs_change_eff = False
+        if resolved:
+            if str(parsed_src or "").strip().lower() != "paren":
+                needs_change_eff = True
+            elif name_mask_ok != "TRUE":
+                needs_change_eff = True
+            else:
+                # 괄호는 있으나, 괄호 속 카페닉이 "현재 카페닉"과 다르면 변경 요청
+                if parsed and str(parsed).strip() != resolved:
+                    needs_change_eff = True
+
         if rt in by_room:
             by_room[rt]["total"] = int(by_room[rt].get("total") or 0) + 1
             if resolved:
                 by_room[rt]["matched"] = int(by_room[rt].get("matched") or 0) + 1
-            if (not staff_like) and resolved and needs_change:
+            if (not staff_like) and resolved and needs_change_eff:
                 by_room[rt]["needsChange"] = int(by_room[rt].get("needsChange") or 0) + 1
             if (not staff_like) and (not resolved) and (not _looks_like_cipher_nick(nick)):
                 by_room[rt]["unmatched"] = int(by_room[rt].get("unmatched") or 0) + 1
 
-        if (not staff_like) and parsed and (not resolved):
-            unknown_set.add(parsed)
-            nick_unknown.append([room_label, nick, parsed, "카페 명단에 없는 카페닉이에요(오타/변경 가능)."])
+        if staff_like:
+            continue
 
-        if (not staff_like) and resolved and needs_change:
+        if parsed and (not resolved):
+            unknown_set.add(parsed)
+            nick_unknown.append([room_label, nick, parsed])
+
+        if resolved and needs_change_eff:
             if ssot_norm_set:
                 rk = normalize_cafe_nickname(resolved)
                 if rk and rk not in ssot_norm_set:
                     continue
             nick_change_set.add(resolved)
-            reason = _nick_change_reason(parsed_src=parsed_src, resolved_src=resolved_src, name_mask_ok=name_mask_ok)
+            ps = str(parsed_src or "").strip().lower()
+            issue = ""
+            if ps == "slash":
+                issue = "슬래시(/) 사용"
+            elif ps == "paren" and parsed and str(parsed).strip() != resolved:
+                issue = "카페닉 변경됨"
+            elif ps == "paren" and name_mask_ok != "TRUE":
+                issue = "이름 마스킹(@) 불일치"
+            elif ps == "paren":
+                issue = "형식 확인"
+            else:
+                issue = "괄호(카페닉) 없음"
+            rec = _recommend_nickname(nick, parsed_src, resolved)
             nick_change.append(
                 [
                     room_label,
                     nick,
                     resolved,
-                    reason,
-                    "예) 정@록(카페닉), 정@@록(카페닉)",
+                    issue,
+                    rec,
                 ]
             )
             continue
 
-        if (not staff_like) and (not resolved):
+        if not resolved:
             if _looks_like_cipher_nick(nick):
                 cipher_cnt += 1
             else:
                 unmatched_nick_set.add(nick)
-                nick_unmatched.append(
-                    [
-                        room_label,
-                        nick,
-                        "",
-                        "닉네임 끝에 (카페닉) 형식이 필요해요.",
-                        "예) 정@록(카페닉), 정@@록(카페닉)",
-                    ]
-                )
+                nick_unmatched.append([room_label, nick])
 
     if max_nickname_issue_rows > 0:
         nick_change = nick_change[: int(max_nickname_issue_rows)]
@@ -1114,146 +1740,75 @@ def build_overview_rows(
 
     # compose overview sheet rows
     rows: List[List[str]] = []
-    rows.append([f"강의 운영 v2 (결제 SSOT 기반 참여 점검) - {course_key}"])
-    rows.append([f"최종 갱신: {now_iso}"])
-    rows.append(
-        [
-            "결제 SSOT",
-            str(total_cnt),
-            "OK",
-            str(ok_cnt),
-            "누락",
-            str(missing_cnt),
-            "중복",
-            str(ambiguous_cnt),
-            "목록 불완료",
-            str(incomplete_cnt),
-            "운영진",
-            str(staff_cnt),
-        ]
-    )
-    rows.append(["트랙", "일반", str(normal_cnt), "프리미엄", str(premium_cnt), "운영진", str(staff_cnt)])
-    if has_ssot:
-        rows.append(
-            [
-                "참고",
-                "카페에만 있는 멤버",
-                str(cafe_only_cnt),
-                "카페 미가입(SSOT)",
-                str(cafe_missing_cnt),
-                "결제/SSOT 누락(카페)",
-                str(ssot_missing_cnt),
-            ]
-        )
-    rows.append(
-        [
-            "멤버 목록(톡방)",
-            "",
-            "사담방",
-            chat_load,
-            "공지방",
-            notice_load,
-            "프리미엄방",
-            premium_load,
-        ]
-    )
-    rows.append(
-        [
-            "데이터 소스(톡방)",
-            "",
-            "사담방",
-            "DB(IRIS)",
-            "공지방",
-            "DB(IRIS)",
-            "프리미엄방",
-            "DB(IRIS)",
-        ]
-    )
-    rows.append(
-        [
-            "매칭(톡방→카페, 현재)",
-            "",
-            "사담방",
-            f"{by_room['chat']['matched']}/{by_room['chat']['total']}",
-            "공지방",
-            f"{by_room['notice']['matched']}/{by_room['notice']['total']}",
-            "프리미엄방",
-            f"{by_room['premium']['matched']}/{by_room['premium']['total']}",
-        ]
-    )
-    rows.append(
-        [
-            "닉네임 이슈(현재)",
-            "",
-            "변경요청(매칭됨)",
-            str(len(nick_change_set)),
-            "카페명단 불일치",
-            str(len(unknown_set)),
-            "매칭불가",
-            str(len(unmatched_nick_set)),
-        ]
-    )
-    rows.append(["표기", "✅ 참여", "❌ 미참여(필수)", "✅ 정상(비대상)", "⚠️ 참여(비정상)", "⏳ 목록 불완료"])
-    if any_incomplete:
-        rows.append(["주의", "멤버 목록을 끝까지 불러오지 못한 방이 있어 일부 결과가 '목록 불완료'로 표시될 수 있어요."])
-    elif cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
-        rows.append(["주의", "톡방 닉네임이 암호화 형태로 저장되어 괄호(카페닉) 점검이 제한될 수 있어요."])
-    else:
-        rows.append(["", ""])
+    rows.append([f"{course_key} - 점검 결과"])
+    rows.append([f"마지막 업데이트 {now_iso}"])
+    rows.append([""])
 
-    rows.append(["🧭 운영자 액션(우선 처리)"])
+    # 요약(카드처럼 보이는 1~2줄)
     rows.append(
         [
-            "필수방 미참여(SSOT)",
-            str(missing_cnt),
-            "카페 미가입(SSOT)",
+            "카페 가입 확인",
             str(cafe_missing_cnt),
-            "결제/SSOT 누락(카페)",
-            str(ssot_missing_cnt),
-        ]
-    )
-    rows.append(
-        [
-            "닉네임 변경 요청(SSOT)",
+            "필수방 참여",
+            str(missing_cnt),
+            "닉네임 수정",
             str(len(nick_change_set)),
-            "중복/동명이인(SSOT)",
-            str(ambiguous_cnt),
-            "일반반 프리미엄 참여(SSOT)",
+            "권한 확인",
             str(len(unexpected_premium_set)),
         ]
     )
+    if has_ssot:
+        rows.append(
+            [
+                "결제 시트 확인",
+                str(ssot_missing_cnt),
+                "동명이인/중복",
+                str(ambiguous_cnt),
+                "목록 미완료",
+                str(incomplete_cnt),
+                "점검 대상",
+                str(total_cnt),
+            ]
+        )
+    else:
+        rows.append(
+            [
+                "동명이인/중복",
+                str(ambiguous_cnt),
+                "목록 미완료",
+                str(incomplete_cnt),
+                "점검 대상",
+                str(total_cnt),
+                "",
+                "",
+            ]
+        )
 
     rows.append([""])
-    rows.append(["📌 멤버별 방 참여 현황(SSOT 기준)"])
-    rows.append(["상태", "카페닉", "SSOT 등급", "트랙", "카페", "필수방", "사담방", "공지방", "프리미엄방", "누락", "메모"])
 
+    # 멤버 목록이 불완전하면(대형 방) 결과 확정이 불가하므로, 우선 "목록 갱신"만 보여준다.
+    if any_incomplete:
+        rows.append(["할 일", "멤버 목록 갱신"])
+        rows.append(["사담방", chat_load, "공지방", notice_load, "프리미엄방", premium_load])
+        rows.append([""])
+
+    # 사람별 할 일(필요한 사람만)
+    rows.append(["할 일 목록(사람별)"])
+    rows.append(["카페닉", "구분", "카페", "사담방", "공지방", "프리미엄방", "해야 할 일", "비고"])
+
+    wrote_any = False
     for d in view_records:
-        st = d.get("status", "")
-        st_u = str(st or "").strip().upper()
         track = str(d.get("track", "") or "").strip().lower()
+        if track == "staff":
+            continue
+
+        st = str(d.get("status", "") or "").strip().upper()
         in_chat = _is_true(d.get("in_chat", ""))
         in_notice = _is_true(d.get("in_notice", ""))
         in_premium = _is_true(d.get("in_premium", ""))
         in_cafe = _is_true(d.get("inCafe", "TRUE"))
 
-        status_display = _status_label(st)
-        memo = ""
-        if st_u == "AMBIGUOUS":
-            memo = (
-                "중복 매칭 "
-                f"(사담 {d.get('chatCount','')}, 공지 {d.get('noticeCount','')}, 프리미엄 {d.get('premiumCount','')})"
-            ).strip()
-        elif st_u == "INCOMPLETE":
-            memo = "톡방 멤버 목록을 아직 다 불러오지 못했어요."
-
-        if (not in_cafe) and track != "staff":
-            status_display = "⚠️ 카페 확인"
-            memo = (memo + "; " if memo else "") + "SSOT에는 있는데 카페 명단에 없어요."
-
-        if track == "normal" and in_premium:
-            status_display = "⚠️ 권한 확인"
-            memo = (memo + "; " if memo else "") + "일반반인데 프리미엄방 참여(권한 확인)"
-
+        # room display
         mode_chat = "required" if track in ("normal", "premium") else "optional"
         mode_notice = "required" if track in ("normal", "premium") else "optional"
         if track == "premium":
@@ -1263,52 +1818,79 @@ def build_overview_rows(
         else:
             mode_premium = "optional"
 
-        missing_display = d.get("missingRooms", "")
-        cafe_display = "✅ 가입" if in_cafe else "❌ 미가입"
+        tasks: list[str] = []
+        if st == "INCOMPLETE":
+            tasks.append("멤버 목록 갱신")
+        if (not in_cafe) and track != "staff":
+            tasks.append("카페 가입 확인")
+        miss = str(d.get("missingRooms") or "").strip()
+        if miss:
+            tasks.append(f"{miss} 참여")
+        if st == "AMBIGUOUS":
+            tasks.append("동명이인/중복 확인")
+        if track == "normal" and in_premium:
+            tasks.append("프리미엄방 권한 확인")
+
+        cafe_nick = str(d.get("cafeNickname") or "").strip()
+        if cafe_nick and cafe_nick in nick_change_set:
+            tasks.append("닉네임 수정")
+
+        if not tasks:
+            continue
+        wrote_any = True
+
+        note = ""
+        if st == "AMBIGUOUS":
+            note = f"중복(사담 {d.get('chatCount','')}, 공지 {d.get('noticeCount','')}, 프리미엄 {d.get('premiumCount','')})"
+        elif st == "INCOMPLETE":
+            note = "목록 미완료"
+        elif track == "normal" and in_premium:
+            note = "프리미엄방 참여중"
+        elif not in_cafe:
+            note = "카페 미가입"
 
         rows.append(
             [
-                status_display,
-                d.get("cafeNickname", ""),
-                d.get("grade", ""),
+                cafe_nick,
                 _track_label(track),
-                cafe_display,
-                d.get("requiredRooms", ""),
+                "가입" if in_cafe else "미가입",
                 _room_mark(in_chat, mode_chat, chat_inc),
                 _room_mark(in_notice, mode_notice, notice_inc),
                 _room_mark(in_premium, mode_premium, premium_inc),
-                missing_display,
-                memo,
+                "\n".join(tasks),
+                note,
             ]
         )
 
+    if not wrote_any:
+        rows.append(["없음", "", "", "", "", "", "", ""])
+
+    # 닉네임 관련(상세)
     rows.append([""])
-    rows.append(["🧩 닉네임 변경 요청(참여 인식됨)"])
-    rows.append(["방", "닉네임", "매칭된 카페닉", "사유", "예시"])
+    rows.append(["닉네임 수정 목록"])
+    rows.append(["방", "현재 닉네임", "카페닉(현재)", "문제", "요청 닉네임"])
     if nick_change:
         rows.extend(nick_change)
     else:
-        rows.append(["(없음)", "", "", "", ""])
+        rows.append(["없음", "", "", "", ""])
 
     rows.append([""])
-    rows.append(["🧩 톡방 닉네임 매칭 불가"])
-    rows.append(["방", "닉네임", "추출된 카페닉", "안내", "예시"])
-    if cipher_cnt > 0:
-        rows.append(["(참고)", f"닉네임이 암호화 형태로 저장된 항목: {cipher_cnt}명", "", "형식 점검 불가", ""])
-    if nick_unmatched:
-        rows.extend(nick_unmatched)
-    elif cipher_cnt <= 0:
-        rows.append(["(없음)", "", "", "", ""])
-
-    rows.append([""])
-    rows.append(["🔎 카페 명단에 없는 카페닉(톡방 닉네임 기준)"])
-    rows.append(["방", "닉네임", "추출된 카페닉", "안내"])
+    rows.append(["카페닉 확인 목록"])
+    rows.append(["방", "현재 닉네임", "괄호 속 카페닉"])
     if nick_unknown:
         rows.extend(nick_unknown)
     else:
-        rows.append(["(없음)", "", "", ""])
+        rows.append(["없음", "", ""])
 
-    # 최근 변경 이력(AUDIT_LOG) 프리뷰(통합 탭에서 바로 확인)
+    rows.append([""])
+    rows.append(["닉네임 확인 목록"])
+    rows.append(["방", "현재 닉네임"])
+    if nick_unmatched:
+        rows.extend(nick_unmatched)
+    else:
+        rows.append(["없음", ""])
+
+    # 최근 변경(통합 탭에서 바로 확인)
     logs = [r for r in (recent_audit_log_rows or []) if isinstance(r, list) and len(r) >= 8]
     if logs:
         def _parse_map(s: str) -> dict[str, str]:
@@ -1338,6 +1920,30 @@ def build_overview_rows(
                 return "초기"
             return x
 
+        def _tab_label(tab_name: str) -> str:
+            t = str(tab_name or "").strip().upper()
+            if "CAFE" in t:
+                return "카페"
+            if "OPENCHAT" in t:
+                return "톡방"
+            if "SSOT" in t or "PAYMENT" in t:
+                return "결제"
+            if "AUDIT" in t:
+                return "점검"
+            return str(tab_name or "").strip() or "-"
+
+        def _field_label(field: str) -> str:
+            f = str(field or "").strip()
+            m = {
+                "cafeNickname": "카페닉",
+                "grade": "등급",
+                "track": "구분",
+                "openchatNickname": "톡 닉네임",
+                "parsedCafeNickname": "괄호 속 카페닉",
+                "present": "상태",
+            }
+            return m.get(f, f)
+
         max_n = max(0, int(max_recent_audit_log_rows))
         logs = logs[-max_n:] if max_n > 0 else []
 
@@ -1346,8 +1952,8 @@ def build_overview_rows(
         detail_rows = [r for r in logs if str(r[3] or "").strip().upper() in ("INSERT", "UPDATE", "LEFT", "REJOIN")]
 
         rows.append([""])
-        rows.append(["🧾 최근 변경 이력(AUDIT_LOG)"])
-        rows.append(["시간", "대상", "탭", "동작", "변경 필드", "변경 요약"])
+        rows.append(["최근 변경"])
+        rows.append(["시간", "대상", "구분", "변경"])
 
         for r in (summary_rows + detail_rows):
             ts = str(r[0] or "").strip()
@@ -1371,13 +1977,13 @@ def build_overview_rows(
                 if o == n:
                     continue
                 if o and n:
-                    parts.append(f"{f}: {o} → {n}")
+                    parts.append(f"{_field_label(f)}: {o} → {n}")
                 elif n:
-                    parts.append(f"{f}: {n}")
+                    parts.append(f"{_field_label(f)}: {n}")
                 elif o:
-                    parts.append(f"{f}: (삭제됨)")
+                    parts.append(f"{_field_label(f)}: (삭제됨)")
                 else:
-                    parts.append(f"{f}")
+                    parts.append(f"{_field_label(f)}")
             summary = "; ".join(parts).strip()
             if not summary:
                 # SUMMARY/WARN 등은 fields에 요약 문자열이 들어오기도 한다.
@@ -1385,12 +1991,12 @@ def build_overview_rows(
             if len(summary) > 220:
                 summary = summary[:220] + "…"
 
-            rows.append([ts, target, tab, _action_label(action), fields, summary])
+            rows.append([ts, target, _tab_label(tab), f"{_action_label(action)}: {summary}".strip(": ")])
 
     return rows
 
 
-def build_actions_rows(
+def build_actions_rows_legacy(
     *,
     course_key: str,
     now_iso: str,
@@ -1415,7 +2021,12 @@ def build_actions_rows(
         if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
     }
     ssot_list = [r for r in (ssot_records or []) if isinstance(r, dict)]
-    ssot_nick_set = {str(r.get("ssotNickname") or "").strip() for r in ssot_list if str(r.get("ssotNickname") or "").strip()}
+    ssot_nick_set: set[str] = set()
+    for r in ssot_list:
+        for nn in iter_ssot_nickname_variants(r):
+            if nn:
+                ssot_nick_set.add(nn)
+    ssot_alias_map = build_ssot_nickname_alias_map(ssot_list)
     cafe_nick_set = build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
 
     def _h2i(header: list[str]) -> dict[str, int]:
@@ -1581,13 +2192,11 @@ def build_actions_rows(
     idx_name_mask_ok = oi.get("nameMaskOk")
 
     ssot_norm_set: set[str] = set()
-    for r in (ssot_records or []):
-        if not isinstance(r, dict):
-            continue
-        nn = str(r.get("ssotNickname") or "").strip()
-        k = normalize_cafe_nickname(nn)
-        if k:
-            ssot_norm_set.add(k)
+    for r in ssot_list:
+        for nn in iter_ssot_nickname_variants(r):
+            k = normalize_cafe_nickname(nn)
+            if k:
+                ssot_norm_set.add(k)
 
     openchat_by_cafe: dict[str, dict[str, list[str]]] = {}
 
@@ -1595,6 +2204,9 @@ def build_actions_rows(
         cn = str(cafe_nick or "").strip()
         if not cn:
             return
+        k0 = normalize_cafe_nickname(cn)
+        if k0 and k0 in ssot_alias_map:
+            cn = str(ssot_alias_map.get(k0) or cn).strip()
         t = str(rt or "").strip().lower()
         if t not in ("chat", "notice", "premium"):
             return
@@ -1693,10 +2305,14 @@ def build_actions_rows(
         nick = _cell(r, idx_openchat_nick)
         parsed = _cell(r, idx_parsed)
         parsed_src = _cell(r, idx_parsed_src)
-        resolved = _cell(r, idx_resolved)
-        needs_change = _is_true(_cell(r, idx_needs_change))
+        resolved_raw = _cell(r, idx_resolved)
         name_mask_prefix = _cell(r, idx_name_mask_prefix)
-        name_mask_ok = _cell(r, idx_name_mask_ok).upper()
+        name_mask_ok = str(_cell(r, idx_name_mask_ok) or "").strip().upper()
+
+        resolved = str(resolved_raw or "").strip()
+        if resolved:
+            k0 = normalize_cafe_nickname(resolved)
+            resolved = ssot_alias_map.get(k0) or resolved
 
         # mapping(참고용)
         if resolved:
@@ -1712,39 +2328,46 @@ def build_actions_rows(
         if staff_like:
             continue
 
-        if resolved and needs_change:
+        needs_change_eff = False
+        if resolved:
+            ps = str(parsed_src or "").strip().lower()
+            if ps != "paren":
+                needs_change_eff = True
+            elif name_mask_ok != "TRUE":
+                needs_change_eff = True
+            else:
+                if parsed and str(parsed).strip() != resolved:
+                    needs_change_eff = True
+
+        if resolved and needs_change_eff:
             if ssot_norm_set:
                 rk = normalize_cafe_nickname(resolved)
                 if rk and rk not in ssot_norm_set:
                     continue
-            reason = ""
             src = str(parsed_src or "").strip().lower()
-            if src == "paren":
-                reason = "이름 사이에 @ 규칙이 맞지 않아요."
-            elif src == "slash":
-                reason = "슬래시(/) 대신 괄호( )로 바꿔주세요."
+            if src == "slash":
+                issue = "슬래시(/) 사용"
+            elif src == "paren" and parsed and str(parsed).strip() != resolved:
+                issue = "카페닉 변경됨"
+            elif src == "paren" and name_mask_ok != "TRUE":
+                issue = "이름 마스킹(@) 불일치"
+            elif src == "paren":
+                issue = "형식 확인"
             else:
-                reason = "끝에 (카페닉)이 없거나 위치가 달라요."
+                issue = "괄호(카페닉) 없음"
             rec = _recommend_nickname(nick, parsed_src, resolved, name_mask_prefix)
-            nick_change.append([room_label, nick, resolved, reason, rec])
+            nick_change.append([room_label, nick, resolved, issue, rec])
             continue
 
         if not resolved:
             if parsed:
                 # 추출된 카페닉은 있으나, 카페 명단에 없음(오타/탈퇴/미가입 가능)
-                nick_unknown.append([room_label, nick, parsed, "카페 명단에 없는 카페닉이에요(오타/변경 가능)."])
+                nick_unknown.append([room_label, nick, parsed])
             else:
                 if _looks_like_cipher_nick(nick):
                     cipher_cnt += 1
                 else:
-                    nick_unmatched.append(
-                        [
-                            room_label,
-                            nick,
-                            "카페닉을 추출/매칭할 수 없어요.",
-                            "예) 정@록(나물쓰) / 유@비(냥댕)",
-                        ]
-                    )
+                    nick_unmatched.append([room_label, nick])
 
     if max_nickname_issue_rows > 0:
         nick_change = nick_change[: int(max_nickname_issue_rows)]

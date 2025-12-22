@@ -231,6 +231,37 @@ def _get_sheet_id(svc, spreadsheet_id: str, sheet_name: str) -> int | None:
     return None
 
 
+def _get_sheet_meta(svc, spreadsheet_id: str, sheet_name: str) -> tuple[int | None, int, int]:
+    """
+    Returns:
+      (sheet_id, row_count, column_count)
+    """
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheets = meta.get("sheets") or []
+    for s in sheets:
+        if not isinstance(s, dict):
+            continue
+        p = s.get("properties") if isinstance(s.get("properties"), dict) else {}
+        if p.get("title") != sheet_name:
+            continue
+        sid = p.get("sheetId")
+        try:
+            sheet_id = int(sid)
+        except Exception:
+            sheet_id = None
+        grid = p.get("gridProperties") if isinstance(p.get("gridProperties"), dict) else {}
+        try:
+            row_count = int(grid.get("rowCount") or 0)
+        except Exception:
+            row_count = 0
+        try:
+            col_count = int(grid.get("columnCount") or 0)
+        except Exception:
+            col_count = 0
+        return sheet_id, max(0, row_count), max(0, col_count)
+    return None, 0, 0
+
+
 def delete_rows_range(svc, spreadsheet_id: str, sheet_name: str, start_row: int, end_row: int) -> None:
     """
     Delete row range in a sheet.
@@ -301,7 +332,7 @@ def apply_overview_sheet_format(
     if not values:
         return
 
-    sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+    sheet_id, _row_count, sheet_col_count = _get_sheet_meta(svc, spreadsheet_id, sheet_name)
     if sheet_id is None:
         return
 
@@ -362,9 +393,12 @@ def apply_overview_sheet_format(
         }
     )
 
-    # unmerge+merge title/meta rows (A1..max_cols, A2..max_cols)
+    # unmerge+merge title row
+    # NOTE: 이전 실행에서 더 넓은 범위로 merge된 상태일 수 있어,
+    # unmerge는 sheet의 columnCount 범위를 우선 사용한다.
+    unmerge_cols = max(max_cols, int(sheet_col_count or 0), 1)
     if max_cols > 1:
-        requests.append({"unmergeCells": {"range": _range(0, min(2, end_row), 0, max_cols)}})
+        requests.append({"unmergeCells": {"range": _range(0, min(2, end_row), 0, unmerge_cols)}})
         requests.append({"mergeCells": {"range": _range(0, 1, 0, max_cols), "mergeType": "MERGE_ALL"}})
         requests.append({"mergeCells": {"range": _range(1, 2, 0, max_cols), "mergeType": "MERGE_ALL"}})
 
