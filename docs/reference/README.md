@@ -16,7 +16,6 @@
 | `course-roster-v2-membership-audit.md` | 강의 운영 v2: 카페 등급(grade) 기반 톡방 참여 점검 + 통합 스프레드시트(RAW→VIEW) |
 | `payment-ssot-google-sheets.md` | 결제 SSOT Google Sheets 연동(권한/검증/활용 기능) |
 | `image-worker.md` | Gemini 웹 기반 이미지 생성/수정 워커(`!사진 / !사진수정`) 운영/환경변수/세션 준비 |
-| `video-worker.md` | Gemini 웹 기반 영상 생성 워커(`!영상`) 운영/환경변수/세션 준비 |
 | `ui-3100-troubleshooting.md` | UI(3100) “남색 배경만/빈 화면” 문제(Next `/_next/static` 404) 원인·복구·재발 방지 |
 | `bridge-status.md` | StatusBar의 BRIDGE/LOG 판정 기준(`heartbeatAgeSec`/`lastEventAgeSec`/`logAgeSec`, LOG LAG) |
 

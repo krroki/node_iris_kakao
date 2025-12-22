@@ -160,7 +160,6 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 | Command-worker 단독 재기동 | `windows/start_command_worker.ps1 -Restart` | 방별 명령어(FAQ) 워커(ADR-0035). `runtime.features[roomId].commands=true`인 방에서 `!등록/!삭제/!명령어/!키`를 처리한다. 중복 실행은 락 파일(`node-iris-app/data/locks/command_worker.lock`)로 자동 차단된다 |
 | 기본닉 멘션 워커 단독 재기동 | `windows/start_nickname_reminder_worker.ps1 -Restart` | 카카오 기본 닉네임 사용자에게 닉네임 변경을 “멘션”으로 안내(ADR-0041). `runtime.features[roomId].nicknameReminder=true`인 방에서만 동작하며, 발신 전 Redroid 멤버 목록 스크롤 로딩으로 `open_chat_member` 완전성을 확인한다 |
 | Image-worker 단독 재기동 | `windows/start_image_worker.ps1 -Restart` | 이미지 생성/수정 워커. `runtime.features[roomId].imageGen=true`인 방에서 `!사진`/`!사진수정`(Reply) 명령을 처리한다 |
-| Video-worker 단독 재기동 | `windows/start_video_worker.ps1 -Restart` | 영상 생성 워커. `runtime.features[roomId].videoGen=true`인 방에서 `!영상` 명령을 처리한다 |
 | Auto-faq-worker 단독 재기동 | `windows/start_auto_faq_worker.ps1 -Restart` | 무명령어 자동 FAQ 워커(ADR-0037). `runtime.features[roomId].autoFaq=true`인 방에서 질문 트리거를 Reply로 자동응답한다. 이미지가 설정된 트리거는 Reply 후 별도 메시지로 이미지 묶음을 1회 발신한다 |
 | Roster-worker 단독 재기동 | `windows/start_roster_worker.ps1 -Restart` | 강의 운영 워커(선택 기능). 설정 파일 `data/course_roster_worker.json`이 없으면 `start_all`/watchdog에서 자동으로 스킵된다 |
 | Openchat-members-sheets-worker 단독 재기동 | `windows/start_openchat_members_sheets_worker.ps1 -Restart` | 오픈채팅 전체 멤버 Sheets 동기화 워커(선택 기능). `data/openchat_members_sheets.json`이 없거나 `worker.enabled=false`면 `start_all`/watchdog에서 자동으로 스킵된다 |

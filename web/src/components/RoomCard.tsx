@@ -490,14 +490,6 @@ export default function RoomCard({
                             />
                             이미지 생성(!사진 / !사진수정)
                         </label>
-                        <label className="control-label" title="Gemini 웹 기반 동영상 생성 기능을 켭니다. (명령: !영상)">
-                            <input
-                                type="checkbox"
-                                checked={!!features.videoGen}
-                                onChange={e => onToggleFeature(room.roomId, 'videoGen', e.target.checked)}
-                            />
-                            영상 생성(!영상)
-                        </label>
                         <label className="control-label">
                             <input
                                 type="checkbox"

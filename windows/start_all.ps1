@@ -76,7 +76,6 @@ Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\broadcast_worker_sta
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\command_worker_status.json') 'command-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\nickname_reminder_worker_status.json') 'nickname-reminder-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\image_worker_status.json') 'image-worker'
-Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\video_worker_status.json') 'video-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\auto_faq_worker_status.json') 'auto-faq-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\roster_worker_status.json') 'roster-worker'
 Stop-PidFromStatusJson (Join-Path $root 'node-iris-app\data\openchat_members_sheets_worker_status.json') 'openchat-members-sheets-worker'
@@ -221,37 +220,6 @@ if ($env:IMAGE_WORKER_DISABLE -ne '1') {
   Start-Sleep -Seconds 1
 } else {
   Write-Host ("[all] image-worker skipped (IMAGE_WORKER_DISABLE={0})" -f $env:IMAGE_WORKER_DISABLE) -ForegroundColor Yellow
-}
-
-if ($env:VIDEO_WORKER_DISABLE -ne '1') {
-  $needVideoWorker = $true
-  try {
-    $runtimePath = Join-Path $root 'node-iris-app\config\runtime.json'
-    if (Test-Path $runtimePath) {
-      $needVideoWorker = $false
-      $rt = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
-      $features = $rt.features
-      if ($features) {
-        foreach ($p in $features.PSObject.Properties) {
-          $f = $p.Value
-          if ($f -and $f.videoGen -eq $true) { $needVideoWorker = $true; break }
-        }
-      }
-    }
-  } catch {
-    # 보수적으로: runtime 파싱 실패 시에는 video-worker를 기동한다.
-    $needVideoWorker = $true
-  }
-
-  if (-not $needVideoWorker) {
-    Write-Host '[all] video-worker skipped (no videoGen-enabled rooms)' -ForegroundColor Yellow
-  } else {
-    Write-Host '[all] starting video-worker'
-    & (Join-Path $PSScriptRoot 'start_video_worker.ps1') -TimeoutSec 90 -IrisUrl "$IrisUrl"
-    Start-Sleep -Seconds 1
-  }
-} else {
-  Write-Host ("[all] video-worker skipped (VIDEO_WORKER_DISABLE={0})" -f $env:VIDEO_WORKER_DISABLE) -ForegroundColor Yellow
 }
 
 if ($env:AUTO_FAQ_WORKER_DISABLE -ne '1') {

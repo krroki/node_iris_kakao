@@ -29,7 +29,6 @@ $specs = @(
     @{ kind = 'command-worker';         status = (Join-Path $dataDir 'command_worker_status.json');  absScript = (Join-Path $distWorkers 'command_worker.js') },
     @{ kind = 'nickname-reminder-worker'; status = (Join-Path $dataDir 'nickname_reminder_worker_status.json'); absScript = (Join-Path $distWorkers 'nickname_reminder_worker.js') },
     @{ kind = 'image-worker';           status = (Join-Path $dataDir 'image_worker_status.json');    absScript = (Join-Path $distWorkers 'image_worker.js') },
-    @{ kind = 'video-worker';           status = (Join-Path $dataDir 'video_worker_status.json');    absScript = (Join-Path $distWorkers 'video_worker.js') },
     @{ kind = 'auto-faq-worker';        status = (Join-Path $dataDir 'auto_faq_worker_status.json'); absScript = (Join-Path $distWorkers 'auto_faq_worker.js') }
 )
 

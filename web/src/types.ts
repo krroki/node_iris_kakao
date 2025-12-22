@@ -84,8 +84,6 @@ export type RoomFeatures = {
   nicknameReminder?: boolean;
   // Gemini 웹 기반 이미지 생성/수정(!사진 / !사진수정)
   imageGen?: boolean;
-  // Gemini 웹 기반 동영상 생성(!영상)
-  videoGen?: boolean;
   chatSummary?: boolean;
   // 방별 명령어(FAQ) 기능
   commands?: boolean;

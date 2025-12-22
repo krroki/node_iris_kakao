@@ -893,7 +893,7 @@ export default function Home() {
       const allowedRoomIds = Object.keys(nextFeatures || {}).filter(rid => {
         if (nextExcluded.includes(rid)) return false;
         const f = nextFeatures[rid] || {};
-        return !!(f.welcome || f.broadcast || f.schedules || f.ai || f.chatSummary || f.commands || f.autoFaq || f.courseRoster || f.nicknameReminder || f.imageGen || f.videoGen);
+        return !!(f.welcome || f.broadcast || f.schedules || f.ai || f.chatSummary || f.commands || f.autoFaq || f.courseRoster || f.nicknameReminder || f.imageGen);
       });
       // POST via Next API proxy (avoids CORS/host mismatch)
       const r = await fetch(`/api/runtime`, {

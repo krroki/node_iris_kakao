@@ -43,7 +43,6 @@ param(
   [int]$CommandWorkerRestartCooldownSec = 120,
   [int]$NicknameReminderWorkerRestartCooldownSec = 120,
   [int]$ImageWorkerRestartCooldownSec = 120,
-  [int]$VideoWorkerRestartCooldownSec = 120,
   [int]$AutoFaqWorkerRestartCooldownSec = 120,
   [int]$RosterWorkerRestartCooldownSec = 120,
   [int]$OpenchatMembersSheetsWorkerRestartCooldownSec = 120,
@@ -74,7 +73,6 @@ $startWelcomeWorkerScript = Join-Path $root "windows\start_welcome_worker.ps1"
   $startCommandWorkerScript = Join-Path $root "windows\start_command_worker.ps1"
   $startNicknameReminderWorkerScript = Join-Path $root "windows\start_nickname_reminder_worker.ps1"
   $startImageWorkerScript = Join-Path $root "windows\start_image_worker.ps1"
-  $startVideoWorkerScript = Join-Path $root "windows\start_video_worker.ps1"
   $startAutoFaqWorkerScript = Join-Path $root "windows\start_auto_faq_worker.ps1"
 $startRosterWorkerScript = Join-Path $root "windows\start_roster_worker.ps1"
 $startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_openchat_members_sheets_worker.ps1"
@@ -96,7 +94,6 @@ $script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
   $script:lastCommandWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
   $script:lastNicknameReminderWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
   $script:lastImageWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
-  $script:lastVideoWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
   $script:lastAutoFaqWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastOpenchatMembersSheetsWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
@@ -938,109 +935,6 @@ function Restart-ImageWorker {
   }
 }
 
-function Test-AnyVideoGenEnabled {
-  try {
-    $runtimePath = Join-Path $root "node-iris-app\config\runtime.json"
-    if (-not (Test-Path $runtimePath)) { return $true } # 보수적으로: runtime을 못 읽으면 enabled 취급
-
-    $mtime = $null
-    try { $mtime = (Get-Item -LiteralPath $runtimePath).LastWriteTimeUtc } catch { $mtime = $null }
-
-    if ($null -ne $mtime -and $null -ne $script:videoGenAnyCacheMtimeUtc -and $script:videoGenAnyCacheMtimeUtc -eq $mtime -and $null -ne $script:videoGenAnyCacheValue) {
-      return [bool]$script:videoGenAnyCacheValue
-    }
-
-    $any = $false
-    try {
-      $rt = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
-      $features = $rt.features
-      if ($features) {
-        foreach ($p in $features.PSObject.Properties) {
-          $f = $p.Value
-          if ($f -and $f.videoGen -eq $true) { $any = $true; break }
-        }
-      }
-    } catch {
-      # 파싱 실패/권한 문제 등 예외는 "enabled"로 취급해 복구 로직이 꺼지지 않게 한다.
-      $any = $true
-    }
-
-    $script:videoGenAnyCacheMtimeUtc = $mtime
-    $script:videoGenAnyCacheValue = $any
-    return $any
-  } catch {
-    return $true
-  }
-}
-
-function Test-VideoWorkerOk {
-  try {
-    if ($env:VIDEO_WORKER_DISABLE -eq '1') { return $true }
-    if (-not (Test-AnyVideoGenEnabled)) { return $true }
-
-    $statusPath = Join-Path $root "node-iris-app\data\video_worker_status.json"
-    $workerPid = $null
-    $hbTs = $null
-    if (Test-Path $statusPath) {
-      try {
-        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($j.pid) { $workerPid = [int]$j.pid }
-        if ($j.heartbeatAt) { $hbTs = [string]$j.heartbeatAt }
-        if (-not $hbTs -and $j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
-      } catch {}
-    }
-
-    if ($hbTs) {
-      try {
-        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
-        $age = ([datetime]::UtcNow - $dt).TotalSeconds
-        if ($age -gt 300) { return $false }
-        return $true
-      } catch {}
-    }
-
-    if ($workerPid) {
-      try {
-        $p = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
-        return $null -ne $p
-      } catch { return $false }
-    }
-
-    return $false
-  } catch {
-    return $false
-  }
-}
-
-function Restart-VideoWorker {
-  param([string]$Reason)
-
-  if ($env:VIDEO_WORKER_DISABLE -eq '1') { return }
-  if (-not (Test-AnyVideoGenEnabled)) { return }
-
-  if (-not (Test-Path $startVideoWorkerScript)) {
-    Write-Log -Level 'WARN' -Message "start_video_worker.ps1 없음: $startVideoWorkerScript (video-worker 재시작 불가)"
-    return
-  }
-
-  $now = Get-Date
-  $cooldownUntil = $script:lastVideoWorkerRestartAt.AddSeconds($VideoWorkerRestartCooldownSec)
-  if ($now -lt $cooldownUntil) {
-    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
-    Write-Log -Level 'WARN' -Message "video-worker 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
-    return
-  }
-  $script:lastVideoWorkerRestartAt = $now
-
-  Write-Log -Level 'ACTION' -Message "video-worker 재시작(start_video_worker.ps1 -Restart) 실행. 사유: $Reason"
-  try {
-    & $startVideoWorkerScript -Restart -TimeoutSec 90 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[video_worker] $_" }
-    Write-Log -Level 'INFO' -Message "video-worker 재시작 호출 완료"
-  } catch {
-    Write-Log -Level 'ERROR' -Message "video-worker 재시작 실패: $($_.Exception.Message)"
-  }
-}
-
 function Test-AutoFaqWorkerOk {
   try {
     if ($env:AUTO_FAQ_WORKER_DISABLE -eq '1') { return $true }
@@ -1655,14 +1549,6 @@ try
       $ok = Test-ImageWorkerOk
       if (-not $ok) {
         Restart-ImageWorker -Reason "image-worker not running/heartbeat stale"
-      }
-    } catch {}
-
-    # video-worker stage (feature worker) - 영상 생성 워커 자동 복구
-    try {
-      $ok = Test-VideoWorkerOk
-      if (-not $ok) {
-        Restart-VideoWorker -Reason "video-worker not running/heartbeat stale"
       }
     } catch {}
 

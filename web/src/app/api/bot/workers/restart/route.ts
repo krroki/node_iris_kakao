@@ -16,7 +16,6 @@ const SCRIPT_BY_KIND = {
   "command-worker": "start_command_worker.ps1",
   "nickname-reminder-worker": "start_nickname_reminder_worker.ps1",
   "image-worker": "start_image_worker.ps1",
-  "video-worker": "start_video_worker.ps1",
   "auto-faq-worker": "start_auto_faq_worker.ps1",
 } as const;
 
@@ -76,4 +75,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
-
