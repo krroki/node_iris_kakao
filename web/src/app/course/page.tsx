@@ -92,7 +92,7 @@ function friendlyV2Error(rawErr: unknown, userErr: unknown): string {
   if (raw.includes("naver_id/naver_pw")) return "카페 로그인 정보(naver_id/naver_pw)가 비어 있어요.";
   if (raw.includes("카페 크롤링 실패")) return "카페 멤버를 불러오지 못했어요. 로그인/권한을 확인해주세요.";
   if (raw.includes("The caller does not have permission") || raw.includes("insufficientPermissions") || raw.includes("PERMISSION_DENIED")) {
-    return "서비스계정이 스프레드시트 편집 권한이 없어요. 시트를 서비스계정 이메일에 Editor로 공유해주세요.";
+    return "서비스계정이 스프레드시트 권한이 없어요. 결제 SSOT는 Viewer, 업서트 대상 코스 시트는 Editor로 공유해주세요.";
   }
   if (raw.includes("Requested entity was not found") || raw.includes("notFound")) return "스프레드시트를 찾지 못했어요. URL/ID를 확인해주세요.";
 
@@ -167,8 +167,11 @@ function ensureAuditCourseBase(prev: CourseMembershipAuditCourse | null | undefi
     tabs: {
       cafeRaw: "CAFE_RAW",
       openchatRaw: "OPENCHAT_RAW",
+      ssotRaw: "SSOT_RAW",
       rulesRaw: "RULES_RAW",
       audit: "AUDIT_VIEW",
+      overview: "OVERVIEW",
+      actions: "ACTIONS",
       auditLog: "AUDIT_LOG",
     },
     gradeRules: {
@@ -967,12 +970,17 @@ export default function CourseOpsPage() {
       const base = ensureAuditConfigBase(prev);
       const existed = !!((base.courses || {})[courseKey]);
       const cur = existed ? ensureAuditCourseBase((base.courses || {})[courseKey]) : { ...ensureAuditCourseBase(null), enabled: false };
+      const nextPaymentSsot =
+        ((patch as any).paymentSsot !== undefined || (cur as any).paymentSsot !== undefined)
+          ? { ...((cur as any).paymentSsot || {}), ...((patch as any).paymentSsot || {}) }
+          : undefined;
       const nextCourse: CourseMembershipAuditCourse = {
         ...cur,
         ...patch,
         tabs: { ...(cur.tabs || {}), ...(patch.tabs || {}) },
         gradeRules: { ...(cur.gradeRules || {}), ...(patch.gradeRules || {}) },
         rooms: { ...(cur.rooms || {}), ...(patch.rooms || {}) },
+        paymentSsot: nextPaymentSsot as any,
       };
       return { ...base, courses: { ...(base.courses || {}), [courseKey]: nextCourse } };
     });
@@ -1391,6 +1399,7 @@ export default function CourseOpsPage() {
 
           const clubIdInput = String(cur.clubId || "").trim();
           const spreadsheetInput = String(cur.spreadsheetId || "").trim();
+          const paymentSsotSpreadsheetInput = String((cur as any).paymentSsot?.spreadsheetId || "").trim();
           const joinUrlInput = String((cur as any).joinUrl || "").trim();
           const premiumGradeText = gradeTextByCourse[courseKey]?.premiumText ?? (cur.gradeRules?.premiumGrades || []).join(", ");
           const staffGradeText = gradeTextByCourse[courseKey]?.staffText ?? (cur.gradeRules?.staffGrades || []).join(", ");
@@ -1665,6 +1674,19 @@ export default function CourseOpsPage() {
                       />
                     </label>
                     <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                      결제 SSOT 시트 URL 또는 ID (선택, read-only)
+                      <input
+                        className="filter-input"
+                        style={{ width: "100%", height: 38, marginTop: 6 }}
+                        value={paymentSsotSpreadsheetInput}
+                        onChange={(e) => updateCourseField(courseKey, { paymentSsot: { spreadsheetId: e.target.value } })}
+                        placeholder="https://docs.google.com/spreadsheets/d/... 또는 시트 ID"
+                      />
+                      <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                        - 결제 SSOT는 Viewer 공유로 읽기만 합니다. (업서트 대상 코스 시트는 Editor 공유 필요)
+                      </div>
+                    </label>
+                    <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                       카페 URL 또는 clubId
                       <input
                         className="filter-input"
@@ -1840,6 +1862,15 @@ export default function CourseOpsPage() {
                           />
                         </label>
                         <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          SSOT_RAW
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.ssotRaw || "SSOT_RAW")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), ssotRaw: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
                           RULES_RAW
                           <input
                             className="filter-input"
@@ -1855,6 +1886,24 @@ export default function CourseOpsPage() {
                             style={{ width: "100%", height: 36, marginTop: 6 }}
                             value={normStr(cur.tabs?.audit || "AUDIT_VIEW")}
                             onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), audit: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          OVERVIEW
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.overview || "OVERVIEW")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), overview: e.target.value } })}
+                          />
+                        </label>
+                        <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                          ACTIONS
+                          <input
+                            className="filter-input"
+                            style={{ width: "100%", height: 36, marginTop: 6 }}
+                            value={normStr(cur.tabs?.actions || "ACTIONS")}
+                            onChange={(e) => updateCourseField(courseKey, { tabs: { ...(cur.tabs || {}), actions: e.target.value } })}
                           />
                         </label>
                         <label style={{ fontSize: 13, color: "var(--text-secondary)" }}>

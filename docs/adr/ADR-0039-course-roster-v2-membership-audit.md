@@ -77,13 +77,19 @@
      - `grade ∈ premiumGrades` → premium
      - 그 외 → normal (새싹/일반/기타 표기 포함)
    - “포함/정규식” 기반 매칭은 혼란/오탐 리스크가 커서 v2 범위에서는 비목표로 둔다.
-4. **스프레드시트는 코스 단위 1개 문서에 RAW→VIEW 구조로 구성**한다.
+4. **결제 SSOT(Google Sheets)를 read-only로 연동**한다. (선택)
+   - 결제(일반/프리미엄) 정보를 SSOT로 두고 트랙 확정/누락 탐지/운영 액션 도출에 활용한다.
+   - 결제 SSOT 시트는 **Viewer 공유로 읽기만** 하면 된다.
+   - 설정: 코스 설정에 `paymentSsot.spreadsheetId`만 넣으면 된다. (탭/헤더/컬럼명은 기본값 사용)
+   - 코스 스프레드시트의 `SSOT_RAW` 탭에 결제 SSOT 원본이 업서트된다.
+   - 상세: `docs/reference/payment-ssot-google-sheets.md`
+5. **스프레드시트는 코스 단위 1개 문서에 RAW→VIEW 구조로 구성**한다.
    - RAW 탭들에 카페/톡방 데이터를 “원천 형태로” 취합하고,
    - VIEW 탭에서 누락/불일치를 한눈에 보이도록 정리한다.
    - 탭 갱신은 **clear/rewrite를 하지 않고 key 기반 upsert**로 수행한다.
    - 변경 이력은 `AUDIT_LOG` 탭에 **append-only**로 기록한다.
    - RAW/VIEW 탭은 행을 삭제하지 않고 `present`, `firstSeenAt`, `leftAt` 컬럼으로 잔존 데이터를 관리한다.
-5. **점검 주기는 단계형으로 운영**한다.
+6. **점검 주기는 단계형으로 운영**한다.
    - 오픈 초반(예: 2주)은 닉네임/등급 변경이 잦으므로 고빈도(분 단위)로 점검한다.
    - 안정화 이후에는 저빈도(시간 단위)로 낮춘다.
    - 주기 값은 코스별 또는 전역 기본값으로 UI에서 조정 가능해야 한다.
@@ -99,7 +105,7 @@
     - `%LOCALAPPDATA%\NaverCafeMemberCrawler\config\settings.json`
     - `<crawler_repo>\config\settings.json`
 - 시트 탭(코스당 1개 스프레드시트 문서):
-  - `CAFE_RAW` / `OPENCHAT_RAW` / `RULES_RAW` / `AUDIT_VIEW` / `AUDIT_LOG` (기본값, 코스별 override 가능)
+  - `CAFE_RAW` / `OPENCHAT_RAW` / `SSOT_RAW` / `RULES_RAW` / `AUDIT_VIEW` / `OVERVIEW` / `ACTIONS` / `AUDIT_LOG` (기본값, 코스별 override 가능)
 - 상태/락:
   - `node-iris-app/data/course_membership_audit_worker_status.json`
   - `node-iris-app/data/course_membership_audit_worker_state.json`
@@ -125,6 +131,7 @@
     따라서 멤버 목록/집계는 `chat_rooms.link_id` 기준을 우선한다.
 - 방 타입 자동 추론/코스 자동 묶음이 애매한 경우(예: 접두어 누락/동명이 코스)는 `rooms 해석 실패(ROOM_NOT_FOUND/ROOM_AMBIGUOUS)`로 기록하고, UI에서 `rooms` override로 해결한다.
 - 코어(bot)는 LogStore에만 집중하고, 신규 기능은 별도 워커(프로세스)로 분리한다(ADR-0027 준수).
+- 결제 SSOT는 **read-only**다. (SSOT 시트에 대한 쓰기/수정은 금지)
 
 ---
 

@@ -274,11 +274,19 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
       "enabled": true,
       "clubId": "<NAVER_CAFE_CLUB_ID>",
       "spreadsheetId": "https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit",
+      "paymentSsot": {
+        "spreadsheetId": "https://docs.google.com/spreadsheets/d/<PAYMENT_SSOT_SHEET_ID>/edit",
+        "sheetName": "종합",
+        "headerRow": 19
+      },
       "tabs": {
         "cafeRaw": "CAFE_RAW",
         "openchatRaw": "OPENCHAT_RAW",
+        "ssotRaw": "SSOT_RAW",
         "rulesRaw": "RULES_RAW",
         "audit": "AUDIT_VIEW",
+        "overview": "OVERVIEW",
+        "actions": "ACTIONS",
         "auditLog": "AUDIT_LOG"
       },
       "gradeRules": {
@@ -333,20 +341,20 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
   - **카카오 안내(레거시)**(옵션)
     - `강의 메시지 발송` ON/OFF (OFF면 절대 발송 X) + SAFE_MODE/Talk-API 상태 표시
 - 코스 카드(코스 단위)
-  - `지금 1회 업서트`: 카페 + 3방 취합 → `AUDIT_VIEW`/`AUDIT_LOG` 1회 갱신(업서트, no clear)
+  - `지금 1회 업서트`: 카페 + 3방(+ 결제 SSOT 선택) 취합 → `AUDIT_VIEW`/`OVERVIEW`/`ACTIONS` + `AUDIT_LOG` 1회 갱신(업서트, no clear)
   - `자동 갱신 포함`: enabled 코스만 주기적으로 실행
   - 필수 입력:
     - `clubId`(카페 URL/clubId 입력 → 숫자 clubId로 설정)
     - `spreadsheetId`(URL 또는 ID)
     - `rooms.chat/notice/premium`(roomId)
     - 등급 규칙: `premiumGrades`, `staffGrades` (입력 구분자: 줄바꿈, 콤마(,), 점(.), 슬래시(/) / 그 외 등급은 일반/새싹 취급)
-  - 고급: 탭 이름(기본값: `CAFE_RAW`/`OPENCHAT_RAW`/`RULES_RAW`/`AUDIT_VIEW`/`AUDIT_LOG`)
+  - 고급: 탭 이름(기본값: `CAFE_RAW`/`OPENCHAT_RAW`/`SSOT_RAW`/`RULES_RAW`/`AUDIT_VIEW`/`OVERVIEW`/`ACTIONS`/`AUDIT_LOG`)
 - 하단: **고급: v2 워커 상세 설정**(선택)
   - 주기 조정(초반/안정기): `hotIntervalSec`, `hotDays`, `steadyIntervalSec`
   - 크롤러 경로: `crawler.repoPath`, `crawler.pythonExe`, `crawler.settingsPath` (비공개 카페 로그인 정보는 crawler `settings.json`에 저장)
 
-> 중요: Google Sheets 쓰기 권한은 **Chrome 로그인**이 아니라 **서비스 계정** 권한이다.  
-> 시트 문서에 서비스 계정 이메일을 **Editor**로 공유해야 업서트가 된다.
+> 중요: Google Sheets 권한은 **Chrome 로그인**이 아니라 **서비스 계정** 권한이다.  
+> 결제 SSOT 시트는 서비스 계정 **Viewer**, 업서트 대상(코스) 시트는 **Editor**로 공유해야 한다.
 
 ### 10.2) 기동(부분 재기동)
 

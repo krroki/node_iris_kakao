@@ -26,11 +26,19 @@
       "enabled": true,
       "clubId": "<NAVER_CAFE_CLUB_ID>",
       "spreadsheetId": "https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit",
+      "paymentSsot": {
+        "spreadsheetId": "https://docs.google.com/spreadsheets/d/<PAYMENT_SSOT_SHEET_ID>/edit",
+        "sheetName": "종합",
+        "headerRow": 19
+      },
       "tabs": {
         "cafeRaw": "CAFE_RAW",
         "openchatRaw": "OPENCHAT_RAW",
+        "ssotRaw": "SSOT_RAW",
         "rulesRaw": "RULES_RAW",
         "audit": "AUDIT_VIEW",
+        "overview": "OVERVIEW",
+        "actions": "ACTIONS",
         "auditLog": "AUDIT_LOG"
       },
       "gradeRules": {
@@ -40,4 +48,3 @@
     }
   }
 }
-

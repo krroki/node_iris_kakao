@@ -36,7 +36,8 @@
 
 1. 결제 SSOT 시트에 서비스 계정 이메일을 **Viewer**로 공유한다.
 2. 로컬에 `data/gcp_service_account.json`이 존재하는지 확인한다.
-3. `data/course_membership_audit.json`에서 대상 코스에 `paymentSsot.spreadsheetId`를 등록한다.
+3. UI(3100) `http://127.0.0.1:3100/course`의 코스 카드에서 **결제 SSOT 시트 URL/ID**를 입력하고 **변경사항 저장**을 누른다.
+   - (또는) `data/course_membership_audit.json`에 `paymentSsot.spreadsheetId`를 직접 등록해도 된다.
 4. UI(3100)에서 “1회 업서트”를 실행한다.
 5. 코스 스프레드시트에서 `SSOT_RAW` / `OVERVIEW` / `ACTIONS`가 업데이트되는지 확인한다.
 

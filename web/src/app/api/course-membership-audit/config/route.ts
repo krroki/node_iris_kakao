@@ -31,16 +31,54 @@ function normalizeWorker(v: any) {
     pythonExe: normStr(v?.crawler?.pythonExe),
     settingsPath: normStr(v?.crawler?.settingsPath),
   };
-  return { enabled, hotIntervalSec, hotDays, steadyIntervalSec, crawler };
+  const openchatAutoLoad = {
+    enabled: Boolean(v?.openchatAutoLoad?.enabled),
+    serial: normStr(v?.openchatAutoLoad?.serial || v?.openchatAutoLoad?.adbSerial),
+    scrolls: Math.max(50, Number(v?.openchatAutoLoad?.scrolls) || 650),
+    scrollPauseMs: Math.max(150, Number(v?.openchatAutoLoad?.scrollPauseMs || v?.openchatAutoLoad?.scroll_pause_ms) || 400),
+    timeoutSec: Math.max(60, Number(v?.openchatAutoLoad?.timeoutSec || v?.openchatAutoLoad?.timeout_sec) || 900),
+    cooldownRoomSec: Math.max(0, Number(v?.openchatAutoLoad?.cooldownRoomSec) || 900),
+    cooldownGlobalSec: Math.max(0, Number(v?.openchatAutoLoad?.cooldownGlobalSec) || 120),
+    maxAttempts: Math.max(1, Number(v?.openchatAutoLoad?.maxAttempts) || 1),
+  };
+  return { enabled, hotIntervalSec, hotDays, steadyIntervalSec, crawler, openchatAutoLoad };
 }
 
 function normalizeTabs(v: any) {
   const cafeRaw = normStr(v?.cafeRaw) || "CAFE_RAW";
   const openchatRaw = normStr(v?.openchatRaw) || "OPENCHAT_RAW";
+  const ssotRaw = normStr(v?.ssotRaw || v?.paymentRaw || v?.ssot || v?.payment) || "SSOT_RAW";
   const rulesRaw = normStr(v?.rulesRaw) || "RULES_RAW";
   const audit = normStr(v?.audit) || "AUDIT_VIEW";
+  const overview = normStr(v?.overview) || "OVERVIEW";
+  const actions = normStr(v?.actions || v?.action) || "ACTIONS";
   const auditLog = normStr(v?.auditLog || v?.audit_log || v?.log) || "AUDIT_LOG";
-  return { cafeRaw, openchatRaw, rulesRaw, audit, auditLog };
+  return { cafeRaw, openchatRaw, ssotRaw, rulesRaw, audit, overview, actions, auditLog };
+}
+
+function normalizePaymentSsot(v: any) {
+  if (!v || typeof v !== "object") return null;
+  const spreadsheetId = normStr(v?.spreadsheetId || v?.sheetId || v?.spreadsheet_id);
+  if (!spreadsheetId) return null;
+  const out: any = { spreadsheetId };
+
+  const sheetName = normStr(v?.sheetName || v?.tab || v?.sheet);
+  const headerRow = Number(v?.headerRow || v?.header_row);
+  const gradeCol = normStr(v?.gradeCol || v?.gradeColumn);
+  const nicknameCol = normStr(v?.nicknameCol || v?.nicknameColumn);
+  const idCol = normStr(v?.idCol || v?.idColumn || v?.userIdCol);
+  const kindCol = normStr(v?.kindCol || v?.kindColumn);
+  const excludeKinds = normStrList(v?.excludeKinds);
+
+  if (sheetName) out.sheetName = sheetName;
+  if (Number.isFinite(headerRow) && headerRow >= 1) out.headerRow = Math.max(1, Math.floor(headerRow));
+  if (gradeCol) out.gradeCol = gradeCol;
+  if (nicknameCol) out.nicknameCol = nicknameCol;
+  if (idCol) out.idCol = idCol;
+  if (kindCol) out.kindCol = kindCol;
+  if (excludeKinds.length) out.excludeKinds = excludeKinds;
+
+  return out;
 }
 
 function normalizeCourseConfig(v: any) {
@@ -59,7 +97,8 @@ function normalizeCourseConfig(v: any) {
     notice: normStr(v?.rooms?.notice),
     premium: normStr(v?.rooms?.premium),
   };
-  return { enabled, clubId, spreadsheetId, joinUrl, parsedSpreadsheetId, tabs, gradeRules, rooms };
+  const paymentSsot = normalizePaymentSsot(v?.paymentSsot);
+  return { enabled, clubId, spreadsheetId, joinUrl, parsedSpreadsheetId, tabs, gradeRules, rooms, paymentSsot };
 }
 
 export async function GET() {
@@ -151,6 +190,16 @@ export async function POST(req: Request) {
       pythonExe: normStr(inWorker?.crawler?.pythonExe),
       settingsPath: normStr(inWorker?.crawler?.settingsPath),
     },
+    openchatAutoLoad: {
+      enabled: Boolean(inWorker?.openchatAutoLoad?.enabled),
+      serial: normStr(inWorker?.openchatAutoLoad?.serial || inWorker?.openchatAutoLoad?.adbSerial),
+      scrolls: Math.max(50, Number(inWorker?.openchatAutoLoad?.scrolls) || 650),
+      scrollPauseMs: Math.max(150, Number(inWorker?.openchatAutoLoad?.scrollPauseMs || inWorker?.openchatAutoLoad?.scroll_pause_ms) || 400),
+      timeoutSec: Math.max(60, Number(inWorker?.openchatAutoLoad?.timeoutSec || inWorker?.openchatAutoLoad?.timeout_sec) || 900),
+      cooldownRoomSec: Math.max(0, Number(inWorker?.openchatAutoLoad?.cooldownRoomSec) || 900),
+      cooldownGlobalSec: Math.max(0, Number(inWorker?.openchatAutoLoad?.cooldownGlobalSec) || 120),
+      maxAttempts: Math.max(1, Number(inWorker?.openchatAutoLoad?.maxAttempts) || 1),
+    },
   };
 
   const inCourses = (input as any).courses;
@@ -179,6 +228,8 @@ export async function POST(req: Request) {
         premium: normStr(vv?.rooms?.premium),
       },
     };
+    const paymentSsot = normalizePaymentSsot(vv?.paymentSsot);
+    if (paymentSsot) outCourses[ck].paymentSsot = paymentSsot;
   }
 
   const out = {

@@ -174,14 +174,28 @@ export type CourseRosterConfig = {
 export type CourseMembershipAuditTabs = {
   cafeRaw?: string;
   openchatRaw?: string;
+  ssotRaw?: string;
   rulesRaw?: string;
   audit?: string;
+  overview?: string;
+  actions?: string;
   auditLog?: string;
 };
 
 export type CourseMembershipAuditGradeRules = {
   premiumGrades?: string[];
   staffGrades?: string[];
+};
+
+export type PaymentSsotConfig = {
+  spreadsheetId?: string;
+  sheetName?: string;
+  headerRow?: number;
+  gradeCol?: string;
+  nicknameCol?: string;
+  idCol?: string;
+  kindCol?: string;
+  excludeKinds?: string[];
 };
 
 export type CourseMembershipAuditCourse = {
@@ -196,6 +210,7 @@ export type CourseMembershipAuditCourse = {
     notice?: string;
     premium?: string;
   };
+  paymentSsot?: PaymentSsotConfig;
 };
 
 export type CourseMembershipAuditConfig = {
