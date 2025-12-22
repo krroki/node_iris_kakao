@@ -31,6 +31,10 @@ param(
   # UI는 사람이 직접 보고 쓰는 경로라 "깨짐" 체감이 크다.
   # 정적 자산 404(빈 화면) 같은 케이스는 1~2회 체크만 실패해도 실사용에 문제가 되므로 기본 임계치를 낮춘다.
   [int]$WebFailThreshold = 2,
+  # Web UI의 "봇/워커 프로세스" 카드가 실패하는 상태(= /api/bot/processes 장애)를 감지해 web만 자동 복구한다.
+  [int]$BotProcessesApiCheckIntervalSec = 60,
+  [int]$BotProcessesApiFailThreshold = 3,
+  [int]$BotProcessesApiTimeoutSec = 6,
   [int]$KbRestartCooldownSec = 180,
   [int]$KbPostgresEnsureCooldownSec = 60,
   [int]$WelcomeWorkerRestartCooldownSec = 120,
@@ -101,6 +105,8 @@ $script:lastTalkApiAuthSyncAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
 $script:webFailCount = 0
 $script:webRestartAttemptsSinceOk = 0
+$script:webBotProcessesFailCount = 0
+$script:lastBotProcessesApiCheckAt = Get-Date '2000-01-01T00:00:00Z'
 $script:irisFailCount = 0
 $script:apiStatusFailCount = 0
 $script:lastSummaryAt = Get-Date '2000-01-01T00:00:00Z'
@@ -240,6 +246,29 @@ function Test-WebUiOk {
   return $out
 }
 
+function Test-WebBotProcessesApiOk {
+  param(
+    [int]$Port,
+    [int]$TimeoutSec = 6
+  )
+  $base = "http://127.0.0.1:$Port"
+  $out = @{ ok = $false; detail = "" }
+
+  try {
+    $j = Invoke-HttpJson -Url ("{0}/api/bot/processes" -f $base) -TimeoutSec $TimeoutSec
+    if ($j -and ($j.ok -eq $true)) {
+      $out.ok = $true
+      $out.detail = "ok"
+      return $out
+    }
+    $out.detail = "ok=false"
+    return $out
+  } catch {
+    $out.detail = "/api/bot/processes error: $($_.Exception.Message)"
+    return $out
+  }
+}
+
 function Get-ApiPort {
   try { return ([uri]$ApiBase).Port } catch { return 8650 }
 }
@@ -284,6 +313,7 @@ function Restart-Pipeline {
   $script:lastWebRestartAt = $now
   $script:webFailCount = 0
   $script:webRestartAttemptsSinceOk = 0
+  $script:webBotProcessesFailCount = 0
   $apiPort = Get-ApiPort
   Write-Log -Level 'ACTION' -Message "파이프라인 재기동(start_all.ps1) 실행. 사유: $Reason"
   try {
@@ -445,6 +475,7 @@ function Restart-Web {
 
   $script:lastWebRestartAt = $now
   $script:webFailCount = 0
+  $script:webBotProcessesFailCount = 0
   $script:webRestartAttemptsSinceOk++
 
   $logDir = Join-Path $root 'windows\logs'
@@ -1517,6 +1548,43 @@ try
         try { $detail = [string]$apiStatus.detail } catch { $detail = "" }
         Restart-Web -Reason ("WEB UI 체크 연속 실패($($script:webFailCount)회). $webDetail $detail") -CleanBuild:$useClean | Out-Null
       }
+    }
+
+    # Web bot/worker processes API health (dashboard "봇/워커 프로세스" 카드)
+    # - /api/ping + static 자산은 정상인데, /api/bot/processes만 계속 실패하면 UI가 "미실행(0/4)"로 보일 수 있다.
+    # - 일정 횟수 이상 연속 실패 시 web만 재시작한다.
+    if ($webOk) {
+      try {
+        $now3 = Get-Date
+        $interval = [math]::Max(15, $BotProcessesApiCheckIntervalSec)
+        if (($now3 - $script:lastBotProcessesApiCheckAt).TotalSeconds -ge $interval) {
+          $script:lastBotProcessesApiCheckAt = $now3
+
+          $procApiCheck = $null
+          try { $procApiCheck = Test-WebBotProcessesApiOk -Port $WebPort -TimeoutSec $BotProcessesApiTimeoutSec } catch { $procApiCheck = @{ ok = $false; detail = "Test-WebBotProcessesApiOk threw: $($_.Exception.Message)" } }
+          $procOk = $false
+          $procDetail = ""
+          try { $procOk = ($procApiCheck.ok -eq $true) } catch { $procOk = $false }
+          try { $procDetail = [string]$procApiCheck.detail } catch { $procDetail = "" }
+
+          if ($procOk) {
+            if ($script:webBotProcessesFailCount -gt 0) {
+              Write-Log -Level 'INFO' -Message ("WEB /api/bot/processes 정상 복귀(연속 실패 {0}회 -> 0)" -f $script:webBotProcessesFailCount)
+            }
+            $script:webBotProcessesFailCount = 0
+          } else {
+            $script:webBotProcessesFailCount++
+            $detail2 = if ($procDetail) { " detail=$procDetail" } else { "" }
+            Write-Log -Level 'WARN' -Message ("WEB /api/bot/processes 체크 실패(연속 {0}회).{1}" -f $script:webBotProcessesFailCount, $detail2)
+
+            if ($script:webBotProcessesFailCount -ge $BotProcessesApiFailThreshold) {
+              $did = $false
+              try { $did = (Restart-Web -Reason ("WEB /api/bot/processes 체크 연속 실패($($script:webBotProcessesFailCount)회). $procDetail")) } catch { $did = $false }
+              if ($did) { $script:webBotProcessesFailCount = 0 }
+            }
+          }
+        }
+      } catch {}
     }
 
     # IRIS health check (연속 실패 시에만 수리 시도)
