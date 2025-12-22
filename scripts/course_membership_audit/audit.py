@@ -403,20 +403,20 @@ def build_actions_rows(
     def _priority_label(p: int) -> str:
         n = int(p)
         if n <= 0:
-            return "P0"
+            return "지금"
         if n == 1:
-            return "P1"
+            return "오늘"
         if n == 2:
-            return "P2"
-        return "P3"
+            return "확인"
+        return "정리"
 
     def _prio_key(s: str) -> int:
-        x = str(s or "").strip().upper()
-        if x == "P0":
+        x = str(s or "").strip()
+        if x == "지금":
             return 0
-        if x == "P1":
+        if x == "오늘":
             return 1
-        if x == "P2":
+        if x == "확인":
             return 2
         return 3
 
@@ -551,7 +551,7 @@ def build_actions_rows(
             prefix = str(name_mask_prefix or "").strip()
             if prefix and is_valid_name_mask_prefix(prefix):
                 return f"{prefix}({cafe_nick})"
-        return f"이름 사이 @({cafe_nick})"
+        return f"<이름마스킹>({cafe_nick})"
 
     nick_change_groups: dict[str, dict[str, object]] = {}
     unknown_groups: dict[str, dict[str, object]] = {}
@@ -628,8 +628,9 @@ def build_actions_rows(
 
             rec = _recommend_nickname(nick, parsed_src, resolved, name_mask_prefix)
             cur_best = str(g.get("bestRec") or "").strip()
-            if rec and ((not cur_best) or (rec.startswith("이름 사이 @") and not cur_best.startswith("이름 사이 @"))):
-                g["bestRec"] = rec
+            if rec:
+                if (not cur_best) or (cur_best.startswith("<이름마스킹>") and not rec.startswith("<이름마스킹>")):
+                    g["bestRec"] = rec
             continue
 
         if not resolved:
@@ -653,30 +654,7 @@ def build_actions_rows(
     if max_nickname_issue_rows > 0:
         # 이슈가 너무 많으면 표가 망가져서 제한한다.
         max_n = int(max_nickname_issue_rows)
-        # nick_change_groups는 person table에서만 쓰이므로 그대로 두고, unmatched/unknown만 제한한다.
         unmatched_rows = unmatched_rows[:max_n]
-        # unknown_groups는 key 수가 커질 수 있으니 예시/방 합치기만 하고 rows 출력에서 제한한다.
-
-    def _room_mark_simple(track: str, rt: str, in_room: bool) -> str:
-        t = str(track or "").strip().lower()
-        r = str(rt or "").strip().lower()
-        if r in ("chat", "notice"):
-            required = t in ("normal", "premium")
-            if required:
-                inc = chat_inc if r == "chat" else notice_inc
-                if inc:
-                    return "목록 미완료"
-                return "참여" if in_room else "미참여"
-            return "참여" if in_room else ""
-        if r == "premium":
-            if t == "premium":
-                if premium_inc:
-                    return "목록 미완료"
-                return "참여" if in_room else "미참여"
-            if t == "normal":
-                return "참여(확인)" if in_room else "정상"
-            return "참여" if in_room else ""
-        return ""
 
     def _matched_nicks_for(cafe_nick: str) -> str:
         cn = str(cafe_nick or "").strip()
@@ -697,152 +675,208 @@ def build_actions_rows(
     rows.append([f"마지막 업데이트 {now_iso}"])
     rows.append([""])
 
-    p0_rows: list[list[str]] = []
+    # ACTIONS는 "운영자가 그대로 처리할 수 있는 문장"만 남긴다.
+    # (설명/가이드는 문서/대시보드로 분리)
+    action_items: list[dict[str, object]] = []
+
+    def _add(
+        priority: int,
+        target: str,
+        action: str,
+        *,
+        room: str = "",
+        rec: str = "",
+        current: str = "",
+    ) -> None:
+        action_items.append(
+            {
+                "priority": int(priority),
+                "target": str(target or "").strip(),
+                "action": str(action or "").strip(),
+                "room": str(room or "").strip(),
+                "rec": str(rec or "").strip(),
+                "current": str(current or "").strip(),
+            }
+        )
+
+    # 0) 먼저(데이터)
+    def _progress(load: str) -> str:
+        x = str(load or "").strip()
+        if not x or x == "—":
+            return ""
+        return f"진행률 {x}"
+
     if chat_inc:
-        p0_rows.append([_priority_label(0), "사담방", "멤버 목록 갱신", chat_load])
+        _add(0, "사담방", "멤버 목록 갱신", room="사담방", current=_progress(chat_load))
     if notice_inc:
-        p0_rows.append([_priority_label(0), "공지방", "멤버 목록 갱신", notice_load])
+        _add(0, "공지방", "멤버 목록 갱신", room="공지방", current=_progress(notice_load))
     if premium_inc:
-        p0_rows.append([_priority_label(0), "프리미엄방", "멤버 목록 갱신", premium_load])
+        _add(0, "프리미엄방", "멤버 목록 갱신", room="프리미엄방", current=_progress(premium_load))
     if cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
-        p0_rows.append([_priority_label(0), "톡방 닉네임", "닉네임 확인", f"{cipher_cnt}명"])
+        _add(0, "톡방", "닉네임이 ??? 로 보이는지 확인", current=f"{cipher_cnt}명")
 
-    person_rows: list[list[str]] = []
+    room_order = {"사담방": 1, "공지방": 2, "프리미엄방": 3}
 
-    def _push_person(d: dict[str, str], *, extra_tasks: list[str] | None = None, force_priority: int | None = None) -> None:
+    # 1) 결제 시트 기준(사람별)
+    for d in ssot_view:
         track = str(d.get("track") or "").strip().lower()
         if track == "staff":
-            return
+            continue
 
         st = str(d.get("status") or "").strip().upper()
         cafe_nick = str(d.get("cafeNickname") or "").strip()
+        if not cafe_nick:
+            continue
+
         in_cafe = _is_true(d.get("inCafe", "TRUE"))
-        in_chat = _is_true(d.get("in_chat", ""))
-        in_notice = _is_true(d.get("in_notice", ""))
         in_premium = _is_true(d.get("in_premium", ""))
-
-        tasks: list[str] = []
-        priority = 3
-
-        if st == "INCOMPLETE":
-            tasks.append("멤버 목록 갱신")
-            priority = min(priority, 0)
-        if not in_cafe:
-            tasks.append("카페 가입 확인")
-            priority = min(priority, 1)
-
         miss = str(d.get("missingRooms") or "").strip()
-        if miss:
-            for part in [x.strip() for x in miss.split(",") if x.strip()]:
-                tasks.append(f"{part} 입장")
-            priority = min(priority, 1)
+
+        current = _matched_nicks_for(cafe_nick)
+
+        if (not in_cafe) and miss:
+            _add(1, cafe_nick, "카페 가입 확인 후 톡방 입장 안내", room=miss, current=current)
+        elif not in_cafe:
+            _add(1, cafe_nick, "카페 가입 확인", current=current)
+        elif miss:
+            _add(1, cafe_nick, "톡방 입장 안내", room=miss, current=current)
 
         if st == "AMBIGUOUS":
-            tasks.append("동명이인 확인")
-            priority = min(priority, 2)
+            _add(2, cafe_nick, "동명이인 확인", current=current)
 
         if track == "normal" and in_premium:
-            tasks.append("프리미엄방 권한 확인")
-            priority = min(priority, 2)
+            _add(2, cafe_nick, "프리미엄방 권한 확인(일반반)", room="프리미엄방", current=current)
 
-        if cafe_nick and cafe_nick in nick_change_groups:
-            tasks.append("닉네임 수정")
-            priority = min(priority, 2)
+        if cafe_nick in nick_change_groups:
+            g = nick_change_groups.get(cafe_nick) if cafe_nick else None
+            if isinstance(g, dict):
+                issues = sorted([str(x).strip() for x in (g.get("issues") or []) if str(x).strip()])
+                issue_map = {
+                    "슬래시(/)": "슬래시(/) 포함",
+                    "카페닉 변경": "카페닉 불일치",
+                    "이름 마스킹": "이름 마스킹 규칙 불일치",
+                    "형식": "형식 불일치",
+                    "괄호 없음": "괄호(카페닉) 없음",
+                }
+                issue_text = ", ".join([issue_map.get(x, x) for x in issues if x])
 
-        if extra_tasks:
-            for t in extra_tasks:
-                s = str(t or "").strip()
-                if s and s not in tasks:
-                    tasks.append(s)
-            if force_priority is not None:
-                priority = min(priority, int(force_priority))
+                rooms = list(g.get("rooms") or [])
+                rooms_sorted = sorted([str(x).strip() for x in rooms if str(x).strip()], key=lambda x: (room_order.get(x, 9), x))
+                rooms_text = ", ".join(rooms_sorted)
 
-        if not tasks:
-            return
+                ex = g.get("examples") if isinstance(g.get("examples"), dict) else {}
+                ex_lines: list[str] = []
+                for rl in rooms_sorted:
+                    nn = str(ex.get(rl) or "").strip()
+                    if nn:
+                        ex_lines.append(f"{rl}: {nn}")
+                ex_text = "\n".join(ex_lines[:3])
+                if len(ex_lines) > 3:
+                    ex_text = ex_text + f"\n외 {len(ex_lines) - 3}건"
 
-        rec = ""
-        g = nick_change_groups.get(cafe_nick) if cafe_nick else None
-        if isinstance(g, dict):
-            rec = str(g.get("bestRec") or "").strip()
+                rec = str(g.get("bestRec") or "").strip()
 
-        person_rows.append(
-            [
-                _priority_label(int(force_priority) if force_priority is not None else priority),
-                cafe_nick,
-                _track_label(track),
-                "가입" if in_cafe else "미가입",
-                _room_mark_simple(track, "chat", in_chat),
-                _room_mark_simple(track, "notice", in_notice),
-                _room_mark_simple(track, "premium", in_premium),
-                "\n".join(tasks),
-                _matched_nicks_for(cafe_nick),
-                rec,
-            ]
-        )
+                _add(
+                    2,
+                    cafe_nick,
+                    "닉네임 변경 요청" + (f" ({issue_text})" if issue_text else ""),
+                    room=rooms_text,
+                    rec=rec,
+                    current=ex_text or current,
+                )
 
-    for d in ssot_view:
-        _push_person(d)
+    # 2) 결제 시트 누락(카페에는 있으나 결제 시트에 없음)
     if has_ssot:
         for d in ssot_missing:
-            _push_person(d, extra_tasks=["결제 시트 확인"], force_priority=2)
+            track = str(d.get("track") or "").strip().lower()
+            if track == "staff":
+                continue
+            cafe_nick = str(d.get("cafeNickname") or "").strip()
+            if not cafe_nick:
+                continue
+            current = _matched_nicks_for(cafe_nick)
+            _add(2, cafe_nick, "결제 시트 확인(결제 기록 없음)", current=current)
 
-    person_rows.sort(key=lambda r: (_prio_key(r[0] if r else ""), normalize_cafe_nickname(str(r[1] if len(r) > 1 else ""))))
-
-    p0_cnt = len(p0_rows)
-    p1_cnt = sum(1 for r in person_rows if r and str(r[0]).strip().upper() == "P1")
-    p2_cnt = sum(1 for r in person_rows if r and str(r[0]).strip().upper() == "P2")
-    p3_cnt = sum(1 for r in person_rows if r and str(r[0]).strip().upper() == "P3")
-
-    rows.append(["P0", str(p0_cnt), "P1", str(p1_cnt), "P2", str(p2_cnt), "P3", str(p3_cnt)])
-    rows.append([""])
-
-    rows.append(["📌 먼저"])
-    rows.append(["우선", "대상", "해야 할 일", "현재 상태"])
-    if p0_rows:
-        rows.extend(p0_rows)
-    else:
-        rows.append(["P0", "없음", "", ""])
-
-    rows.append([""])
-    rows.append(["📌 사람별"])
-    rows.append(["우선", "카페닉", "구분", "카페", "사담방", "공지방", "프리미엄방", "해야 할 일", "현재 톡닉", "요청 닉네임"])
-    if person_rows:
-        limit = max(0, int(max_rows_per_section))
-        rows.extend(person_rows[:limit] if limit else [])
-        if limit and len(person_rows) > limit:
-            rows.append([f"(표시 제한: {limit}/{len(person_rows)})", "", "", "", "", "", "", "", "", ""])
-    else:
-        rows.append(["P3", "없음", "", "", "", "", "", "", "", ""])
-
-    rows.append([""])
-    rows.append(["🧩 참여 확인 불가(닉네임)"])
-    rows.append(["우선", "방", "현재 톡닉", "추출값", "해야 할 일", "요청 닉네임"])
-
-    issue_rows: list[list[str]] = []
-    room_order = {"사담방": 1, "공지방": 2, "프리미엄방": 3}
-
-    # 괄호/슬래시에서 추출된 카페닉이 카페 명단에 없는 경우
+    # 3) 참여 확인 불가(닉네임)
     for key in sorted(list(unknown_groups.keys()), key=lambda x: normalize_cafe_nickname(x)):
         g = unknown_groups.get(key) or {}
-        rooms = sorted([str(x).strip() for x in (g.get("rooms") or []) if str(x).strip()], key=lambda x: (room_order.get(x, 9), x))
+        rooms = sorted(
+            [str(x).strip() for x in (g.get("rooms") or []) if str(x).strip()],
+            key=lambda x: (room_order.get(x, 9), x),
+        )
         ex = g.get("examples") if isinstance(g.get("examples"), dict) else {}
-        sample = str(ex.get(rooms[0]) or "").strip() if rooms else ""
-        issue_rows.append(["P2", ", ".join(rooms), sample, key, "카페닉 확인", f"이름 사이 @({key})"])
+        ex_lines: list[str] = []
+        for rl in rooms:
+            nn = str(ex.get(rl) or "").strip()
+            if nn:
+                ex_lines.append(f"{rl}: {nn}")
+        current = "\n".join(ex_lines[:3])
+        if len(ex_lines) > 3:
+            current = current + f"\n외 {len(ex_lines) - 3}건"
+        _add(
+            2,
+            str(key or "").strip(),
+            "카페 닉네임 확인(카페 명단에 없음)",
+            room=", ".join(rooms),
+            rec=f"<이름마스킹>({key})",
+            current=current,
+        )
 
-    # 카페닉을 추출할 수 없는 경우
     for r in unmatched_rows:
         if not isinstance(r, list) or len(r) < 2:
             continue
         room_label, nick = r[:2]
-        issue_rows.append(["P2", str(room_label or "").strip(), str(nick or "").strip(), "", "닉네임 확인", ""])
+        _add(2, str(nick or "").strip(), "닉네임 확인(괄호/카페닉 없음)", room=str(room_label or "").strip(), current=str(nick or "").strip())
 
-    if issue_rows:
-        limit2 = max(0, int(max_rows_per_section))
-        rows.extend(issue_rows[:limit2] if limit2 else [])
-        if limit2 and len(issue_rows) > limit2:
-            rows.append([f"(표시 제한: {limit2}/{len(issue_rows)})", "", "", "", "", ""])
-    else:
-        rows.append(["P3", "없음", "", "", "", ""])
+    # 정렬/집계
+    def _t(item: dict[str, object], k: str) -> str:
+        return str(item.get(k) or "").strip()
+
+    action_items.sort(
+        key=lambda it: (
+            int(it.get("priority") or 9),
+            normalize_cafe_nickname(_t(it, "target")),
+            _t(it, "action"),
+        )
+    )
+
+    counts: dict[str, int] = {"지금": 0, "오늘": 0, "확인": 0, "정리": 0}
+    by_label: dict[str, list[dict[str, object]]] = {"지금": [], "오늘": [], "확인": [], "정리": []}
+    for it in action_items:
+        p = int(it.get("priority") or 9)
+        label = _priority_label(p)
+        if label not in by_label:
+            label = "정리"
+        by_label[label].append(it)
+        counts[label] = int(counts.get(label) or 0) + 1
+
+    rows.append([f"지금 {counts['지금']}", f"오늘 {counts['오늘']}", f"확인 {counts['확인']}", f"정리 {counts['정리']}"])
+    rows.append([""])
+
+    header = ["대상", "해야 할 일", "방", "요청 닉네임", "현재 톡닉"]
+    for label in ["지금", "오늘", "확인", "정리"]:
+        rows.append([f"📌 {label}"])
+        rows.append(list(header))
+        items = by_label.get(label) or []
+        if not items:
+            rows.append(["", "없음", "", "", ""])
+            rows.append([""])
+            continue
+        limit = max(0, int(max_rows_per_section))
+        sliced = items[:limit] if limit else items
+        for it in sliced:
+            rows.append(
+                [
+                    _t(it, "target"),
+                    _t(it, "action"),
+                    _t(it, "room"),
+                    _t(it, "rec"),
+                    _t(it, "current"),
+                ]
+            )
+        if limit and len(items) > limit:
+            rows.append(["", "항목이 많아 일부만 보여요", "", "", ""])
+        rows.append([""])
 
     return rows
 

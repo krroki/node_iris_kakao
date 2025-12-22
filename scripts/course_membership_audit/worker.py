@@ -18,6 +18,7 @@ from .iris import fetch_loaded_member_count, fetch_openchat_members, fetch_room_
 from .room_infer import infer_room_type_and_course_key
 from .sheets import (
     append_rows,
+    apply_actions_sheet_format,
     apply_overview_sheet_format,
     batch_update_rows,
     build_sheets_client,
@@ -1395,7 +1396,7 @@ class CourseMembershipAuditWorker:
         )
         clear_values(svc, course.spreadsheet_id, actions_tab)
         update_values(svc, course.spreadsheet_id, actions_tab, actions_rows)
-        apply_overview_sheet_format(svc, course.spreadsheet_id, actions_tab, actions_rows, frozen_rows=8)
+        apply_actions_sheet_format(svc, course.spreadsheet_id, actions_tab, actions_rows, frozen_rows=4)
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()

@@ -116,9 +116,14 @@ if (result === null) {
 ### 원인(대표)
 - `course-membership-audit-worker` **중복 실행**(동일 워커 프로세스가 여러 개 떠 있는 상태)
 
-### 복구(권장)
-1. `windows/start_course_membership_audit_worker.ps1 -Restart`로 1개만 남기고 정리
-2. `node-iris-app/data/course_membership_audit_worker_status.json`에서 `pid`가 1개로 유지되는지 확인
+### 자동 복구(원칙)
+- watchdog가 아래 조건 중 하나라도 감지하면 자동으로 `start_course_membership_audit_worker.ps1 -Restart`를 호출해 **1개만 남기고 정리**한다.
+  - 워커 프로세스 2개 이상(중복 실행)
+  - `heartbeatTs`가 300초 이상 stale(정지/헝)
+
+### 수동 복구(최후)
+1. watchdog가 꺼져 있으면 먼저 `windows/ensure_watchdog.ps1 -Restart`
+2. 그래도 정리되지 않으면 `windows/start_course_membership_audit_worker.ps1 -Restart`
 3. 재발 방지: 워커는 **start 스크립트로만** 관리하고, `python scripts/course_membership_audit_worker.py` 직접 실행은 피한다
 
 ---

@@ -167,12 +167,13 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
 ### 7.0.1) ACTIONS 탭(OVERVIEW 다음, 상세 할일)
 
 - `ACTIONS`
-  - 운영자가 “지금 해야 할 일”을 **우선순위(P0~P3)** 로 정리해 보는 탭
+  - 운영자가 “그대로 처리”할 수 있는 **할 일 큐** 탭
   - 구조(현재):
-    - 상단: `P0/P1/P2/P3` 건수
-    - `📌 먼저`: 멤버 목록 갱신 등 P0 항목
-    - `📌 사람별`: 한 사람 1행(해야 할 일/현재 톡닉 예시/요청 닉네임)
-    - `🧩 참여 확인 불가(닉네임)`: 카페닉 추출 불가/카페 명단 불일치
+    - 상단: `지금/오늘/확인/정리` 건수
+    - 섹션별 표:
+      - `📌 지금` / `📌 오늘` / `📌 확인` / `📌 정리`
+      - 컬럼: `대상` / `해야 할 일` / `방` / `요청 닉네임` / `현재 톡닉`
+      - `요청 닉네임`이 `<이름마스킹>(카페닉)`처럼 보이면, **이름 마스킹 규칙(첫 글자 + @ 반복 + 마지막 글자)**을 적용해 닉네임을 맞추면 된다.
   - v2 워커가 매번 **clear + 전체 재작성**한다(derived view).
 
 ### 7.1) RAW 탭(원천 취합)
@@ -365,9 +366,10 @@ grade 문자열이 강의마다 다를 수 있으므로, 코스별로 아래 규
   - `node-iris-app/data/course_membership_audit_worker_state.json`
   - `node-iris-app/data/locks/course_membership_audit_worker.lock`
 
-- **네이버 카페 창이 2~3개 뜨거나 로그인이 반복되는 경우(중요)**:
-  - 원인: `course-membership-audit-worker`가 **중복 실행**되어 같은 크롤링이 여러 번 돌고 있는 상태
-  - 조치: `windows/start_course_membership_audit_worker.ps1 -Restart`로 1개만 남기고 정리
+- **네이버 카페 창이 여러 개 뜨거나 로그인이 반복되는 경우(중요)**:
+  - 대개 원인: `course-membership-audit-worker` **중복 실행**
+  - 기본 동작: watchdog가 **중복 실행/heartbeat stale**을 감지하면 자동으로 재기동해 1개만 남긴다.
+  - 수동 조치(예외): watchdog가 꺼져 있으면 `windows/ensure_watchdog.ps1 -Restart` → `windows/start_course_membership_audit_worker.ps1 -Restart`
   - 확인: `node-iris-app/data/course_membership_audit_worker_status.json`의 `pid`가 **1개**로 유지되는지 확인
 
 ### 10.3) start_all/watchdog 연동(운영)
