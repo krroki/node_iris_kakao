@@ -853,30 +853,39 @@ def build_actions_rows(
     rows.append([f"지금 {counts['지금']}", f"오늘 {counts['오늘']}", f"확인 {counts['확인']}", f"정리 {counts['정리']}"])
     rows.append([""])
 
-    header = ["대상", "해야 할 일", "방", "요청 닉네임", "현재 톡닉"]
-    for label in ["지금", "오늘", "확인", "정리"]:
-        rows.append([f"📌 {label}"])
-        rows.append(list(header))
-        items = by_label.get(label) or []
-        if not items:
-            rows.append(["", "없음", "", "", ""])
-            rows.append([""])
+    # "섹션(📌)"을 여러 번 반복하면 화면이 지저분해져서,
+    # 단일 표 + "구분(지금/오늘/확인/정리)" 컬럼으로 단순화한다.
+    rows.append(["구분", "대상", "해야 할 일", "방", "요청 닉네임", "현재 톡닉"])
+
+    def _one_line(s: str) -> str:
+        parts = [x.strip() for x in str(s or "").splitlines() if x.strip()]
+        return " · ".join(parts)
+
+    per_label_counts: dict[str, int] = {"지금": 0, "오늘": 0, "확인": 0, "정리": 0}
+    limit = max(0, int(max_rows_per_section))
+    for it in action_items:
+        p = int(it.get("priority") or 9)
+        label = _priority_label(p)
+        if label not in per_label_counts:
+            label = "정리"
+        if limit and per_label_counts[label] >= limit:
             continue
-        limit = max(0, int(max_rows_per_section))
-        sliced = items[:limit] if limit else items
-        for it in sliced:
-            rows.append(
-                [
-                    _t(it, "target"),
-                    _t(it, "action"),
-                    _t(it, "room"),
-                    _t(it, "rec"),
-                    _t(it, "current"),
-                ]
-            )
-        if limit and len(items) > limit:
-            rows.append(["", "항목이 많아 일부만 보여요", "", "", ""])
-        rows.append([""])
+        per_label_counts[label] += 1
+
+        rows.append(
+            [
+                label,
+                _t(it, "target"),
+                _t(it, "action"),
+                _t(it, "room"),
+                _t(it, "rec"),
+                _one_line(_t(it, "current")),
+            ]
+        )
+
+    # 아무 것도 없으면 최소 메시지 1행은 남긴다.
+    if len(rows) <= 6:
+        rows.append(["정리", "", "없음", "", "", ""])
 
     return rows
 

@@ -596,14 +596,14 @@ def apply_actions_sheet_format(
     sheet_name: str,
     values: List[List[str]],
     *,
-    frozen_rows: int = 4,
+    frozen_rows: int = 6,
 ) -> None:
     """
     ACTIONS 탭을 '할 일 큐'로 읽기 쉽게 만드는 최소 서식 적용.
     - gridlines 숨김
     - 상단 타이틀/갱신 행 강조
-    - 섹션 헤더/테이블 헤더 강조
-    - ACTIONS용 컬럼 폭 지정
+    - 요약 행/테이블 헤더 강조
+    - 이전 실행에서 남은 서식(검은 줄 등)을 매번 초기화
     """
     if not values:
         return
@@ -622,25 +622,26 @@ def apply_actions_sheet_format(
     def _cell(row: list[str], idx: int) -> str:
         return str(row[idx] if idx < len(row) else "").strip()
 
-    # section header rows: single cell starting with emoji markers we use in audit.py
-    section_prefixes = ("🧭", "📌", "🧩", "🧾")
-    section_rows: list[int] = []
-    table_header_rows: list[int] = []
+    summary_row: int | None = None
+    header_row: int | None = None
     for i, row in enumerate(values):
         if not isinstance(row, list) or not row:
             continue
         a0 = _cell(row, 0)
-        if len(row) == 1 and a0.startswith(section_prefixes):
-            section_rows.append(i)
-        if a0 in ("대상", "우선", "상태", "방", "시간", "항목", "카페닉", "체크 항목", "카페닉(추출)"):
-            table_header_rows.append(i)
-
-    first_section = min(section_rows) if section_rows else None
+        if summary_row is None and a0.startswith("지금 "):
+            summary_row = i
+        if header_row is None and a0 in ("구분", "대상"):
+            header_row = i
+        if summary_row is not None and header_row is not None:
+            break
+    if header_row is None:
+        header_row = 5 if end_row > 5 else None
 
     bg_dark = _hex_color("#0F172A")  # slate-900
     bg_section = _hex_color("#111827")  # gray-900
     bg_header = _hex_color("#E2E8F0")  # slate-200
     bg_summary = _hex_color("#F8FAFC")  # slate-50
+    bg_white = _hex_color("#FFFFFF")
     fg_white = _hex_color("#FFFFFF")
     fg_dark = _hex_color("#0F172A")
     fg_muted = _hex_color("#CBD5E1")  # slate-300
@@ -671,7 +672,7 @@ def apply_actions_sheet_format(
             "updateSheetProperties": {
                 "properties": {
                     "sheetId": sheet_id,
-                    "gridProperties": {"hideGridlines": True, "frozenRowCount": max(0, int(frozen_rows))},
+                    "gridProperties": {"hideGridlines": True, "frozenRowCount": max(0, min(int(frozen_rows), end_row))},
                 },
                 "fields": "gridProperties.hideGridlines,gridProperties.frozenRowCount",
             }
@@ -685,62 +686,91 @@ def apply_actions_sheet_format(
         requests.append({"mergeCells": {"range": _range(0, 1, 0, max_cols), "mergeType": "MERGE_ALL"}})
         requests.append({"mergeCells": {"range": _range(1, 2, 0, max_cols), "mergeType": "MERGE_ALL"}})
 
-    # column widths
+    # base format reset (prevents stale dark stripes from previous runs)
+    base_cols = max(max_cols, int(sheet_col_count or 0), 1)
+    requests.append(
+        _repeat(
+            0,
+            end_row,
+            0,
+            base_cols,
+            {
+                "backgroundColor": bg_white,
+                "textFormat": {"foregroundColor": fg_dark, "fontSize": 10},
+                "horizontalAlignment": "LEFT",
+                "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "CLIP",
+            },
+            "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+        )
+    )
+
+    # column widths (A~F 기준)
     requests.append(
         {
             "updateDimensionProperties": {
-                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": max_cols},
-                "properties": {"pixelSize": 170},
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": base_cols},
+                "properties": {"pixelSize": 160},
                 "fields": "pixelSize",
             }
         }
     )
-    if max_cols >= 1:
+    if base_cols >= 1:
         requests.append(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
-                    "properties": {"pixelSize": 220},
+                    "properties": {"pixelSize": 90},  # 구분
                     "fields": "pixelSize",
                 }
             }
         )
-    if max_cols >= 2:
+    if base_cols >= 2:
         requests.append(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
-                    "properties": {"pixelSize": 360},
+                    "properties": {"pixelSize": 170},  # 대상
                     "fields": "pixelSize",
                 }
             }
         )
-    if max_cols >= 3:
+    if base_cols >= 3:
         requests.append(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": 3},
-                    "properties": {"pixelSize": 240},
+                    "properties": {"pixelSize": 300},  # 해야 할 일
                     "fields": "pixelSize",
                 }
             }
         )
-    if max_cols >= 4:
+    if base_cols >= 4:
         requests.append(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 3, "endIndex": 4},
-                    "properties": {"pixelSize": 320},
+                    "properties": {"pixelSize": 220},  # 방
                     "fields": "pixelSize",
                 }
             }
         )
-    if max_cols >= 5:
+    if base_cols >= 5:
         requests.append(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 4, "endIndex": 5},
-                    "properties": {"pixelSize": 560},
+                    "properties": {"pixelSize": 260},  # 요청 닉네임
+                    "fields": "pixelSize",
+                }
+            }
+        )
+    if base_cols >= 6:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 5, "endIndex": 6},
+                    "properties": {"pixelSize": 620},  # 현재 톡닉
                     "fields": "pixelSize",
                 }
             }
@@ -762,6 +792,26 @@ def apply_actions_sheet_format(
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 2},
                     "properties": {"pixelSize": 28},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+    if summary_row is not None:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": summary_row, "endIndex": summary_row + 1},
+                    "properties": {"pixelSize": 28},
+                    "fields": "pixelSize",
+                }
+            }
+        )
+    if header_row is not None:
+        requests.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": header_row, "endIndex": header_row + 1},
+                    "properties": {"pixelSize": 32},
                     "fields": "pixelSize",
                 }
             }
@@ -796,66 +846,37 @@ def apply_actions_sheet_format(
                     "backgroundColor": bg_section,
                     "textFormat": {"foregroundColor": fg_muted, "fontSize": 10, "bold": False},
                     "horizontalAlignment": "LEFT",
-                    "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP",
-                },
-                "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-            )
+                "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "WRAP",
+            },
+            "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
         )
+    )
 
-    # Summary block (before first section header)
-    if first_section is not None and first_section > 2:
+    # Summary row
+    if summary_row is not None:
         requests.append(
             _repeat(
-                2,
-                first_section,
+                summary_row,
+                summary_row + 1,
                 0,
                 max_cols,
                 {
                     "backgroundColor": bg_summary,
-                    "textFormat": {"foregroundColor": fg_dark, "fontSize": 10},
+                    "textFormat": {"foregroundColor": fg_dark, "fontSize": 10, "bold": True},
                     "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP",
+                    "wrapStrategy": "CLIP",
                 },
                 "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
             )
         )
-        requests.append(
-            _repeat(
-                2,
-                first_section,
-                0,
-                1,
-                {"textFormat": {"bold": True}},
-                "userEnteredFormat.textFormat.bold",
-            )
-        )
 
-    # Section headers
-    for r in section_rows:
+    # Table header row
+    if header_row is not None:
         requests.append(
             _repeat(
-                r,
-                r + 1,
-                0,
-                max_cols,
-                {
-                    "backgroundColor": bg_section,
-                    "textFormat": {"foregroundColor": fg_white, "bold": True, "fontSize": 11},
-                    "horizontalAlignment": "LEFT",
-                    "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP",
-                },
-                "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-            )
-        )
-
-    # Table header rows
-    for r in table_header_rows:
-        requests.append(
-            _repeat(
-                r,
-                r + 1,
+                header_row,
+                header_row + 1,
                 0,
                 max_cols,
                 {
@@ -863,9 +884,22 @@ def apply_actions_sheet_format(
                     "textFormat": {"foregroundColor": fg_dark, "bold": True, "fontSize": 10},
                     "horizontalAlignment": "CENTER",
                     "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP",
+                    "wrapStrategy": "CLIP",
                 },
                 "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            )
+        )
+
+    # 구분 컬럼 정렬(가독성)
+    if header_row is not None and (header_row + 1) < end_row:
+        requests.append(
+            _repeat(
+                header_row + 1,
+                end_row,
+                0,
+                1,
+                {"horizontalAlignment": "CENTER"},
+                "userEnteredFormat.horizontalAlignment",
             )
         )
 

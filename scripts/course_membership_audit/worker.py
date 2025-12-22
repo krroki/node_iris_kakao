@@ -1396,7 +1396,7 @@ class CourseMembershipAuditWorker:
         )
         clear_values(svc, course.spreadsheet_id, actions_tab)
         update_values(svc, course.spreadsheet_id, actions_tab, actions_rows)
-        apply_actions_sheet_format(svc, course.spreadsheet_id, actions_tab, actions_rows, frozen_rows=4)
+        apply_actions_sheet_format(svc, course.spreadsheet_id, actions_tab, actions_rows, frozen_rows=6)
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()
