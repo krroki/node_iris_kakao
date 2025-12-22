@@ -332,7 +332,7 @@ def apply_overview_sheet_format(
     if not values:
         return
 
-    sheet_id, _row_count, sheet_col_count = _get_sheet_meta(svc, spreadsheet_id, sheet_name)
+    sheet_id, sheet_row_count, sheet_col_count = _get_sheet_meta(svc, spreadsheet_id, sheet_name)
     if sheet_id is None:
         return
 
@@ -342,6 +342,7 @@ def apply_overview_sheet_format(
             max_cols = max(max_cols, len(r))
     max_cols = max(1, max_cols)
     end_row = max(1, len(values))
+    base_rows = max(end_row, int(sheet_row_count or 0), 1)
 
     def _cell(row: list[str], idx: int) -> str:
         return str(row[idx] if idx < len(row) else "").strip()
@@ -365,6 +366,7 @@ def apply_overview_sheet_format(
     bg_section = _hex_color("#111827")  # gray-900
     bg_header = _hex_color("#E2E8F0")  # slate-200
     bg_summary = _hex_color("#F8FAFC")  # slate-50
+    bg_white = _hex_color("#FFFFFF")
     fg_white = _hex_color("#FFFFFF")
     fg_dark = _hex_color("#0F172A")
     fg_muted = _hex_color("#CBD5E1")  # slate-300
@@ -376,6 +378,15 @@ def apply_overview_sheet_format(
             "endRowIndex": max(0, int(er)),
             "startColumnIndex": max(0, int(sc)),
             "endColumnIndex": max(0, int(ec if ec is not None else max_cols)),
+        }
+
+    def _repeat(sr: int, er: int, sc: int, ec: int, fmt: dict, fields: str) -> dict:
+        return {
+            "repeatCell": {
+                "range": _range(sr, er, sc, ec),
+                "cell": {"userEnteredFormat": fmt},
+                "fields": fields,
+            }
         }
 
     requests: list[dict] = []
@@ -393,12 +404,29 @@ def apply_overview_sheet_format(
         }
     )
 
-    # unmerge+merge title row
-    # NOTE: 이전 실행에서 더 넓은 범위로 merge된 상태일 수 있어,
-    # unmerge는 sheet의 columnCount 범위를 우선 사용한다.
-    unmerge_cols = max(max_cols, int(sheet_col_count or 0), 1)
+    # reset: 이전 실행에서 남은 "검은 줄/배경/정렬" 등을 제거하기 위해 시트 전체를 먼저 초기화한다.
+    # NOTE: unmerge는 sheet의 columnCount 범위를 우선 사용한다.
+    base_cols = max(max_cols, int(sheet_col_count or 0), 1)
+    requests.append({"unmergeCells": {"range": _range(0, base_rows, 0, base_cols)}})
+    requests.append(
+        _repeat(
+            0,
+            base_rows,
+            0,
+            base_cols,
+            {
+                "backgroundColor": bg_white,
+                "textFormat": {"foregroundColor": fg_dark, "fontSize": 10},
+                "horizontalAlignment": "LEFT",
+                "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "CLIP",
+            },
+            "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+        )
+    )
+
+    # merge title/meta row
     if max_cols > 1:
-        requests.append({"unmergeCells": {"range": _range(0, min(2, end_row), 0, unmerge_cols)}})
         requests.append({"mergeCells": {"range": _range(0, 1, 0, max_cols), "mergeType": "MERGE_ALL"}})
         requests.append({"mergeCells": {"range": _range(1, 2, 0, max_cols), "mergeType": "MERGE_ALL"}})
 
@@ -473,15 +501,6 @@ def apply_overview_sheet_format(
                 }
             }
         )
-
-    def _repeat(sr: int, er: int, sc: int, ec: int, fmt: dict, fields: str) -> dict:
-        return {
-            "repeatCell": {
-                "range": _range(sr, er, sc, ec),
-                "cell": {"userEnteredFormat": fmt},
-                "fields": fields,
-            }
-        }
 
     # Title row
     requests.append(
@@ -608,7 +627,7 @@ def apply_actions_sheet_format(
     if not values:
         return
 
-    sheet_id, _row_count, sheet_col_count = _get_sheet_meta(svc, spreadsheet_id, sheet_name)
+    sheet_id, sheet_row_count, sheet_col_count = _get_sheet_meta(svc, spreadsheet_id, sheet_name)
     if sheet_id is None:
         return
 
@@ -618,6 +637,7 @@ def apply_actions_sheet_format(
             max_cols = max(max_cols, len(r))
     max_cols = max(1, max_cols)
     end_row = max(1, len(values))
+    base_rows = max(end_row, int(sheet_row_count or 0), 1)
 
     def _cell(row: list[str], idx: int) -> str:
         return str(row[idx] if idx < len(row) else "").strip()
@@ -679,19 +699,19 @@ def apply_actions_sheet_format(
         }
     )
 
-    # unmerge+merge title row
-    unmerge_cols = max(max_cols, int(sheet_col_count or 0), 1)
+    base_cols = max(max_cols, int(sheet_col_count or 0), 1)
+
+    # reset: 이전 실행에서 남은 서식/merge가 아래쪽에 남지 않도록, 먼저 시트 전체를 정리한다.
+    requests.append({"unmergeCells": {"range": _range(0, base_rows, 0, base_cols)}})
     if max_cols > 1:
-        requests.append({"unmergeCells": {"range": _range(0, min(2, end_row), 0, unmerge_cols)}})
         requests.append({"mergeCells": {"range": _range(0, 1, 0, max_cols), "mergeType": "MERGE_ALL"}})
         requests.append({"mergeCells": {"range": _range(1, 2, 0, max_cols), "mergeType": "MERGE_ALL"}})
 
     # base format reset (prevents stale dark stripes from previous runs)
-    base_cols = max(max_cols, int(sheet_col_count or 0), 1)
     requests.append(
         _repeat(
             0,
-            end_row,
+            base_rows,
             0,
             base_cols,
             {
