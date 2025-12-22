@@ -883,7 +883,7 @@ class CourseMembershipAuditWorker:
         결제/수기 SSOT(구글 시트)에서 코스 멤버 목록을 읽어온다.
 
         반환 레코드 스키마(최소):
-          - ssotUserId, ssotNickname, ssotGrade, ssotKind, ssotTrack, sourceRow
+          - ssotUserId, ssotNickname, ssotName, ssotGrade, ssotKind, ssotTrack, sourceRow
 
         NOTE:
           - 읽기 실패 시 fallback 하지 않는다(SSOT가 흔들리면 전체 판단이 깨짐).
@@ -914,6 +914,7 @@ class CourseMembershipAuditWorker:
         idx_nick = _idx(pay.nickname_col)
         idx_id = _idx(pay.id_col)
         idx_kind = _idx(pay.kind_col)
+        idx_name = _idx(getattr(pay, "name_col", "") or "")
 
         missing_cols: list[str] = []
         if idx_id < 0:
@@ -1003,6 +1004,7 @@ class CourseMembershipAuditWorker:
 
             ssot_grade = _cell(row, idx_grade)
             ssot_kind = _cell(row, idx_kind)
+            ssot_name = _cell(row, idx_name)
 
             if _should_exclude(ssot_kind):
                 stats["excluded"] += 1
@@ -1015,6 +1017,7 @@ class CourseMembershipAuditWorker:
                 "ssotUserId": ssot_user_id,
                 "ssotNickname": ssot_nick,
                 "ssotNicknameAliases": ssot_aliases,
+                "ssotName": ssot_name,
                 "ssotGrade": ssot_grade,
                 "ssotKind": ssot_kind,
                 "ssotTrack": ssot_track,
@@ -1254,7 +1257,11 @@ class CourseMembershipAuditWorker:
             openchat_fetched_at=openchat_fetched_at,
             ssot_records=ssot_records,
         )
-        ssot_rows = audit_mod.build_ssot_raw_rows(course_key=course.course_key, fetched_at=now_iso, ssot_records=ssot_records) if ssot_records else [["courseKey", "fetchedAt", "ssotUserId", "ssotNickname", "ssotGrade", "ssotTrack", "ssotKind", "sourceRow"]]
+        ssot_rows = (
+            audit_mod.build_ssot_raw_rows(course_key=course.course_key, fetched_at=now_iso, ssot_records=ssot_records)
+            if ssot_records
+            else [["courseKey", "fetchedAt", "ssotUserId", "ssotNickname", "ssotName", "ssotGrade", "ssotTrack", "ssotKind", "sourceRow"]]
+        )
 
         # upsert(no clear) + change history
         tabs = course.tabs

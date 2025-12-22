@@ -650,7 +650,7 @@ def apply_actions_sheet_format(
         a0 = _cell(row, 0)
         if summary_row is None and a0.startswith("지금 "):
             summary_row = i
-        if header_row is None and a0 in ("구분", "대상"):
+        if header_row is None and a0 in ("구분", "대상", "분류", "우선순위"):
             header_row = i
         if summary_row is not None and header_row is not None:
             break
@@ -740,7 +740,7 @@ def apply_actions_sheet_format(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
-                    "properties": {"pixelSize": 90},  # 구분
+                    "properties": {"pixelSize": 90},  # 우선순위
                     "fields": "pixelSize",
                 }
             }
@@ -750,7 +750,7 @@ def apply_actions_sheet_format(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
-                    "properties": {"pixelSize": 170},  # 대상
+                    "properties": {"pixelSize": 260},  # 해야 할 일
                     "fields": "pixelSize",
                 }
             }
@@ -760,7 +760,7 @@ def apply_actions_sheet_format(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": 3},
-                    "properties": {"pixelSize": 300},  # 해야 할 일
+                    "properties": {"pixelSize": 170},  # 대상
                     "fields": "pixelSize",
                 }
             }
@@ -770,7 +770,7 @@ def apply_actions_sheet_format(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 3, "endIndex": 4},
-                    "properties": {"pixelSize": 220},  # 방
+                    "properties": {"pixelSize": 220},  # 필요한 방
                     "fields": "pixelSize",
                 }
             }
@@ -780,7 +780,7 @@ def apply_actions_sheet_format(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 4, "endIndex": 5},
-                    "properties": {"pixelSize": 260},  # 요청 닉네임
+                    "properties": {"pixelSize": 320},  # 바꿀 닉네임
                     "fields": "pixelSize",
                 }
             }
@@ -790,7 +790,7 @@ def apply_actions_sheet_format(
             {
                 "updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 5, "endIndex": 6},
-                    "properties": {"pixelSize": 620},  # 현재 톡닉
+                    "properties": {"pixelSize": 620},  # 현재 닉네임
                     "fields": "pixelSize",
                 }
             }

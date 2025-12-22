@@ -128,6 +128,7 @@ class PaymentSsotConfig:
     header_row: int
     grade_col: str
     nickname_col: str
+    name_col: str
     id_col: str
     kind_col: str
     exclude_kinds: list[str]
@@ -287,6 +288,7 @@ def load_config(path_raw: str) -> tuple[Path, AuditConfig]:
                 header_row=max(1, _safe_int(pay_raw.get("headerRow") or pay_raw.get("header_row"), 19)),
                 grade_col=_safe_str(pay_raw.get("gradeCol") or pay_raw.get("gradeColumn") or "카페 등급") or "카페 등급",
                 nickname_col=_safe_str(pay_raw.get("nicknameCol") or pay_raw.get("nicknameColumn") or "닉네임") or "닉네임",
+                name_col=_safe_str(pay_raw.get("nameCol") or pay_raw.get("nameColumn") or pay_raw.get("name") or "성함") or "성함",
                 id_col=_safe_str(pay_raw.get("idCol") or pay_raw.get("idColumn") or pay_raw.get("userIdCol") or "아이디") or "아이디",
                 kind_col=_safe_str(pay_raw.get("kindCol") or pay_raw.get("kindColumn") or "구분") or "구분",
                 exclude_kinds=_norm_str_list(pay_raw.get("excludeKinds")) or ["환불"],

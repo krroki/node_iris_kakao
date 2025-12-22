@@ -292,6 +292,21 @@ def is_valid_name_mask_prefix(prefix: str) -> bool:
     return bool(_NAME_MASK_RE.match(s))
 
 
+def make_name_mask_prefix(full_name: str) -> str:
+    """
+    성함 기반 "이름 마스킹" 프리픽스 생성.
+    - 3글자 이름: 정@록
+    - 4글자 이름: 정@@록
+    """
+    s = _WS_RE.sub("", str(full_name or "").strip())
+    if len(s) < 2:
+        return ""
+    first = s[0]
+    last = s[-1]
+    at_cnt = max(1, min(len(s) - 2, 10))
+    return f"{first}{'@' * at_cnt}{last}"
+
+
 def classify_track(grade: str, rules: GradeRules) -> str:
     def _ng(s: str) -> str:
         return normalize_cafe_nickname(str(s or "")).lower()
@@ -319,6 +334,7 @@ def build_ssot_raw_rows(*, course_key: str, fetched_at: str, ssot_records: list[
             "fetchedAt",
             "ssotUserId",
             "ssotNickname",
+            "ssotName",
             "ssotGrade",
             "ssotTrack",
             "ssotKind",
@@ -334,6 +350,7 @@ def build_ssot_raw_rows(*, course_key: str, fetched_at: str, ssot_records: list[
                 str(fetched_at or "").strip(),
                 str(r.get("ssotUserId") or "").strip(),
                 str(r.get("ssotNickname") or "").strip(),
+                str(r.get("ssotName") or "").strip(),
                 str(r.get("ssotGrade") or "").strip(),
                 str(r.get("ssotTrack") or "").strip(),
                 str(r.get("ssotKind") or "").strip(),
@@ -376,6 +393,19 @@ def build_actions_rows(
             if nn:
                 ssot_nick_set.add(nn)
     ssot_alias_map = build_ssot_nickname_alias_map(ssot_list)
+    ssot_name_candidates: dict[str, set[str]] = {}
+    for r in ssot_list:
+        name = str(r.get("ssotName") or "").strip()
+        if not name:
+            continue
+        for nn in iter_ssot_nickname_variants(r):
+            k = normalize_cafe_nickname(nn)
+            if not k:
+                continue
+            if k not in ssot_name_candidates:
+                ssot_name_candidates[k] = set()
+            ssot_name_candidates[k].add(name)
+    ssot_name_map: dict[str, str] = {k: next(iter(v)) for k, v in ssot_name_candidates.items() if len(v) == 1}
     cafe_nick_set = build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
 
     # --- helpers ---
@@ -551,6 +581,11 @@ def build_actions_rows(
             prefix = str(name_mask_prefix or "").strip()
             if prefix and is_valid_name_mask_prefix(prefix):
                 return f"{prefix}({cafe_nick})"
+        # Fallback: 결제 SSOT(성함) 기반 추천
+        name = ssot_name_map.get(normalize_cafe_nickname(cafe_nick)) or ""
+        prefix = make_name_mask_prefix(name)
+        if prefix and is_valid_name_mask_prefix(prefix):
+            return f"{prefix}({cafe_nick})"
         return f"<이름마스킹>({cafe_nick})"
 
     nick_change_groups: dict[str, dict[str, object]] = {}
@@ -707,15 +742,19 @@ def build_actions_rows(
         return f"진행률 {x}"
 
     if chat_inc:
-        _add(0, "사담방", "멤버 목록 갱신", room="사담방", current=_progress(chat_load))
+        _add(0, "사담방", "멤버 목록 다시 불러오기", room="사담방", current=_progress(chat_load))
     if notice_inc:
-        _add(0, "공지방", "멤버 목록 갱신", room="공지방", current=_progress(notice_load))
+        _add(0, "공지방", "멤버 목록 다시 불러오기", room="공지방", current=_progress(notice_load))
     if premium_inc:
-        _add(0, "프리미엄방", "멤버 목록 갱신", room="프리미엄방", current=_progress(premium_load))
+        _add(0, "프리미엄방", "멤버 목록 다시 불러오기", room="프리미엄방", current=_progress(premium_load))
     if cipher_cnt > 0 and total_openchat_rows > 0 and (cipher_cnt / max(1, total_openchat_rows)) >= 0.6:
-        _add(0, "톡방", "닉네임이 ??? 로 보이는지 확인", current=f"{cipher_cnt}명")
+        _add(0, "톡방", "닉네임이 ??? 로 깨져 보이는지 확인", current=f"{cipher_cnt}명")
 
     room_order = {"사담방": 1, "공지방": 2, "프리미엄방": 3}
+
+    def _pretty_rooms(raw: str) -> str:
+        parts = [p.strip() for p in str(raw or "").split(",") if str(p or "").strip()]
+        return ", ".join(parts)
 
     # 1) 결제 시트 기준(사람별)
     for d in ssot_view:
@@ -731,6 +770,7 @@ def build_actions_rows(
         in_cafe = _is_true(d.get("inCafe", "TRUE"))
         in_premium = _is_true(d.get("in_premium", ""))
         miss = str(d.get("missingRooms") or "").strip()
+        miss = _pretty_rooms(miss)
 
         current = _matched_nicks_for(cafe_nick)
 
@@ -745,21 +785,11 @@ def build_actions_rows(
             _add(2, cafe_nick, "동명이인 확인", current=current)
 
         if track == "normal" and in_premium:
-            _add(2, cafe_nick, "프리미엄방 권한 확인(일반반)", room="프리미엄방", current=current)
+            _add(2, cafe_nick, "프리미엄방 정리 - 일반반", room="프리미엄방", current=current)
 
         if cafe_nick in nick_change_groups:
             g = nick_change_groups.get(cafe_nick) if cafe_nick else None
             if isinstance(g, dict):
-                issues = sorted([str(x).strip() for x in (g.get("issues") or []) if str(x).strip()])
-                issue_map = {
-                    "슬래시(/)": "슬래시(/) 포함",
-                    "카페닉 변경": "카페닉 불일치",
-                    "이름 마스킹": "이름 마스킹 규칙 불일치",
-                    "형식": "형식 불일치",
-                    "괄호 없음": "괄호(카페닉) 없음",
-                }
-                issue_text = ", ".join([issue_map.get(x, x) for x in issues if x])
-
                 rooms = list(g.get("rooms") or [])
                 rooms_sorted = sorted([str(x).strip() for x in rooms if str(x).strip()], key=lambda x: (room_order.get(x, 9), x))
                 rooms_text = ", ".join(rooms_sorted)
@@ -779,7 +809,7 @@ def build_actions_rows(
                 _add(
                     2,
                     cafe_nick,
-                    "닉네임 변경 요청" + (f" ({issue_text})" if issue_text else ""),
+                    "바꿀 닉네임으로 변경 요청",
                     room=rooms_text,
                     rec=rec,
                     current=ex_text or current,
@@ -795,7 +825,7 @@ def build_actions_rows(
             if not cafe_nick:
                 continue
             current = _matched_nicks_for(cafe_nick)
-            _add(2, cafe_nick, "결제 시트 확인(결제 기록 없음)", current=current)
+            _add(2, cafe_nick, "결제 시트 확인", current=current)
 
     # 3) 참여 확인 불가(닉네임)
     for key in sorted(list(unknown_groups.keys()), key=lambda x: normalize_cafe_nickname(x)):
@@ -816,9 +846,9 @@ def build_actions_rows(
         _add(
             2,
             str(key or "").strip(),
-            "카페 닉네임 확인(카페 명단에 없음)",
+            "카페 닉네임 확인",
             room=", ".join(rooms),
-            rec=f"<이름마스킹>({key})",
+            rec=_recommend_nickname("", "", str(key or "").strip(), ""),
             current=current,
         )
 
@@ -826,7 +856,7 @@ def build_actions_rows(
         if not isinstance(r, list) or len(r) < 2:
             continue
         room_label, nick = r[:2]
-        _add(2, str(nick or "").strip(), "닉네임 확인(괄호/카페닉 없음)", room=str(room_label or "").strip(), current=str(nick or "").strip())
+        _add(2, str(nick or "").strip(), "카페 닉네임 확인", room=str(room_label or "").strip(), current=str(nick or "").strip())
 
     # 정렬/집계
     def _t(item: dict[str, object], k: str) -> str:
@@ -835,8 +865,19 @@ def build_actions_rows(
     action_items.sort(
         key=lambda it: (
             int(it.get("priority") or 9),
+            {
+                "멤버 목록 다시 불러오기": 10,
+                "닉네임이 ??? 로 깨져 보이는지 확인": 20,
+                "카페 가입 확인 후 톡방 입장 안내": 30,
+                "카페 가입 확인": 40,
+                "톡방 입장 안내": 50,
+                "바꿀 닉네임으로 변경 요청": 60,
+                "동명이인 확인": 70,
+                "프리미엄방 정리 - 일반반": 80,
+                "결제 시트 확인": 90,
+                "카페 닉네임 확인": 100,
+            }.get(_t(it, "action"), 999),
             normalize_cafe_nickname(_t(it, "target")),
-            _t(it, "action"),
         )
     )
 
@@ -855,7 +896,7 @@ def build_actions_rows(
 
     # "섹션(📌)"을 여러 번 반복하면 화면이 지저분해져서,
     # 단일 표 + "구분(지금/오늘/확인/정리)" 컬럼으로 단순화한다.
-    rows.append(["구분", "대상", "해야 할 일", "방", "요청 닉네임", "현재 톡닉"])
+    rows.append(["우선순위", "해야 할 일", "대상", "필요한 방", "바꿀 닉네임", "현재 닉네임"])
 
     def _one_line(s: str) -> str:
         parts = [x.strip() for x in str(s or "").splitlines() if x.strip()]
@@ -875,8 +916,8 @@ def build_actions_rows(
         rows.append(
             [
                 label,
-                _t(it, "target"),
                 _t(it, "action"),
+                _t(it, "target"),
                 _t(it, "room"),
                 _t(it, "rec"),
                 _one_line(_t(it, "current")),

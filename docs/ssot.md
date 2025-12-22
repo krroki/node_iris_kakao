@@ -5,7 +5,7 @@
 - 목적: 루팅 안드로이드 + IRIS + Hyper-V 리눅스 봇 서버 조합으로 카카오톡 오픈채팅(명령어, 환영, 방송)을 안정적으로 운영.
 - 현재 상태: Hyper-V/루팅 단말 기반 설치 가이드 정리 및 요구사항 문서 갱신 완료 (2025-10-28).
 
-- 2025-12-22: 강의 운영 v2 결제 SSOT 연동 정합성 보강 + 현업 시트 UX 개선 — `/course`에서 `paymentSsot` 입력 지원 + 설정 API가 `paymentSsot`/`SSOT_RAW`/`OVERVIEW`/`ACTIONS`를 보존(저장 시 누락 방지) + 결제 닉네임 변경(`old->new`) alias 매칭 지원 + `ACTIONS`를 단일 표(`구분: 지금/오늘/확인/정리`) “할 일 큐”로 단순화(추천 닉네임 placeholder: `<이름마스킹>(카페닉)`).
+- 2025-12-22: 강의 운영 v2 결제 SSOT 연동 정합성 보강 + 현업 시트 UX 개선 — `/course`에서 `paymentSsot` 입력 지원 + 설정 API가 `paymentSsot`/`SSOT_RAW`/`OVERVIEW`/`ACTIONS`를 보존(저장 시 누락 방지) + 결제 닉네임 변경(`old->new`) alias 매칭 지원 + `ACTIONS`를 단일 표(`우선순위: 지금/오늘/확인/정리`) “할 일 큐”로 단순화(`바꿀 닉네임`은 결제 SSOT의 `성함`을 기반으로 `정@@록(카페닉)` 형태로 추천, 성함이 없으면 `<이름마스킹>(카페닉)` placeholder).
 - 2025-12-21: course-membership-audit-worker 중복 실행 방지 강화 — OS 파일 락으로 싱글톤 보장 + start 스크립트가 실행 중이면 skip(네이버 카페 창 다중 생성/로그인 반복 재발 방지).
 - 2025-12-19: 강의 운영 UI 정리 — RoomCard의 강의 운영(카페 CSV/시트 입력) 제거, `/course` 탭에서 코스 자동 감지 + v2(등급 기반 참여 점검) 설정/워커 관리로 통합. v1 roster-worker는 `rosterSheetName` 미설정 시 방 이름 접두어로 기본 탭명(`ROSTER_CHAT/ROSTER_NOTICE/ROSTER_PREMIUM`)을 추론한다.
 - 2025-12-12: welcome 템플릿 SSOT 정합성 강화(신규입장/`welcome:test`에서 runtime.json.templateByFeature.welcome → welcomeTemplateName 순으로만 사용) 및 템플릿 미존재 시 기본 환영 폴백 발송 금지.
