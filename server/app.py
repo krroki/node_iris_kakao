@@ -2436,7 +2436,7 @@ async def talkapi_prepare_raw(request: Request):
 @app.post("/send/talkapi/dispatch_raw")
 async def talkapi_dispatch_raw(request: Request):
     """Send raw payload via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False.
-    Body: { roomId, message, type, attachment }
+    Body: { roomId, message, type, attachment, mentionees?:[{name,userId}] }
     """
     cfg = load_runtime()
     if cfg.get('safeMode', True):
@@ -2456,6 +2456,17 @@ async def talkapi_dispatch_raw(request: Request):
     attachment = (body or {}).get('attachment')
     if not isinstance(attachment, dict):
         raise HTTPException(status_code=400, detail='invalid attachment: expected object')
+    mentionees = body.get('mentionees') if isinstance(body, dict) else []
+    if not isinstance(mentionees, list):
+        mentionees = []
+    if mentionees:
+        try:
+            att = _make_mention_attachment(message, mentionees)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if isinstance(att, dict) and att:
+            # Merge mention struct into attachment (for reply(type=26) we must keep src_* fields).
+            attachment = {**attachment, **att}
     if mtype == 26:
         attachment = _coerce_reply_attachment_types(attachment)
     payload = {

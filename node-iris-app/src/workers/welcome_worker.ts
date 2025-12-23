@@ -50,6 +50,14 @@ type OpenProfileCloseGuideConfig = {
   confirmCheckIntervalMs: number;
 };
 
+type NicknameChangeAfterImageConfig = {
+  enabled: boolean;
+  requestText: string;
+  confirmText: string;
+  confirmWindowMs: number;
+  confirmCheckIntervalMs: number;
+};
+
 type PendingFollowUp = {
   roomId: string;
   userId: string;
@@ -75,10 +83,26 @@ type PendingOpenProfileCloseConfirmation = {
   attempts: number;
 };
 
+type PendingNicknameChangeAfterImageConfirmation = {
+  roomId: string;
+  roomName: string;
+  userId: string;
+  userName: string;
+  requestSentAt: number;
+  nextCheckAt: number;
+  expiresAt: number;
+  attempts: number;
+  srcLogId: string;
+  srcType: number;
+  srcMessage: string;
+  srcLinkId?: string;
+};
+
 type WorkerState = {
   lastSeenMs: number;
   pending: PendingFollowUp[];
   pendingOpenProfileCloseConfirmations?: PendingOpenProfileCloseConfirmation[];
+  pendingNicknameChangeAfterImageConfirmations?: PendingNicknameChangeAfterImageConfirmation[];
   roomLinkIds?: Record<string, { linkId: string; at: number }>;
   updatedAt: string;
 };
@@ -114,6 +138,8 @@ const joinBatches = new Map<string, JoinBatch>();
 const pendingByUser = new Map<string, PendingFollowUp>();
 // roomId:userId -> pending "open profile close" confirmation polling
 const pendingOpenProfileCloseByUser = new Map<string, PendingOpenProfileCloseConfirmation>();
+// roomId:userId -> pending "nickname change request after image" confirmation polling
+const pendingNicknameChangeAfterImageByUser = new Map<string, PendingNicknameChangeAfterImageConfirmation>();
 // roomId:userId -> last known nickname from feedType=2(profile update)
 const profileNickByUser = new Map<string, { nickName: string; at: number }>();
 const PROFILE_NICK_CACHE_MS = 20 * 60 * 1000;
@@ -153,6 +179,11 @@ function setRecentProfileNickname(roomId: string, userId: string, nickName: stri
 }
 
 function getRecentProfileNickname(roomId: string, userId: string): string | null {
+  const hit = getRecentProfileNicknameRecord(roomId, userId);
+  return hit ? hit.nickName : null;
+}
+
+function getRecentProfileNicknameRecord(roomId: string, userId: string): { nickName: string; at: number } | null {
   const rid = safeString(roomId);
   const uid = safeString(userId);
   if (!rid || !uid) return null;
@@ -168,7 +199,7 @@ function getRecentProfileNickname(roomId: string, userId: string): string | null
     profileNickByUser.delete(key);
     return null;
   }
-  return nn;
+  return { nickName: nn, at };
 }
 
 function isPidAlive(pidRaw: unknown): boolean {
@@ -378,6 +409,59 @@ function parseFollowUpConfig(runtime: RuntimeConfig): { ok: true; cfg: FollowUpC
   return { ok: true, cfg: { enabled, windowMs, maxPendingPerRoom, replies, timeoutMention } };
 }
 
+function parseNicknameChangeAfterImageConfig(
+  runtime: RuntimeConfig,
+): { ok: true; cfg: NicknameChangeAfterImageConfig } | { ok: false; error: string } {
+  const w = runtime.welcome && typeof runtime.welcome === "object" ? runtime.welcome : null;
+  const fu = w && typeof w === "object" ? (w as any).followUp : null;
+  const raw = fu && typeof fu === "object" ? (fu as any).nicknameChangeAfterImage : null;
+
+  // Backward compatible: config missing => feature off
+  if (!raw || typeof raw !== "object") {
+    return {
+      ok: true,
+      cfg: {
+        enabled: false,
+        requestText: "",
+        confirmText: "",
+        confirmWindowMs: 15 * 60 * 1000,
+        confirmCheckIntervalMs: 15_000,
+      },
+    };
+  }
+
+  const enabled = (raw as any).enabled;
+  if (typeof enabled !== "boolean") {
+    return { ok: false, error: "welcome.followUp.nicknameChangeAfterImage.enabled must be boolean" };
+  }
+
+  const requestText = safeString((raw as any).requestText ?? (raw as any).text ?? (raw as any).message ?? "");
+  const confirmText = safeString((raw as any).confirmText ?? (raw as any).confirmMessage ?? "");
+  const confirmWindowMsRaw = (raw as any).confirmWindowMs ?? (raw as any).windowMs ?? null;
+  const confirmCheckIntervalMsRaw = (raw as any).confirmCheckIntervalMs ?? (raw as any).checkIntervalMs ?? null;
+
+  const confirmWindowMs =
+    typeof confirmWindowMsRaw === "number" && Number.isFinite(confirmWindowMsRaw)
+      ? Math.max(0, Math.floor(confirmWindowMsRaw))
+      : 15 * 60 * 1000;
+  const confirmCheckIntervalMs =
+    typeof confirmCheckIntervalMsRaw === "number" && Number.isFinite(confirmCheckIntervalMsRaw)
+      ? Math.max(5000, Math.floor(confirmCheckIntervalMsRaw))
+      : 15_000;
+
+  if (enabled && !requestText) {
+    return { ok: false, error: "welcome.followUp.nicknameChangeAfterImage.requestText must be non-empty" };
+  }
+  if (enabled && !confirmText) {
+    return { ok: false, error: "welcome.followUp.nicknameChangeAfterImage.confirmText must be non-empty" };
+  }
+  if (enabled && confirmWindowMs <= 0) {
+    return { ok: false, error: "welcome.followUp.nicknameChangeAfterImage.confirmWindowMs must be > 0" };
+  }
+
+  return { ok: true, cfg: { enabled, requestText, confirmText, confirmWindowMs, confirmCheckIntervalMs } };
+}
+
 function parseOpenProfileCloseGuideConfig(
   runtime: RuntimeConfig,
 ): { ok: true; cfg: OpenProfileCloseGuideConfig } | { ok: false; error: string } {
@@ -473,12 +557,21 @@ async function loadState(): Promise<WorkerState> {
     const pendingOpenProfileCloseConfirmations = Array.isArray(parsed.pendingOpenProfileCloseConfirmations)
       ? (parsed.pendingOpenProfileCloseConfirmations as PendingOpenProfileCloseConfirmation[])
       : [];
+    const pendingNicknameChangeAfterImageConfirmations = Array.isArray(parsed.pendingNicknameChangeAfterImageConfirmations)
+      ? (parsed.pendingNicknameChangeAfterImageConfirmations as PendingNicknameChangeAfterImageConfirmation[])
+      : [];
     const roomLinkIds =
       parsed.roomLinkIds && typeof parsed.roomLinkIds === "object" ? (parsed.roomLinkIds as Record<string, { linkId: string; at: number }>) : undefined;
     const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
-    return { lastSeenMs, pending, pendingOpenProfileCloseConfirmations, roomLinkIds, updatedAt };
+    return { lastSeenMs, pending, pendingOpenProfileCloseConfirmations, pendingNicknameChangeAfterImageConfirmations, roomLinkIds, updatedAt };
   } catch {
-    return { lastSeenMs: 0, pending: [], pendingOpenProfileCloseConfirmations: [], updatedAt: new Date().toISOString() };
+    return {
+      lastSeenMs: 0,
+      pending: [],
+      pendingOpenProfileCloseConfirmations: [],
+      pendingNicknameChangeAfterImageConfirmations: [],
+      updatedAt: new Date().toISOString(),
+    };
   }
 }
 
@@ -745,6 +838,32 @@ async function maybeFastTrackOpenProfileCloseConfirmation(roomId: string, userId
   await processOpenProfileCloseConfirmations(runtime);
 }
 
+async function maybeFastTrackNicknameChangeAfterImageConfirmation(roomId: string, userId: string): Promise<void> {
+  const rid = safeString(roomId);
+  const uid = safeString(userId);
+  if (!rid || !uid) return;
+
+  const key = `${rid}:${uid}`;
+  const pending = pendingNicknameChangeAfterImageByUser.get(key);
+  if (!pending) return;
+
+  const runtime = await loadRuntime();
+  // Guardrails: SAFE_MODE이면 늦은 발신을 막기 위해 pending을 제거한다(폴링 로직과 동일).
+  if (isSafeModeOn(runtime)) {
+    pendingNicknameChangeAfterImageByUser.delete(key);
+    return;
+  }
+
+  const cachedNick = getRecentProfileNicknameRecord(rid, uid);
+  if (cachedNick && cachedNick.at >= pending.requestSentAt && isSafeMentionNickname(cachedNick.nickName)) {
+    pending.userName = cachedNick.nickName;
+  }
+
+  pending.nextCheckAt = Date.now();
+  pendingNicknameChangeAfterImageByUser.set(key, pending);
+  await processNicknameChangeAfterImageConfirmations(runtime);
+}
+
 function countPendingByRoom(roomId: string): number {
   let n = 0;
   for (const it of pendingByUser.values()) {
@@ -980,14 +1099,14 @@ async function queryOpenChatMemberNickname(roomIdRaw: string, userIdRaw: string,
   const candidates: Array<{ query: string; bind: string[]; label: string }> = [
     {
       label: "involved_chat_id",
-      query: "select nickname from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
+      query: "select nickname, enc from db2.open_chat_member where involved_chat_id=? and user_id=? order by _id desc limit 1",
       bind: [roomId, userId],
     },
   ];
   if (linkId) {
     candidates.push({
       label: "link_id",
-      query: "select nickname from db2.open_chat_member where link_id=? and user_id=? order by _id desc limit 1",
+      query: "select nickname, enc from db2.open_chat_member where link_id=? and user_id=? order by _id desc limit 1",
       bind: [linkId, userId],
     });
   }
@@ -1267,6 +1386,143 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
   }
 }
 
+async function processNicknameChangeAfterImageConfirmations(runtime: RuntimeConfig): Promise<void> {
+  if (pendingNicknameChangeAfterImageByUser.size === 0) return;
+
+  const cfgRes = parseNicknameChangeAfterImageConfig(runtime);
+  if (!cfgRes.ok) {
+    pendingNicknameChangeAfterImageByUser.clear();
+    return;
+  }
+  const cfg = cfgRes.cfg;
+  if (!cfg.enabled) {
+    // feature off: clear pending to avoid late sends
+    pendingNicknameChangeAfterImageByUser.clear();
+    return;
+  }
+
+  const fuRes = parseFollowUpConfig(runtime);
+  if (!fuRes.ok) {
+    pendingNicknameChangeAfterImageByUser.clear();
+    return;
+  }
+  const fuCfg = fuRes.cfg;
+  if (!fuCfg.enabled) {
+    pendingNicknameChangeAfterImageByUser.clear();
+    return;
+  }
+
+  // Guardrails: SAFE_MODE이면 나중에 "늦은 발신"이 나갈 수 있어 pending을 제거한다.
+  if (isSafeModeOn(runtime)) {
+    pendingNicknameChangeAfterImageByUser.clear();
+    return;
+  }
+
+  const defaultNickRegexes = compileDefaultNickRegexes(runtime);
+
+  const now = Date.now();
+  const maxPerTick = 25;
+  let processed = 0;
+
+  for (const [key, p] of pendingNicknameChangeAfterImageByUser.entries()) {
+    if (processed >= maxPerTick) break;
+
+    if (!p || !p.roomId || !p.userId) {
+      pendingNicknameChangeAfterImageByUser.delete(key);
+      continue;
+    }
+    if (now >= p.expiresAt) {
+      pendingNicknameChangeAfterImageByUser.delete(key);
+      continue;
+    }
+    if (now < p.nextCheckAt) continue;
+
+    // Guardrails: room/feature off이면 pending 정리
+    if (!isRoomAllowed(runtime, p.roomId)) {
+      pendingNicknameChangeAfterImageByUser.delete(key);
+      continue;
+    }
+    if (!isFeatureEnabled(runtime, p.roomId, "welcome")) {
+      pendingNicknameChangeAfterImageByUser.delete(key);
+      continue;
+    }
+    if (!isWelcomeFollowUpEnabledForRoom(runtime, p.roomId)) {
+      pendingNicknameChangeAfterImageByUser.delete(key);
+      continue;
+    }
+
+    processed += 1;
+
+    let nicknameNow: string | null = null;
+    const cachedNick = getRecentProfileNicknameRecord(p.roomId, p.userId);
+    if (cachedNick && cachedNick.at >= p.requestSentAt) {
+      nicknameNow = cachedNick.nickName;
+    }
+    if (nicknameNow && !isSafeMentionNickname(nicknameNow)) nicknameNow = null;
+    if (!nicknameNow) nicknameNow = await queryOpenChatMemberNickname(p.roomId, p.userId, 8000).catch(() => null);
+
+    if (!nicknameNow || !isSafeMentionNickname(nicknameNow)) {
+      p.nextCheckAt = now + cfg.confirmCheckIntervalMs;
+      p.attempts = (Number(p.attempts || 0) || 0) + 1;
+      pendingNicknameChangeAfterImageByUser.set(key, p);
+      continue;
+    }
+
+    // 기본닉이면 계속 대기
+    const klass = isKakaoDefaultNickname(nicknameNow, defaultNickRegexes);
+    if (klass !== false) {
+      p.userName = nicknameNow;
+      p.nextCheckAt = now + cfg.confirmCheckIntervalMs;
+      p.attempts = (Number(p.attempts || 0) || 0) + 1;
+      pendingNicknameChangeAfterImageByUser.set(key, p);
+      continue;
+    }
+
+    // 닉네임 변경 완료: confirmText를 일반 멘션으로 마무리 (Reply X)
+    let ok = false;
+
+    const entrant: WelcomeEntrant = {
+      name: nicknameNow,
+      senderId: safeString(p.userId),
+      joinedAt: Number(p.requestSentAt || 0) || now,
+    };
+
+    const confirmTemplate = ensureEntranceMentionTemplate(cfg.confirmText);
+    const { text: message, hasMention } = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
+    const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter((m) => m.userId && m.name && message.includes("@" + m.name));
+    const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+
+    let okTalk = false;
+    let okIris = false;
+    try {
+      okTalk = await tryServerTalkApiDispatch(logger, p.roomId, message, hasMention && capped.length ? capped : [], 12000);
+    } catch (e) {
+      okTalk = false;
+      logger.warn("[nickname-change-after-image] dispatch threw", { roomId: p.roomId, err: String(e) });
+    }
+    if (!okTalk) {
+      const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
+      okIris = await tryServerIrisReplyText(logger, p.roomId, fallbackText, 12000);
+    }
+
+    ok = okTalk || okIris;
+
+    await updateStatus({
+      lastNicknameChangeAfterImageThankAttemptTs: new Date().toISOString(),
+      lastNicknameChangeAfterImageThankRoomId: p.roomId,
+      lastNicknameChangeAfterImageThankOk: ok,
+    });
+
+    if (ok) {
+      pendingNicknameChangeAfterImageByUser.delete(key);
+    } else {
+      p.nextCheckAt = now + Math.max(cfg.confirmCheckIntervalMs, 30_000);
+      p.attempts = (Number(p.attempts || 0) || 0) + 1;
+      pendingNicknameChangeAfterImageByUser.set(key, p);
+    }
+  }
+}
+
 async function maybeSendOpenProfileCloseGuide(
   roomId: string,
   roomName: string,
@@ -1444,7 +1700,11 @@ function compileDefaultNickRegexes(runtime: RuntimeConfig): RegExp[] | null {
 
 function isKakaoDefaultNickname(nameRaw: string, regexes: RegExp[] | null): boolean | null {
   if (!regexes) return null;
-  const name = String(nameRaw || "").trim();
+  const name = String(nameRaw || "")
+    .normalize("NFC")
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
+    .replace(/\s+/gu, " ")
+    .trim();
   if (!name) return true;
   return regexes.some((re) => re.test(name));
 }
@@ -1701,6 +1961,127 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
     }
   }
 
+  // 신규 요구: 첫 이미지(하트스샷) 업로드 시점에 "기본닉"이면
+  // 감사 Reply 대신 "닉네임 변경 요청" Reply를 1회 보내고,
+  // 요청 발신 시점부터 15분 내 닉네임이 바뀌면 감사 Reply를 1회 발신한다.
+  const ncRes = parseNicknameChangeAfterImageConfig(runtime);
+  if (ncRes.ok && ncRes.cfg.enabled) {
+    const defaultNickRegexes = compileDefaultNickRegexes(runtime);
+
+    let nameNow = safeString(entry.senderName) || safeString(pending.userName) || "Guest";
+    if (!isSafeMentionNickname(nameNow)) {
+      const dbNick = await queryOpenChatMemberNickname(roomId, senderId, 5000).catch(() => null);
+      if (dbNick && isSafeMentionNickname(dbNick)) nameNow = dbNick;
+    }
+
+    const isDefaultNicknameNow = isKakaoDefaultNickname(nameNow, defaultNickRegexes) === true;
+    if (isDefaultNicknameNow) {
+      const roomName = safeString(entry.roomName) || roomId;
+      const entrant: WelcomeEntrant = {
+        name: nameNow || "Guest",
+        senderId,
+        joinedAt: Number(pending.joinedAt || 0) || now,
+      };
+
+      const { text: reqMessage, hasMention } = renderWelcomeText(ncRes.cfg.requestText, [entrant], roomName);
+      const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter(
+        (m) => m.userId && m.name && reqMessage.includes("@" + m.name),
+      );
+      const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+      const talkMentionees = hasMention && capped.length ? capped : [];
+
+      const photoLogId = safeString(entry.mid);
+      const srcLinkId = await resolveOpenLinkIdForRoom(roomId);
+      const srcMessage = safeString(entry.text) || "사진";
+      const srcType = safeString(Math.floor(normalizedType || 0));
+
+      let okReq = false;
+      if (srcLinkId && photoLogId) {
+        const replyAttachment: Record<string, unknown> = {
+          src_logId: photoLogId,
+          src_userId: senderId,
+          src_linkId: srcLinkId,
+          src_type: srcType,
+          src_message: srcMessage,
+        };
+        try {
+          okReq = await tryServerTalkApiDispatchRaw(logger, roomId, reqMessage, 26, replyAttachment, 12000, talkMentionees);
+        } catch (e) {
+          okReq = false;
+          logger.warn("[nickname-change-after-image] request dispatch_raw threw", { roomId, userId: senderId, err: String(e) });
+        }
+        if (!okReq) {
+          const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(reqMessage, capped) : reqMessage;
+          okReq = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+        }
+
+        if (okReq) {
+          const key2 = `${roomId}:${senderId}`;
+          const reqAt = Date.now();
+          const expiresAt = reqAt + Math.max(0, Math.floor(ncRes.cfg.confirmWindowMs || 0));
+          if (expiresAt > reqAt) {
+            pendingNicknameChangeAfterImageByUser.set(key2, {
+              roomId,
+              roomName,
+              userId: senderId,
+              userName: entrant.name || "Guest",
+              requestSentAt: reqAt,
+              nextCheckAt: reqAt + 5000,
+              expiresAt,
+              attempts: 0,
+              srcLogId: photoLogId,
+              srcType: Number(normalizedType || 0) || 2,
+              srcMessage,
+              srcLinkId,
+            });
+          }
+        }
+      } else {
+        // Reply 메타(src_linkId/src_logId)가 없으면 Reply는 불가하므로, 최소한 텍스트로만 요청한다.
+        try {
+          okReq = await tryServerTalkApiDispatch(logger, roomId, reqMessage, talkMentionees, 12000);
+        } catch (e) {
+          okReq = false;
+          logger.warn("[nickname-change-after-image] request dispatch threw", { roomId, userId: senderId, err: String(e) });
+        }
+        if (!okReq) {
+          const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(reqMessage, capped) : reqMessage;
+          okReq = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+        }
+
+        if (okReq) {
+          const key2 = `${roomId}:${senderId}`;
+          const reqAt = Date.now();
+          const expiresAt = reqAt + Math.max(0, Math.floor(ncRes.cfg.confirmWindowMs || 0));
+          if (expiresAt > reqAt) {
+            pendingNicknameChangeAfterImageByUser.set(key2, {
+              roomId,
+              roomName,
+              userId: senderId,
+              userName: entrant.name || "Guest",
+              requestSentAt: reqAt,
+              nextCheckAt: reqAt + 5000,
+              expiresAt,
+              attempts: 0,
+              srcLogId: safeString(entry.mid),
+              srcType: Number(normalizedType || 0) || 2,
+              srcMessage,
+              srcLinkId: srcLinkId || undefined,
+            });
+          }
+        }
+      }
+
+      pendingByUser.delete(key);
+      await updateStatus({
+        lastNicknameChangeAfterImageRequestAttemptTs: new Date().toISOString(),
+        lastNicknameChangeAfterImageRequestRoomId: roomId,
+        lastNicknameChangeAfterImageRequestOk: okReq,
+      });
+      return;
+    }
+  }
+
   const replyText = pickRandom(cfg.replies);
   if (!replyText) {
     pendingByUser.delete(key);
@@ -1822,6 +2203,7 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
           pendingOpenProfileCloseByUser.set(key, pending);
         }
         await maybeFastTrackOpenProfileCloseConfirmation(roomId, upd.userId);
+        await maybeFastTrackNicknameChangeAfterImageConfirmation(roomId, upd.userId);
       }
     }
     await handleFollowUpMessage(entry);
@@ -1863,6 +2245,35 @@ async function connectAndRun(): Promise<void> {
       attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
     });
   }
+  // restore nickname-change-after-image confirmations (within TTL)
+  for (const p of state.pendingNicknameChangeAfterImageConfirmations || []) {
+    if (!p || !p.roomId || !p.userId) continue;
+    const roomId = safeString(p.roomId);
+    const userId = safeString(p.userId);
+    if (!roomId || !userId) continue;
+
+    const expiresAt = Number((p as any).expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) continue;
+
+    const nextCheckAt = Number((p as any).nextCheckAt);
+    const requestSentAt = Number((p as any).requestSentAt);
+    const attempts = Number((p as any).attempts);
+    const srcType = Number((p as any).srcType);
+    pendingNicknameChangeAfterImageByUser.set(`${roomId}:${userId}`, {
+      roomId,
+      roomName: safeString((p as any).roomName) || roomId,
+      userId,
+      userName: safeString((p as any).userName) || "Guest",
+      requestSentAt: Number.isFinite(requestSentAt) && requestSentAt > 0 ? requestSentAt : now,
+      nextCheckAt: Number.isFinite(nextCheckAt) && nextCheckAt > 0 ? nextCheckAt : now + 5000,
+      expiresAt,
+      attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
+      srcLogId: safeString((p as any).srcLogId),
+      srcType: Number.isFinite(srcType) && srcType > 0 ? srcType : 2,
+      srcMessage: safeString((p as any).srcMessage) || "사진",
+      srcLinkId: safeString((p as any).srcLinkId) || undefined,
+    });
+  }
   // restore link_id cache (best-effort)
   if (state.roomLinkIds && typeof state.roomLinkIds === "object") {
     for (const [rid, v] of Object.entries(state.roomLinkIds)) {
@@ -1887,6 +2298,7 @@ async function connectAndRun(): Promise<void> {
 	      pending: pendingByUser.size,
 	      pendingOpenProfileCloseConfirmations: pendingOpenProfileCloseByUser.size,
 	      pendingOpenProfileCloseConfirms: pendingOpenProfileCloseByUser.size,
+	      pendingNicknameChangeAfterImageConfirmations: pendingNicknameChangeAfterImageByUser.size,
 	    });
 	  }, 30_000);
   try {
@@ -1903,11 +2315,13 @@ async function connectAndRun(): Promise<void> {
 	      try {
 	        const runtime = await loadRuntime();
 	        await processOpenProfileCloseConfirmations(runtime);
+	        await processNicknameChangeAfterImageConfirmations(runtime);
 	        await expirePendingFollowUpsAndMaybeTimeoutMention(runtime);
 	        const snapshot: WorkerState = {
 	          lastSeenMs: lastSeenMsRef.v,
 	          pending: Array.from(pendingByUser.values()),
 	          pendingOpenProfileCloseConfirmations: Array.from(pendingOpenProfileCloseByUser.values()),
+	          pendingNicknameChangeAfterImageConfirmations: Array.from(pendingNicknameChangeAfterImageByUser.values()),
 	          roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
 	          updatedAt: new Date().toISOString(),
 	        };

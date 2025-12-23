@@ -99,7 +99,12 @@
 
 - Node 호출 진입점:
   - `node-iris-app/src/utils/talkapi.ts:44` `tryServerTalkApiDispatchRaw(...)`
-  - `POST {REALTIME_API_BASE}/send/talkapi/dispatch_raw` `{ roomId, message, type, attachment }`
+  - `POST {REALTIME_API_BASE}/send/talkapi/dispatch_raw` `{ roomId, message, type, attachment, mentionees?:[{name,userId}] }`
+
+### 2.2.1 Reply에서도 “진짜 멘션”이 필요할 때
+
+- `dispatch_raw`에 `mentionees`를 넘기면 server가 `attachment.mentions`를 만들어 기존 attachment에 merge한다.
+- 단, message에 `@닉네임` 토큰이 포함되어야 하며(텍스트만으로는 멘션이 아님), 멘션 대상은 최대 15명이다.
 
 ### 2.3 Reply에서 가장 중요한 함정: Talk-API `INVALID_ARGUMENT(-203)`와 타입 강제 변환
 

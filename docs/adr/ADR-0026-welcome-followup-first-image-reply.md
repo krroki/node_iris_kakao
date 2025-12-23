@@ -50,15 +50,20 @@
    - 동일 사용자 기준 **입장 후 15분(windowMs=900_000) 이내**
    - **첫 이미지 메시지 1회**만 트리거
    - 이미지 판별이 어려운 경우를 고려해 **“이미지면 전부 하트 인증샷”** 으로 간주(Option B).
-3. **답장 문구**는 여러 개를 설정하고 **랜덤 선택**한다.
-4. **타임아웃(미업로드) 경고 멘션**:
+3. **답장 문구**는 여러 개를 설정하고 **랜덤 선택**한다. (비기본닉 케이스)
+4. **기본닉(카카오 프렌즈) 추가 플로우(옵션)**:
+   - 첫 이미지 업로드 시 “감사합니다…” Reply 대신 **닉네임 변경 요청 Reply(type=26)** 를 발신한다.
+   - 요청 발신 시점부터 `confirmWindowMs`(기본 15분) 내 `feedType=2`(프로필 변경)로 닉변이 확인되면,
+     **Reply가 아닌 일반 멘션**으로 마무리 메시지를 1회 발신한다.
+   - 닉변 확인은 “요청 발신 이후” 이벤트만 인정한다(요청 이전 캐시로 오판 금지).
+5. **타임아웃(미업로드) 경고 멘션** (Deprecated: ADR-0045에서 미업로드 경고 제거):
    - 동일 사용자 기준 **입장 후 15분(windowMs) 경과** 시점에, 첫 이미지가 없으면 1회 추가 멘션을 발신한다.
    - 멘션 메시지 템플릿은 런타임 설정으로 관리한다:
      - `@{entrance} 하트스샷 미업로드시 광고계정으로 간주, 추방될 수 있습니다 ㅠ`
-5. **link_id 조회는 보수적으로 강화**한다.
+6. **link_id 조회는 보수적으로 강화**한다.
    - 우선순위: **최근 로그에서 `src_linkId` 추론 → IRIS `/query` 2회(타임아웃 증가/재시도)**
    - `src_linkId`를 끝내 얻지 못하면 **Reply(type=26)는 포기하고**, 일반 메시지(텍스트)로 1회라도 안내를 발신한 뒤 트래킹을 종료한다.
-6. **적용 범위**:
+7. **적용 범위**:
    - welcome이 켜진 방에서 기본 활성
    - 방별로 추가 옵션으로 끄고/킬 수 있어야 한다.
      - 구현은 `runtime.features[roomId].welcomeFollowUp === false` 인 경우만 비활성(기본은 ON).
@@ -74,28 +79,27 @@
   - `runtime.json.welcome.followUp.windowMs` (기본 900000)
   - `runtime.json.welcome.followUp.maxPendingPerRoom`
   - `runtime.json.welcome.followUp.replies` (비어 있으면 오류로 처리)
+  - `runtime.json.welcome.followUp.nicknameChangeAfterImage` (기본 OFF)
+    - `enabled`, `requestText`, `confirmText`, `confirmWindowMs`(기본 15분), `confirmCheckIntervalMs`(기본 15초)
   - `runtime.json.welcome.followUp.timeoutMention.enabled` (Deprecated: ADR-0045에서 미업로드 경고를 제거하여 현재 사용하지 않음)
   - `runtime.json.welcome.followUp.timeoutMention.text` (Deprecated: ADR-0045에서 미업로드 경고를 제거하여 현재 사용하지 않음)
 - 방별 비활성:
   - `runtime.features[roomId].welcomeFollowUp: false`
 
-### 2) Node(IRIS) 서비스/연동
+### 2) Node(IRIS) 워커/연동
 
-- 서비스: `node-iris-app/src/services/welcomeFollowUp.ts`
-  - `trackAfterWelcomeSent(context, entrants)`:
-    - welcome 텍스트 발신 성공 후, entrant들을 `roomId:userId` 키로 TTL(`expiresAt`)까지 추적한다.
-    - 방별 pending 상한(`maxPendingPerRoom`)을 넘으면 명시적으로 스킵 기록.
-  - `handleChatMessage(context)`:
-    - 추적 중인 사용자가 이미지 첨부 메시지를 보내면,
-      해당 메시지의 `logId`에 대해 Talk-API `dispatch_raw`로 Reply 1회 발신 후 상태 제거.
-    - SAFE_MODE/allowlist 위반 시에도 상태를 종료하고 `dry_run`/skip reason을 기록한다.
-    - “이미지” 판별은 `message.type` 기반(사진/멀티사진: 2/27/71, 16384 플래그는 제거)으로만 수행해
-      텍스트/스티커/기타 메시지가 트래킹 상태를 소모하지 않도록 한다.
-- 컨트롤러 연결:
-  - `node-iris-app/src/controllers/CustomNewMemberController.ts`:
-    - welcome 텍스트 발신 성공 직후 `trackAfterWelcomeSent` 호출.
-  - `node-iris-app/src/controllers/CustomChatController.ts`:
-    - 모든 채팅 메시지 기록 후 `handleChatMessage` 호출.
+- (SSOT, 기본) `node-iris-app/src/workers/welcome_worker.ts` (ADR-0027)
+  - welcome 텍스트 발신 성공 후 entrant를 `roomId:userId` 키로 TTL(`expiresAt`)까지 추적한다.
+  - 추적 중인 사용자가 **첫 이미지(messageType=2/27/71, 16384 플래그 제거)** 를 보내면 아래 순서로 처리한다:
+    1. 오픈프로필(닫기 안내 대상)으로 판별되면 ADR-0045 플로우로 처리(감사 Reply 스킵).
+    2. 오픈프로필이 아니고 기본닉이며 `welcome.followUp.nicknameChangeAfterImage.enabled=true`면:
+       - 닉변 요청 Reply(type=26) 발신
+       - 요청 시점부터 `confirmWindowMs` 내 `feedType=2`로 닉변이 확인되면 **Reply가 아닌 일반 멘션**으로 `confirmText` 1회 발신
+    3. 그 외: Reply(type=26)로 `welcome.followUp.replies` 중 1개를 1회 발신.
+  - SAFE_MODE/allowlist 위반 시 상태를 종료하고 `dry_run`/skip reason을 기록한다.
+- (레거시/롤백) `WELCOME_DISPATCHER=bot`인 경우:
+  - 서비스: `node-iris-app/src/services/welcomeFollowUp.ts`
+  - 컨트롤러: `node-iris-app/src/controllers/CustomNewMemberController.ts`, `node-iris-app/src/controllers/CustomChatController.ts`
 - 로그/관측:
   - `messageStore.record`로 `welcome_followup_*` 이벤트를 기록해 UI/로그에서 원인 추적 가능.
 
@@ -159,7 +163,8 @@
 ## Links
 
 - Code:
-  - `node-iris-app/src/services/welcomeFollowUp.ts`
+  - `node-iris-app/src/workers/welcome_worker.ts` (SSOT)
+  - `node-iris-app/src/services/welcomeFollowUp.ts` (레거시: `WELCOME_DISPATCHER=bot`)
   - `node-iris-app/src/controllers/CustomNewMemberController.ts`
   - `node-iris-app/src/controllers/CustomChatController.ts`
   - `server/app.py` (`/send/talkapi/prepare_raw`, `/send/talkapi/dispatch_raw`)

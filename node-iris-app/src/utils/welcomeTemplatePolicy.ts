@@ -155,7 +155,13 @@ function compileRegexes(value: unknown): RegExp[] {
 }
 
 export function isKakaoDefaultNickname(userNameRaw: string, regexes: RegExp[]): boolean {
-  const userName = String(userNameRaw || "").trim();
+  // Kakao nicknames can contain invisible characters (e.g. zero-width spaces) that make regex matching fail
+  // even though UI display looks normal. Normalize defensively for classification only.
+  const userName = String(userNameRaw || "")
+    .normalize("NFC")
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
+    .replace(/\s+/gu, " ")
+    .trim();
   if (!userName) return true;
   return regexes.some((re) => re.test(userName));
 }

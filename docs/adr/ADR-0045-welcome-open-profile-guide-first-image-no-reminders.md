@@ -54,7 +54,11 @@
   - 멘션 텍스트 + 가이드 이미지(1장)를 발신한다.
   - 이후 닫힘을 폴링으로 감지하면 **즉시 1회** 확인 멘션을 발신한다.
 - 오픈프로필이 아닌 경우:
-  - 기존 정책대로 “감사합니다 …” Reply를 1회 발신한다.
+  - 비기본닉: 기존 정책대로 “감사합니다 …” Reply를 1회 발신한다.
+  - 기본닉: `welcome.followUp.nicknameChangeAfterImage.enabled=true`면 “감사합니다 …” Reply 대신,
+    “닉네임 변경 요청” Reply(type=26)를 발신하고 요청 시점부터 15분(`confirmWindowMs`) 내 닉변이 확인되면
+    **Reply가 아닌 일반 멘션**으로 `confirmText`를 1회 발신한다.
+    - 닉변 확인은 “요청 발신 이후”의 `feedType=2`(프로필 변경)만 인정한다(요청 이전 캐시 오판 방지).
 
 3) **리마인더 제거**
 - 기본닉 5분 리마인더 제거
@@ -100,6 +104,9 @@
       - `images` (1장)
     - `welcome.followUp`:
       - `enabled`, `windowMs`, `replies` (오픈프로필이 아닌 경우에만 사용)
+      - `nicknameChangeAfterImage` (기본 OFF):
+        - `enabled`, `requestText`, `confirmText`, `confirmWindowMs`, `confirmCheckIntervalMs`
+        - `confirmWindowMs`는 “닉변 요청 발신 시점부터”의 대기 시간이다.
 - 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
   - (오픈프로필 관련 이미지는 위 1장만 유지한다)
@@ -116,6 +123,12 @@
 - 레이스 보완: `feedType=2` 이벤트가 pending 생성보다 먼저 들어오는 케이스 대비 `roomId:userId` 최근 닉네임 캐시(20분 TTL) 도입
 - 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지)
 - 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 멘션 누락을 방지
+
+### 운영 보강 (2025-12-22)
+
+- 오픈프로필이 아닌 기본닉: 첫 이미지 Reply에서 닉변 요청을 우선 발신하고, 닉변 완료 시 일반 멘션으로 마무리한다.
+- 레이스 보완: 닉변 확인은 “닉변 요청 발신 이후”의 `feedType=2`만 인정한다(요청 이전 캐시로 오판 방지).
+- Reply(type=26)에서도 “진짜 멘션”이 필요하면 `/send/talkapi/dispatch_raw`의 `mentionees`를 사용한다(attachment.mentions 병합).
 
 ---
 

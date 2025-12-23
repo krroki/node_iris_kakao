@@ -201,8 +201,9 @@ export async function tryServerTalkApiDispatchRaw(
   type: number,
   attachment: Record<string, unknown>,
   timeoutMs = 10000,
+  mentionees: Array<{ name?: string; userId?: string }> = [],
 ): Promise<boolean> {
-  const r = await tryServerTalkApiDispatchRawResult(logger, roomId, message, type, attachment, timeoutMs);
+  const r = await tryServerTalkApiDispatchRawResult(logger, roomId, message, type, attachment, timeoutMs, mentionees);
   return r.ok;
 }
 
@@ -221,16 +222,21 @@ export async function tryServerTalkApiDispatchRawResult(
   type: number,
   attachment: Record<string, unknown>,
   timeoutMs = 10000,
+  mentionees: Array<{ name?: string; userId?: string }> = [],
 ): Promise<TalkApiDispatchRawResult> {
   try {
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");
     const url = `${base}/send/talkapi/dispatch_raw`;
+    const payload: Record<string, unknown> = { roomId, message, type, attachment };
+    if (Array.isArray(mentionees) && mentionees.length > 0) {
+      payload.mentionees = mentionees;
+    }
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId, message, type, attachment }),
+      body: JSON.stringify(payload),
       signal: ctrl.signal,
     }).catch((e) => {
       throw e;

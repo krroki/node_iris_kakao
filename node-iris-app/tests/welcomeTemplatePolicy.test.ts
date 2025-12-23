@@ -80,6 +80,8 @@ describe("welcome 템플릿 세트/기본닉 분기", () => {
       "집 지키는 죠르디",
       "평온한 앙몬드",
       "손 흔드는 팬더주니어",
+      // invisible chars can exist in nicknames; classifier should be robust (e.g. zero-width space)
+      "손 흔드는\u200B 팬더주니어",
     ];
 
     for (const name of recentDefaults) {
