@@ -77,6 +77,7 @@ type PendingOpenProfileCloseConfirmation = {
   roomName: string;
   userId: string;
   userName: string;
+  userNameAtGuideSent: string;
   guideSentAt: number;
   nextCheckAt: number;
   expiresAt: number;
@@ -1266,11 +1267,13 @@ function enqueueOpenProfileCloseConfirmation(
   const key = `${roomId}:${userId}`;
   const cachedNick = getRecentProfileNickname(roomId, userId);
   const cachedUserName = cachedNick && isSafeMentionNickname(cachedNick) ? cachedNick : "";
+  const initialUserName = cachedUserName || safeString(userNameRaw) || "Guest";
   pendingOpenProfileCloseByUser.set(key, {
     roomId,
     roomName: safeString(roomNameRaw) || roomId,
     userId,
-    userName: cachedUserName || safeString(userNameRaw) || "Guest",
+    userName: initialUserName,
+    userNameAtGuideSent: initialUserName,
     guideSentAt: now,
     nextCheckAt: now + 5000,
     expiresAt,
@@ -1346,6 +1349,17 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
     const nicknameNow = await queryOpenChatMemberNickname(p.roomId, p.userId, 8000).catch(() => null);
     if (nicknameNow && isSafeMentionNickname(nicknameNow)) {
       entrant.name = nicknameNow;
+    }
+
+    // 오탐 방지: 프로필 닫힘 확인 멘트는 "닉네임이 실제로 바뀐 경우"에만 발신한다.
+    // - 카카오 UI에서는 일부 시스템 이벤트가 "나갔습니다"처럼 보이지만 feedType=2(프로필 변경)로 들어오는 케이스가 있어,
+    //   닫힘 확인 멘트가 퇴장자에게 잘못 나가는 것을 막는다.
+    const baseNick = normalizeNameForMention(safeString(p.userNameAtGuideSent ?? p.userName));
+    const nowNick = normalizeNameForMention(safeString(entrant.name));
+    const nicknameChanged = Boolean(baseNick && nowNick && baseNick !== nowNick);
+    if (!nicknameChanged) {
+      pendingOpenProfileCloseByUser.delete(key);
+      continue;
     }
 
     const isDefaultNickname = isKakaoDefaultNickname(entrant.name, defaultNickRegexes) === true;
@@ -2239,6 +2253,7 @@ async function connectAndRun(): Promise<void> {
       roomName: safeString((p as any).roomName) || roomId,
       userId,
       userName: safeString((p as any).userName) || "Guest",
+      userNameAtGuideSent: safeString((p as any).userNameAtGuideSent ?? (p as any).userName) || "Guest",
       guideSentAt: Number.isFinite(guideSentAt) && guideSentAt > 0 ? guideSentAt : now,
       nextCheckAt: Number.isFinite(nextCheckAt) && nextCheckAt > 0 ? nextCheckAt : now + 5000,
       expiresAt,
