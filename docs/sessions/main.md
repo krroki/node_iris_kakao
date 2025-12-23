@@ -347,3 +347,22 @@
     매칭/집계/표시는 **현재 닉네임 기준**, 이전 닉은 alias 매칭용으로만 사용.
 - Sheets 서식 안정화:
   - `apply_overview_sheet_format`의 `unmergeCells` 범위를 sheet `columnCount` 기준으로 확장해 “부분 unmerge” 400 오류를 방지.
+
+---
+
+## 2025-12-23
+
+- 강의 운영 v2 “운영 UI”를 웹 콘솔로 전환 결정:
+  - 목표: 내부 운영진 **동시접속**(외부) + “작업 대기열(ACTIONS)” 중심으로 조치/확인까지 끝내기
+  - 도메인: `go.yoorang.kr`
+  - 인증: **이름 + 공용 비번**(자동 로그인)
+  - 동기화 권한: 기본 모두 허용, 필요 시 **이름 allowlist**로 제한 가능
+  - 상태머신: `대기` → `확인 대기` → `완료(검증됨)`/`미해결(재확인)`/`확인 불가(데이터 미완전)`
+  - 버튼(2개):
+    - `빠른 재검증`: `확인 대기` 항목이 참조하는 **필요한 방만** 갱신해 해당 항목만 재판정(조치 확인용)
+    - `전체 동기화`: 톡방+카페+결제SSOT까지 전체 갱신 후 전체 재판정(정기 갱신용)
+- 문서화 반영:
+  - ADR: `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`
+  - 레퍼런스: `docs/reference/course-ops-v2-web-console.md`
+  - PRD: `docs/prd_course_ops_v2_membership_audit.md`(웹 콘솔 중심으로 갱신)
+  - SSOT: `docs/ssot.md`(2025-12-23 항목 추가)

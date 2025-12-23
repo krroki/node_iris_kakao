@@ -63,7 +63,9 @@
 - `docs/reference/openchat-members-google-sheets.md` – 오픈채팅 멤버(닉네임/userId) Google Sheets 업서트(서비스 계정 OAuth)
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 - `docs/adr/ADR-0039-course-roster-v2-membership-audit.md` – 강의 운영 v2(카페 자동 갱신 + 등급 기반 참여 점검 + 통합 시트) 결정
-- `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2: 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear) + OVERVIEW/ACTIONS는 현업용 “결과/할 일”만(사용 방법 문장 금지)
+- `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md` – 강의 운영 v2: 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) 결정(ACTIONS 중심, 처리/재검증)
+- `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2(레거시/백업): 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear)
+- `docs/reference/course-ops-v2-web-console.md` – 강의 운영 v2(운영 UI): go.yoorang.kr 작업 대기열(ACTIONS) + 처리 완료/확인 대기/빠른 재검증/전체 동기화 + 담당자·메모
 
 ---
 
@@ -169,6 +171,18 @@
     - 실패/스킵 발생 시 테스트용 오픈채팅방(`18462226881291012`)으로 1회 알림 발신(전제: `safeMode=false`, `talkApi.enabled=true`)
   - 상태 파일: `node-iris-app/data/openchat_members_sheets_worker_status.json`, `node-iris-app/data/openchat_members_sheets_worker_state.json`
 
+- **CourseOps v2 외부 운영 콘솔(go.yoorang.kr) (중요)**:
+  - 목표: 내부 운영진이 **동시접속**으로 “작업 대기열(ACTIONS)”을 보고 조치/확인까지 끝낼 수 있게 한다.
+  - 불변식: 카카오/Redroid 연동(수집/판정)은 **12.kakao 1대**만 수행한다(외부 웹에서 카카오에 직접 붙지 않음).
+  - 인증: **이름 + 공용 비번** + 자동 로그인(쿠키).
+  - 동기화 권한: 기본은 모두 허용하되, 필요 시 **이름 allowlist**로 제한 가능해야 한다.
+  - 버튼(2개):
+    - `빠른 재검증`: `확인 대기` 항목이 참조하는 **필요한 방만** 갱신하고 해당 항목만 재판정한다(조치 확인용).
+    - `전체 동기화`: 톡방+카페+결제SSOT까지 전체 갱신 후 전체 재판정한다(정기 갱신용).
+  - 상태머신(필수): `대기` → `확인 대기` → `완료(검증됨)`/`미해결(재확인)`/`확인 불가(데이터 미완전)`.
+  - 안전: `go.yoorang.kr`에는 CourseOps 화면만 노출한다(기존 운영 UI 외부 노출 금지).
+  - 운영 원칙: 재발 가능한 문제는 Watchdog가 감지→자동 조치하도록 해결한다(수동 실행 절차 최소화).
+
 - **절대 금지(중요)**: `taskkill /im node.exe`, `Stop-Process -Name node` 같이 **node 전체를 종료**하는 조치는 금지한다.  
   - 또한 `dist\\index.js` 같은 **범용 패턴 매칭으로 node를 정리하는 방식은 다른 프로젝트까지 종료**할 수 있어 금지한다.  
   - 재기동/중복 정리는 **status.json PID 기반**으로만 수행한다(예: `windows/start_bot.ps1 -Restart`, `windows/smart_restart_bot.ps1`).
@@ -221,7 +235,7 @@
 ## 2. 저장소 맵 & 책임
 - **Python 봇 코어**: `src/`, `tests/`, `scripts/` – Redroid(Hyper‑V)/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
-- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영(카페/등급/Sheets)**은 `/course`에서 코스 단위로 관리하며, RoomCard에서는 링크/배지만 노출)  
+- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, 강의 운영은 `/course`(설정/워커) + go.yoorang.kr(CourseOps v2 운영 UI)로 역할을 분리)  
 - **기본닉 멘션(ADR-0041)**: 방 카드의 `기본닉 멘션` 토글이 방별 스위치이며, 2차/3차 안내 간격(24h/48h 등)은 **3100 홈 상단 카드**에서 변경해 `runtime.nicknameReminder.warningSchedule`에 저장한다.
 - **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
 - **구(스트림릿) 대시보드**: `dashboard/` – 임시/레거시로 보관(운영 기본에서 제외).  
@@ -285,6 +299,10 @@
     - 분기 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영해 확인 멘트를 선택한다(레이스 대비: 최근 닉네임 캐시 + pending 즉시 갱신).
     - 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지).
     - 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 **멘션 누락을 방지**한다.
+    - (추가) 첫 이미지(하트스샷) 후속에서 오픈프로필이 아니라면:
+      - 비기본닉: 기존대로 “감사합니다…” Reply(type=26) 1회 발신
+      - 기본닉: “감사합니다…” Reply 대신 “닉네임 변경 요청” Reply(type=26) 발신 → 요청 시점부터 15분 내 프로필 변경이 확인되면 **Reply가 아닌 일반 멘션**으로 마무리 발신
+      - 닉변 확인은 “닉변 요청 발신 이후”에 들어온 `feedType=2`만 인정한다(요청 이전 캐시로 오판 금지).
   - 기본값: `WELCOME_DISPATCHER=worker` (레거시 롤백: `WELCOME_DISPATCHER=bot`)
   - AI(ADR-0028): 코어(bot)는 메시지를 로그에 기록하고, `?디하클` 응답은 `ai-worker`가 `/logs/stream` 구독 후 KB 호출/발신을 담당한다.
     - `ai-worker`는 `runtime.json.features[roomId].ai=true`인 방만 `/logs/stream?rooms=...`로 구독한다.
@@ -364,6 +382,7 @@
   - 오픈채팅 “답장(Reply)”은 텍스트 `@`로 구현되지 않으며, `type=26` + `attachment.src_*` 메타로 구현된다(ADR-0026).
   - Node는 64-bit userId(2^53 초과)가 많아 `src_userId/src_linkId/src_type`를 문자열로 전달한다.
   - Realtime API(`server/app.py:/send/talkapi/*_raw`)에서 `type=26`일 때 숫자형 문자열을 int로 강제 변환(coerce) 후 Talk-API로 전달한다. (미변환 시 `INVALID_ARGUMENT(-203)` 가능)
+  - Reply 발신(`/send/talkapi/dispatch_raw`)도 `mentionees`를 받으면 `attachment.mentions`를 병합해 “진짜 멘션”을 지원한다(단, message에 `@닉네임` 토큰이 포함되어야 함).
 - **테스트 커맨드 방 제한(중요)**:
   - `!welcome test/!welcome:test`, `!reply test/!reply:test`는 **테스트용 오픈채팅방(18462226881291012)에서만** 수행한다.
   - 다른 방에서 실행되면 “조용히 발신”하지 않고 **스킵 + 로그 기록(`*_test_dry_run`, reason=`NOT_TEST_ROOM`)**으로 끝낸다(운영 방 오발신 방지).

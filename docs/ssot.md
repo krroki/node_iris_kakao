@@ -5,7 +5,9 @@
 - 목적: 루팅 안드로이드 + IRIS + Hyper-V 리눅스 봇 서버 조합으로 카카오톡 오픈채팅(명령어, 환영, 방송)을 안정적으로 운영.
 - 현재 상태: Hyper-V/루팅 단말 기반 설치 가이드 정리 및 요구사항 문서 갱신 완료 (2025-10-28).
 
+- 2025-12-23: 강의 운영 v2 “운영 UI”를 스프레드시트(ACTIONS)에서 **CourseOps 웹 콘솔(go.yoorang.kr)**로 전환 — 이름+공용 비번 로그인(자동 로그인) + `처리 완료→확인 대기→빠른 재검증/전체 동기화`로 완료를 검증 확정 + 담당자/시간/메모(선택) 기록(동시접속 충돌 방지). (ADR-0046, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md`)
 - 2025-12-22: 강의 운영 v2 결제 SSOT 연동 정합성 보강 + 현업 시트 UX 개선 — `/course`에서 `paymentSsot` 입력 지원 + 설정 API가 `paymentSsot`/`SSOT_RAW`/`OVERVIEW`/`ACTIONS`를 보존(저장 시 누락 방지) + 결제 닉네임 변경(`old->new`) alias 매칭 지원 + `ACTIONS`를 단일 표(`우선순위: 지금/오늘/확인/정리`) “할 일 큐”로 단순화(`바꿀 닉네임`은 결제 SSOT의 `성함`을 기반으로 `정@@록(카페닉)` 형태로 추천, 성함이 없으면 `<이름마스킹>(카페닉)` placeholder).
+- 2025-12-22: Welcome 후속: 기본닉 + 첫 이미지(하트스샷)에서 “감사합니다…” Reply 대신 “닉변 요청” Reply(type=26) 발신 + 요청 시점부터 15분 내 닉변 확인 시 일반 멘션으로 마무리(레이스 방지: 요청 이전 `feedType=2` 캐시 무시) + Reply(type=26) 발신(`/send/talkapi/dispatch_raw`)도 `mentionees` 지원.
 - 2025-12-21: course-membership-audit-worker 중복 실행 방지 강화 — OS 파일 락으로 싱글톤 보장 + start 스크립트가 실행 중이면 skip(네이버 카페 창 다중 생성/로그인 반복 재발 방지).
 - 2025-12-19: 강의 운영 UI 정리 — RoomCard의 강의 운영(카페 CSV/시트 입력) 제거, `/course` 탭에서 코스 자동 감지 + v2(등급 기반 참여 점검) 설정/워커 관리로 통합. v1 roster-worker는 `rosterSheetName` 미설정 시 방 이름 접두어로 기본 탭명(`ROSTER_CHAT/ROSTER_NOTICE/ROSTER_PREMIUM`)을 추론한다.
 - 2025-12-12: welcome 템플릿 SSOT 정합성 강화(신규입장/`welcome:test`에서 runtime.json.templateByFeature.welcome → welcomeTemplateName 순으로만 사용) 및 템플릿 미존재 시 기본 환영 폴백 발송 금지.
@@ -82,7 +84,9 @@
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
 | --- | --- | --- |
+| 2025-12-23 | 강의 운영 v2: 운영 UI를 CourseOps 웹 콘솔(go.yoorang.kr)로 전환(동시접속) + 처리/검증 상태머신 + 빠른 재검증/전체 동기화 + 담당자·메모 기록 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md` |
 | 2025-12-22 | 강의 운영 v2 결제 SSOT 연동 + ACTIONS/시트 UX 개선 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md`, `docs/reference/payment-ssot-google-sheets.md`, `scripts/course_membership_audit/audit.py`, `scripts/course_membership_audit/sheets.py`, `scripts/course_membership_audit/worker.py` |
+| 2025-12-22 | Welcome: 기본닉+첫 이미지 닉변요청/확인(15m) + Reply raw 멘션 지원 | `docs/adr/ADR-0026-welcome-followup-first-image-reply.md`, `docs/adr/ADR-0045-welcome-open-profile-guide-first-image-no-reminders.md`, `docs/reference/kakao-mentions-and-reply.md`, `node-iris-app/src/workers/welcome_worker.ts`, `node-iris-app/src/utils/talkapi.ts`, `server/app.py` |
 | 2025-12-21 | course-membership-audit-worker 중복 실행 방지(OS lock) + start 스크립트 안정화 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md`, `windows/start_course_membership_audit_worker.ps1` |
 | 2025-12-18 | 강의 운영 v2(카페 자동 갱신 + 등급 기반 참여 점검 + 통합 시트) 워커 도입 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md` |
 | 2025-12-18 | roster-worker 카페 데이터 소스 전환: CSV(레거시) → 크롤러(JSON 스냅샷) | `docs/adr/ADR-0040-roster-worker-cafe-snapshot-crawler.md`, `docs/reference/course-roster-worker.md` |

@@ -67,6 +67,34 @@ if (result === null) {
 
 ---
 
+## CourseOps v2: 외부 운영 콘솔(go.yoorang.kr) 작업 지침
+
+목표: “ACTIONS(작업 대기열)”을 **웹 UI로** 제공해, 내부 운영진이 동시접속으로 조치/확인까지 끝내게 한다.
+
+핵심 불변식:
+
+- 카카오/Redroid 연동(수집/판정)은 **12.kakao 1대**만 수행한다(외부 웹이 카카오에 직접 붙지 않음).
+- `go.yoorang.kr`에는 CourseOps 화면만 노출한다(기존 운영 UI 외부 노출 금지).
+
+제품 규칙(필수):
+
+- 인증: **이름 + 공용 비번** + 자동 로그인(쿠키).
+- 동기화 권한: 기본은 모두 허용하되, 필요 시 **이름 allowlist**로 제한 가능해야 한다.
+- “처리 완료”는 곧바로 완료 확정이 아니라 **`확인 대기`로 전환**하는 행동이다.
+- 완료 확정은 동기화 결과로만 한다(상태머신):
+  - `대기` → `확인 대기` → `완료(검증됨)`/`미해결(재확인)`/`확인 불가(데이터 미완전)`
+- 동기화 버튼은 2개:
+  - **빠른 재검증**: `확인 대기` 항목이 참조하는 **필요한 방만** 갱신해 해당 항목만 재판정(조치 확인용).
+  - **전체 동기화**: 톡방+카페+결제SSOT까지 전체 갱신 후 전체 재판정(정기 갱신용).
+- 동기화는 단일 실행(락)이어야 한다(동시 클릭/중복 실행 방지).
+
+엣지케이스 처리(오판 금지):
+
+- 톡방 멤버 로딩이 미완료면 “없다/있다”를 단정하지 말고 `확인 불가(데이터 미완전)`로 분리한다.
+- 동일인 매칭은 “현재 닉네임 단일 값”에 의존하지 말고, alias/정규화/결제SSOT 힌트를 포함해 보수적으로 판정한다.
+
+---
+
 ## 운영 장애: EMFILE(too many open files)
 
 ### 핵심
@@ -194,8 +222,14 @@ if (result === null) {
 
 ### Welcome 후속 Reply(감사합니다)
 
-- 오픈프로필이 아닌 경우: 첫 이미지 업로드에 Reply(type=26)로 `welcome.followUp.replies` 중 1개를 1회 발신
 - 오픈프로필인 경우: 감사 Reply는 스킵(가이드 + 닫힘 확인 멘트만)
+- 오픈프로필이 아닌 경우:
+  - 비기본닉: 첫 이미지 업로드에 Reply(type=26)로 `welcome.followUp.replies` 중 1개를 1회 발신
+  - 기본닉: `welcome.followUp.nicknameChangeAfterImage.enabled=true`면 “감사합니다…” Reply 대신 아래 플로우로 처리
+    - (요청) 첫 이미지에 Reply(type=26)로 `welcome.followUp.nicknameChangeAfterImage.requestText` 발신
+    - (확인) **요청 발신 시점부터** `confirmWindowMs` 내 `feedType=2`(프로필 변경)로 닉변이 확인되면,
+      Reply가 아닌 **일반 멘션**으로 `welcome.followUp.nicknameChangeAfterImage.confirmText` 발신
+    - 레이스 방지: 요청 이전에 들어온 `feedType=2` 캐시는 닉변 완료로 인정하지 않는다
 
 ### 제거된 항목(잔재 금지)
 
