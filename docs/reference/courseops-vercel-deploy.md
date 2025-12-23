@@ -26,6 +26,7 @@
   - 공용 비밀번호(로그인에 사용)
 - `COURSEOPS_ADMIN_NAMES`
   - 새 강의 등록 관리자 이름 목록(콤마로 구분)
+  - 예: `glemfkcl`
 - `COURSEOPS_SESSION_SECRET`
   - 세션 서명용 시크릿(길게 랜덤)
 - `DATABASE_URL`
