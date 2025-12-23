@@ -364,5 +364,8 @@
 - 문서화 반영:
   - ADR: `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`
   - 레퍼런스: `docs/reference/course-ops-v2-web-console.md`
-  - PRD: `docs/prd_course_ops_v2_membership_audit.md`(웹 콘솔 중심으로 갱신)
+  - PRD: `docs/prd_course_ops_v2_membership_audit.md`(웹 콘솔 중심으로 갱신)    
   - SSOT: `docs/ssot.md`(2025-12-23 항목 추가)
+- 구현(초안) 착수:
+  - `courseops/console/`: 작업 대기열/설정/로그인 + 동기화(전체)/빠른 재검증 트리거 + 에이전트 폴링 API 초안
+  - `courseops/agent/`: 로컬에서 `SYNC_FULL`/`REVERIFY_PENDING` 작업을 받아 수행 후 진행도/검증 결과를 보고하는 루프 초안

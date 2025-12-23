@@ -29,6 +29,9 @@
 ├─ node-iris-app/         # Node.js 기반 IRIS 연동 서비스 (TypeScript)
 ├─ dashboard/             # Streamlit UI 및 실시간 로그 API
 ├─ iris_server/           # IRIS 연동 서버 샘플/도구 (Python)
+├─ server/                # FastAPI + SSE 실시간 서버
+├─ web/                   # Next.js 운영 대시보드(기본: localhost:3100)
+├─ courseops/             # 강의 운영 v2 외부 콘솔 + 로컬 에이전트(go.yoorang.kr)
 ├─ scripts/               # 운영 및 데이터 수집 스크립트
 ├─ infra/                 # IRIS 관련 배포/설치 자료
 ├─ windows/               # Windows PowerShell 스크립트 (포트프록시/ADB)
@@ -48,6 +51,7 @@
 | **Node IRIS Adapter** | `node-iris-app/` | TypeScript 기반 IRIS 연동, Vitest 테스트 | `npm install`, `npm run build`, `npm test` |
 | **Realtime Dashboard** | `dashboard/`, `scripts/log_api.py` | Streamlit UI + 로그 API | `scripts/serve_ui.sh`, `streamlit run dashboard/ui_node_iris.py` |
 | **IRIS Helper Server** | `iris_server/`, `infra/iris/` | 로컬 IRIS 리소스, DB, 헬퍼 스크립트 | `pip install -r iris_server/requirements.txt` |
+| **CourseOps v2** | `courseops/` | 강의 운영 v2 외부 동시접속 콘솔 + 로컬 에이전트 | `docs/reference/course-ops-v2-web-console.md` |
 | **Ops & Documentation** | `docs/`, `README.md`, `agents.md` | 제품/기술 SSOT, 워크플로, 운영 체크리스트 | `docs/reference/project-structure.md`, `docs/reference/verification-commands.md` |
 
 ---

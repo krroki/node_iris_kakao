@@ -1,0 +1,416 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+
+const consoleBase = String(process.env.COURSEOPS_CONSOLE_BASE_URL || "").replace(/\/$/, "");
+const agentToken = String(process.env.COURSEOPS_AGENT_TOKEN || "");
+const agentName = String(process.env.COURSEOPS_AGENT_NAME || "courseops-agent");
+const pollSec = Math.max(1, Number(process.env.COURSEOPS_POLL_SEC || "2"));
+const repoRoot = String(process.env.COURSEOPS_REPO_ROOT || "C:\\dev\\12.kakao");
+
+if (!consoleBase) throw new Error("COURSEOPS_CONSOLE_BASE_URL is required");
+if (!agentToken) throw new Error("COURSEOPS_AGENT_TOKEN is required");
+
+const statePath = path.join(repoRoot, "node-iris-app", "data", "course_membership_audit_worker_state.json");
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function readText(p) {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function readJson(p) {
+  try {
+    const s = fs.readFileSync(p, "utf8");
+    return JSON.parse(s);
+  } catch {
+    return {};
+  }
+}
+
+function writeJsonAtomic(p, obj) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = `${p}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", "utf8");
+  fs.renameSync(tmp, p);
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-courseops-agent-token": agentToken },
+    body: JSON.stringify(body),
+  });
+  const j = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, json: j };
+}
+
+function runPowershell(scriptPath, args = []) {
+  return new Promise((resolve) => {
+    const psArgs = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, ...args];
+    const child = spawn("powershell.exe", psArgs, { cwd: repoRoot, windowsHide: true });
+    child.on("exit", (code) => resolve({ code: code ?? 0 }));
+  });
+}
+
+async function ensureWorkerRunning() {
+  const script = path.join(repoRoot, "windows", "start_course_membership_audit_worker.ps1");
+  await runPowershell(script, []);
+}
+
+function readIrisBase() {
+  const envUrl = String(process.env.IRIS_URL || process.env.IRIS_QUERY_BASE || process.env.IRIS_BRIDGE_URL || "").trim();
+  if (envUrl) return envUrl.replace(/\/$/, "");
+  const p = path.join(repoRoot, "config", "windows", "iris_url.txt");
+  const s = readText(p).trim();
+  return (s || "http://127.0.0.1:5050").replace(/\/$/, "");
+}
+
+async function irisQuery(query, bind, timeoutMs = 20000) {
+  const irisBase = readIrisBase();
+  const url = `${irisBase}/query`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), Math.max(1000, timeoutMs));
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, bind }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`IRIS /query 실패(HTTP ${res.status})`);
+    const j = await res.json().catch(() => ({}));
+    const data = Array.isArray(j?.data) ? j.data : [];
+    return data.filter((x) => x && typeof x === "object");
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+const KOREAN_RE = /[가-힣ㄱ-ㅎㅏ-ㅣ]/;
+
+function decodeNickname(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (KOREAN_RE.test(s)) return s;
+  try {
+    const decoded = Buffer.from(s, "latin1").toString("utf8").trim();
+    if (decoded && KOREAN_RE.test(decoded)) return decoded;
+  } catch {}
+  try {
+    if (s.length >= 16 && s.length % 4 === 0 && /^[A-Za-z0-9+/=]+$/.test(s)) {
+      const decoded = Buffer.from(s, "base64").toString("utf8").trim();
+      if (decoded && KOREAN_RE.test(decoded)) return decoded;
+    }
+  } catch {}
+  return s;
+}
+
+function extractCafeNickFromOpenchatNickname(nick) {
+  const s = String(nick || "").trim();
+  if (!s) return "";
+  const m1 = s.match(/[（(]([^（）()\n\r]{1,100})[）)]\s*$/);
+  if (m1 && m1[1]) return String(m1[1]).trim();
+  const m2 = s.match(/[/／]\s*([^/／\s]{1,100})\s*$/);
+  if (m2 && m2[1]) return String(m2[1]).trim();
+  return "";
+}
+
+function normalizeCafeNick(s) {
+  return String(s || "").replace(/\s+/gu, "").trim();
+}
+
+async function fetchOpenchatMembers(roomId) {
+  const rid = String(roomId || "").trim();
+  if (!rid) return [];
+
+  const rows = await irisQuery("select link_id from chat_rooms where id=?", [rid], 10000);
+  const linkIdRaw = rows?.[0]?.link_id;
+  const linkId = linkIdRaw === 0 || linkIdRaw ? String(linkIdRaw).trim() : "";
+  if (!linkId) return [];
+
+  const out = new Map();
+  let offset = 0;
+  const pageSize = 500;
+  while (true) {
+    const chunk = await irisQuery(
+      "select user_id, nickname, enc from db2.open_chat_member where link_id=? order by nickname limit ? offset ?",
+      [Number(linkId), pageSize, offset],
+      30000,
+    );
+    if (!chunk || chunk.length === 0) break;
+    for (const row of chunk) {
+      const uid = String(row.user_id || "").trim();
+      if (!uid) continue;
+      const nick = decodeNickname(row.nickname);
+      if (!out.has(uid)) out.set(uid, { userId: uid, nickname: nick });
+      else if (nick && !out.get(uid).nickname) out.get(uid).nickname = nick;
+    }
+    if (chunk.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return Array.from(out.values());
+}
+
+function triggerCourseRunOnce(courseKey) {
+  const now = Date.now();
+  const j = readJson(statePath);
+  const courses = typeof j.courses === "object" && j.courses ? j.courses : {};
+  const cs = typeof courses[courseKey] === "object" && courses[courseKey] ? courses[courseKey] : {};
+  cs.nextRunMs = now;
+  cs.nextRunTs = new Date(now).toISOString();
+  courses[courseKey] = cs;
+  j.courses = courses;
+  writeJsonAtomic(statePath, j);
+  return now;
+}
+
+function pickCourseKey(job) {
+  const courseKey = job?.course?.courseKey || job?.course?.course_key || job?.courseKey;
+  return String(courseKey || "").trim();
+}
+
+function getCourseState(courseKey) {
+  const j = readJson(statePath);
+  const cs = j?.courses?.[courseKey];
+  return typeof cs === "object" && cs ? cs : null;
+}
+
+async function report(jobId, payload) {
+  await postJson(`${consoleBase}/api/agent/report`, { jobId, ...payload });
+}
+
+async function runSyncFull(job) {
+  const courseKey = pickCourseKey(job);
+  if (!courseKey) {
+    await report(job.id, { status: "FAILED", resultMessage: "강의를 찾지 못했어요." });
+    return;
+  }
+
+  await ensureWorkerRunning();
+
+  const startedAt = triggerCourseRunOnce(courseKey);
+  await report(job.id, {
+    status: "RUNNING",
+    progressPct: 1,
+    progressMessage: "동기화를 시작했어요.",
+    events: [{ level: "INFO", message: `${courseKey} 동기화를 시작했어요.` }],
+  });
+
+  const deadline = Date.now() + 25 * 60 * 1000;
+  let lastMsg = "";
+
+  while (Date.now() < deadline) {
+    const cs = getCourseState(courseKey);
+    const progress = cs?.progress || {};
+    const msg = String(progress?.message || "").trim();
+    const pct = typeof progress?.pct === "number" ? progress.pct : null;
+
+    if (msg && msg !== lastMsg) {
+      lastMsg = msg;
+      await report(job.id, {
+        status: "RUNNING",
+        progressPct: pct,
+        progressMessage: msg,
+        events: [{ level: "INFO", message: msg }],
+      });
+    } else {
+      await report(job.id, { status: "RUNNING", progressPct: pct, progressMessage: msg || null, events: [] });
+    }
+
+    const lastRunMs = Number(cs?.lastRunMs || 0);
+    const lastResult = String(cs?.lastResult || "").trim();
+    if (lastRunMs && lastRunMs >= startedAt && (lastResult === "OK" || lastResult === "ERROR")) {
+      if (lastResult === "OK") {
+        await report(job.id, {
+          status: "DONE",
+          progressPct: 100,
+          progressMessage: "완료됐어요.",
+          resultMessage: "완료됐어요.",
+          events: [{ level: "INFO", message: "완료됐어요." }],
+        });
+      } else {
+        const errUser = String(cs?.lastErrorUser || cs?.lastError || "").trim() || "실패했어요.";
+        await report(job.id, {
+          status: "FAILED",
+          progressPct: 100,
+          progressMessage: errUser,
+          resultMessage: errUser,
+          events: [{ level: "ERROR", message: errUser }],
+        });
+      }
+      return;
+    }
+
+    await sleep(2500);
+  }
+
+  await report(job.id, {
+    status: "FAILED",
+    progressPct: 100,
+    progressMessage: "시간이 오래 걸려서 중단됐어요.",
+    resultMessage: "시간이 오래 걸려서 중단됐어요.",
+    events: [{ level: "ERROR", message: "시간이 오래 걸려서 중단됐어요." }],
+  });
+}
+
+function parseRoomLabels(s) {
+  const t = String(s || "")
+    .split(/[,，\n\r]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return Array.from(new Set(t));
+}
+
+function roomTypeFromLabel(label) {
+  const s = String(label || "").trim();
+  if (s === "사담방") return "chat";
+  if (s === "공지방") return "notice";
+  if (s === "프리미엄방") return "premium";
+  return "";
+}
+
+async function runReverifyPending(job) {
+  const courseKey = pickCourseKey(job);
+  const items = Array.isArray(job?.payload?.items) ? job.payload.items : [];
+  if (!courseKey || items.length === 0) {
+    await report(job.id, {
+      status: "DONE",
+      progressPct: 100,
+      progressMessage: "확인할 항목이 없어요.",
+      resultMessage: "확인할 항목이 없어요.",
+      events: [{ level: "INFO", message: "확인할 항목이 없어요." }],
+      actionUpdates: [],
+    });
+    return;
+  }
+
+  const cs = getCourseState(courseKey);
+  const lastRooms = cs?.lastRooms || cs?.last_rooms || null;
+  if (!lastRooms || typeof lastRooms !== "object") {
+    await report(job.id, {
+      status: "FAILED",
+      progressPct: 100,
+      progressMessage: "방 정보를 찾지 못했어요. 먼저 '데이터 동기화'를 실행해 주세요.",
+      resultMessage: "방 정보를 찾지 못했어요. 먼저 '데이터 동기화'를 실행해 주세요.",
+      events: [{ level: "ERROR", message: "방 정보를 찾지 못했어요. 먼저 '데이터 동기화'를 실행해 주세요." }],
+      actionUpdates: [],
+    });
+    return;
+  }
+
+  const updates = [];
+  const memberCache = new Map();
+
+  const total = items.length;
+  let processed = 0;
+
+  for (const it of items) {
+    processed += 1;
+    const actionKey = String(it.actionKey || "").trim();
+    const action = String(it.action || "").trim();
+    const target = String(it.target || "").trim();
+    const roomsText = String(it.rooms || "").trim();
+
+    const pct = Math.floor((processed / Math.max(1, total)) * 100);
+    await report(job.id, {
+      status: "RUNNING",
+      progressPct: pct,
+      progressMessage: `확인 중 ${processed}/${total}`,
+      events: [],
+    });
+
+    if (!actionKey || !target) continue;
+
+    const expect =
+      action === "프리미엄방 정리"
+        ? "absent"
+        : action === "톡방 입장 안내" || action === "카페 가입 확인 후 톡방 입장 안내"
+          ? "present"
+          : null;
+    if (!expect) continue;
+
+    const labels = parseRoomLabels(roomsText);
+    const roomTypes = labels.map(roomTypeFromLabel).filter(Boolean);
+    if (roomTypes.length === 0) continue;
+
+    let unknown = false;
+    const roomIds = [];
+    for (const rt of roomTypes) {
+      const info = lastRooms?.[rt];
+      const roomId = String(info?.roomId || "").trim();
+      const incomplete = Boolean(info?.incomplete);
+      if (!roomId || incomplete) {
+        unknown = true;
+        break;
+      }
+      roomIds.push(roomId);
+    }
+    if (unknown) {
+      updates.push({ actionKey, status: "확인 불가(데이터 미완전)" });
+      continue;
+    }
+
+    const targetKey = normalizeCafeNick(target);
+    let ok = true;
+    for (const roomId of roomIds) {
+      if (!memberCache.has(roomId)) {
+        const members = await fetchOpenchatMembers(roomId);
+        memberCache.set(roomId, members);
+      }
+      const members = memberCache.get(roomId) || [];
+      const present = members.some((m) => normalizeCafeNick(extractCafeNickFromOpenchatNickname(m.nickname)) === targetKey);
+      if (expect === "present" && !present) ok = false;
+      if (expect === "absent" && present) ok = false;
+    }
+
+    updates.push({ actionKey, status: ok ? "완료(검증됨)" : "미해결(재확인)" });
+  }
+
+  await report(job.id, {
+    status: "DONE",
+    progressPct: 100,
+    progressMessage: "확인이 끝났어요.",
+    resultMessage: "확인이 끝났어요.",
+    events: [{ level: "INFO", message: "확인이 끝났어요." }],
+    actionUpdates: updates,
+  });
+}
+
+async function handleJob(job) {
+  if (!job) return;
+  if (job.kind === "SYNC_FULL") {
+    await runSyncFull(job);
+    return;
+  }
+  if (job.kind === "REVERIFY_PENDING") {
+    await runReverifyPending(job);
+    return;
+  }
+  await report(job.id, { status: "FAILED", resultMessage: "지원하지 않는 작업이에요." });
+}
+
+async function main() {
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const r = await postJson(`${consoleBase}/api/agent/poll`, { agentName, version: "0.1" });
+      if (r.ok && r.json?.job) {
+        await handleJob(r.json.job);
+      } else {
+        await sleep(pollSec * 1000);
+      }
+    } catch {
+      await sleep(Math.max(2, pollSec) * 1000);
+    }
+  }
+}
+
+main();

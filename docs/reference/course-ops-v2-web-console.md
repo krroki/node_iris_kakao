@@ -123,3 +123,30 @@
 - `yoorang.kr` 전체를 옮기지 않고도, `go.yoorang.kr`만 별도 존(Zone)으로 만들어 NS 위임 방식으로 운영 가능하다.
 
 > 상세 runbook은 `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`의 후속 작업에서 별도 문서로 확정한다.
+
+---
+
+## 9) 코드 위치(구현)
+
+- 웹 콘솔(Vercel): `courseops/console/`
+- 로컬 에이전트(12.kakao PC): `courseops/agent/`
+
+### 9.1) 웹 콘솔 필수 환경 변수
+
+- `COURSEOPS_SHARED_PASSWORD` (공용 비밀번호)
+- `COURSEOPS_SESSION_SECRET` (세션 서명용 시크릿)
+- `DATABASE_URL` (Postgres)
+- `GOOGLE_SERVICE_ACCOUNT_JSON` (Google Sheets 읽기용 서비스 계정 JSON)
+- `COURSEOPS_AGENT_TOKEN` (에이전트 인증 토큰)
+
+### 9.2) 로컬 에이전트 실행(예시)
+
+> 운영 환경에서는 Watchdog/스케줄러로 “항상 떠 있도록” 보장한다.
+
+- 필수:
+  - `COURSEOPS_CONSOLE_BASE_URL=https://go.yoorang.kr`
+  - `COURSEOPS_AGENT_TOKEN=<콘솔과 동일>`
+- 선택:
+  - `COURSEOPS_AGENT_NAME=<표시 이름>`
+  - `COURSEOPS_POLL_SEC=2`
+  - `COURSEOPS_REPO_ROOT=C:\dev\12.kakao`
