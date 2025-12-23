@@ -3,8 +3,23 @@ create table if not exists courseops_courses (
   course_key text not null unique,
   sheet_id text not null,
   actions_tab text not null default 'ACTIONS',
+  cafe_url text,
+  openchat_chat_room_id text,
+  openchat_notice_room_id text,
+  premium_enabled boolean not null default true,
+  openchat_premium_room_id text,
+  vip_enabled boolean not null default false,
+  openchat_vip_room_id text,
   created_at timestamptz not null default now()
 );
+
+alter table courseops_courses add column if not exists cafe_url text;
+alter table courseops_courses add column if not exists openchat_chat_room_id text;
+alter table courseops_courses add column if not exists openchat_notice_room_id text;
+alter table courseops_courses add column if not exists premium_enabled boolean not null default true;
+alter table courseops_courses add column if not exists openchat_premium_room_id text;
+alter table courseops_courses add column if not exists vip_enabled boolean not null default false;
+alter table courseops_courses add column if not exists openchat_vip_room_id text;
 
 create table if not exists courseops_action_state (
   action_key text primary key,
@@ -43,4 +58,3 @@ create table if not exists courseops_job_events (
   message text not null,
   ts timestamptz not null default now()
 );
-

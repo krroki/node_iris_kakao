@@ -1,14 +1,31 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { requireAdminSession } from "@/lib/admin";
 import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
 
-const CreateBody = z.object({
-  courseKey: z.string().trim().min(1, "강의 이름을 입력해 주세요."),
-  sheetIdOrUrl: z.string().trim().min(1, "스프레드시트 URL 또는 ID를 입력해 주세요."),
-  actionsTab: z.string().trim().min(1).default("ACTIONS"),
-});
+const CreateBody = z
+  .object({
+    courseKey: z.string().trim().min(1, "강의 이름을 입력해 주세요."),
+    sheetIdOrUrl: z.string().trim().min(1, "스프레드시트 URL 또는 ID를 입력해 주세요."),
+    actionsTab: z.string().trim().min(1).default("ACTIONS"),
+    cafeUrl: z.string().trim().optional().default(""),
+    openchatChatRoomId: z.string().trim().min(1, "사담방 ID를 입력해 주세요."),
+    openchatNoticeRoomId: z.string().trim().min(1, "공지방 ID를 입력해 주세요."),
+    premiumEnabled: z.boolean().optional().default(true),
+    openchatPremiumRoomId: z.string().trim().optional().default(""),
+    vipEnabled: z.boolean().optional().default(false),
+    openchatVipRoomId: z.string().trim().optional().default(""),
+  })
+  .superRefine((data, ctx) => {
+    if (data.premiumEnabled && !String(data.openchatPremiumRoomId || "").trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["openchatPremiumRoomId"], message: "프리미엄방 ID를 입력해 주세요." });
+    }
+    if (data.vipEnabled && !String(data.openchatVipRoomId || "").trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["openchatVipRoomId"], message: "VIP방 ID를 입력해 주세요." });
+    }
+  });
 
 export async function GET() {
   try {
@@ -23,9 +40,9 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    await requireSession();
+    await requireAdminSession();
   } catch {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const parsed = CreateBody.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {

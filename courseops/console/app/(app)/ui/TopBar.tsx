@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+type Course = { id: string; courseKey: string };
 type Job = {
   id: string;
   status: "QUEUED" | "RUNNING" | "DONE" | "FAILED";
@@ -13,6 +14,7 @@ type Job = {
 };
 
 export default function TopBar({ userName }: { userName: string }) {
+  const [courses, setCourses] = useState<Course[]>([]);
   const [courseId, setCourseId] = useState<string>("");
   const [job, setJob] = useState<Job | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -23,6 +25,7 @@ export default function TopBar({ userName }: { userName: string }) {
       const res = await fetch("/api/courses", { cache: "no-store" });
       const j = (await res.json().catch(() => ({}))) as any;
       const courses = Array.isArray(j?.courses) ? j.courses : [];
+      setCourses(courses as Course[]);
       const saved = typeof window !== "undefined" ? window.localStorage.getItem("courseops_selected_course_id") : "";
       const picked = saved && courses.some((c: any) => String(c?.id) === String(saved)) ? String(saved) : "";
       if (picked) setCourseId(picked);
@@ -89,6 +92,29 @@ export default function TopBar({ userName }: { userName: string }) {
     <div className="sticky top-0 z-10 border-b bg-white/90 backdrop-blur">
       <div className="flex items-center justify-between gap-3 px-4 py-3 md:px-8">
         <div className="flex min-w-0 items-center gap-3">
+          <div className="hidden text-sm text-slate-500 md:block">강의</div>
+          <select
+            className="max-w-[360px] rounded-lg border bg-white px-3 py-2 text-sm"
+            value={courseId}
+            onChange={(e) => {
+              const v = e.target.value;
+              setCourseId(v);
+              setJob(null);
+              try {
+                window.localStorage.setItem("courseops_selected_course_id", v);
+              } catch {}
+              try {
+                window.dispatchEvent(new CustomEvent("courseops:selectedCourseChanged", { detail: { courseId: v } }));
+              } catch {}
+              refreshJob(v);
+            }}
+          >
+            {courses.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.courseKey}
+              </option>
+            ))}
+          </select>
           <div className="hidden text-sm text-slate-500 md:block">담당</div>
           <div className="truncate text-sm font-medium">{userName}</div>
           {badge ? (

@@ -8,6 +8,13 @@ export type CourseRow = {
   courseKey: string;
   sheetId: string;
   actionsTab: string;
+  cafeUrl: string | null;
+  openchatChatRoomId: string | null;
+  openchatNoticeRoomId: string | null;
+  premiumEnabled: boolean;
+  openchatPremiumRoomId: string | null;
+  vipEnabled: boolean;
+  openchatVipRoomId: string | null;
 };
 
 export type ActionStateRow = {
@@ -31,11 +38,35 @@ export type JobRow = {
   updatedAt: string | null;
 };
 
-const CreateCourseBody = z.object({
-  courseKey: z.string().trim().min(1),
-  sheetIdOrUrl: z.string().trim().min(1),
-  actionsTab: z.string().trim().min(1),
-});
+const CreateCourseBody = z
+  .object({
+    courseKey: z.string().trim().min(1),
+    sheetIdOrUrl: z.string().trim().min(1),
+    actionsTab: z.string().trim().min(1),
+    cafeUrl: z.string().trim().optional().default(""),
+    openchatChatRoomId: z.string().trim().min(1),
+    openchatNoticeRoomId: z.string().trim().min(1),
+    premiumEnabled: z.boolean().optional().default(true),
+    openchatPremiumRoomId: z.string().trim().optional().default(""),
+    vipEnabled: z.boolean().optional().default(false),
+    openchatVipRoomId: z.string().trim().optional().default(""),
+  })
+  .superRefine((data, ctx) => {
+    if (data.premiumEnabled && !String(data.openchatPremiumRoomId || "").trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["openchatPremiumRoomId"],
+        message: "프리미엄방 ID를 입력해 주세요.",
+      });
+    }
+    if (data.vipEnabled && !String(data.openchatVipRoomId || "").trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["openchatVipRoomId"],
+        message: "VIP방 ID를 입력해 주세요.",
+      });
+    }
+  });
 
 function id(prefix: string) {
   return `${prefix}_${crypto.randomBytes(10).toString("hex")}`;
@@ -53,23 +84,100 @@ export async function coursesStore() {
   return {
     async listCourses(): Promise<CourseRow[]> {
       const rows = await sql<
-        { id: string; course_key: string; sheet_id: string; actions_tab: string }[]
-      >`select id, course_key, sheet_id, actions_tab from courseops_courses order by course_key asc`;
-      return rows.map((r) => ({ id: r.id, courseKey: r.course_key, sheetId: r.sheet_id, actionsTab: r.actions_tab }));
+        {
+          id: string;
+          course_key: string;
+          sheet_id: string;
+          actions_tab: string;
+          cafe_url: string | null;
+          openchat_chat_room_id: string | null;
+          openchat_notice_room_id: string | null;
+          premium_enabled: boolean | null;
+          openchat_premium_room_id: string | null;
+          vip_enabled: boolean | null;
+          openchat_vip_room_id: string | null;
+        }[]
+      >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
+      return rows.map((r) => ({
+        id: r.id,
+        courseKey: r.course_key,
+        sheetId: r.sheet_id,
+        actionsTab: r.actions_tab,
+        cafeUrl: r.cafe_url,
+        openchatChatRoomId: r.openchat_chat_room_id,
+        openchatNoticeRoomId: r.openchat_notice_room_id,
+        premiumEnabled: r.premium_enabled ?? true,
+        openchatPremiumRoomId: r.openchat_premium_room_id,
+        vipEnabled: r.vip_enabled ?? false,
+        openchatVipRoomId: r.openchat_vip_room_id,
+      }));
     },
     async getCourse(courseId: string): Promise<CourseRow | null> {
       const rows = await sql<
-        { id: string; course_key: string; sheet_id: string; actions_tab: string }[]
-      >`select id, course_key, sheet_id, actions_tab from courseops_courses where id=${courseId} limit 1`;
+        {
+          id: string;
+          course_key: string;
+          sheet_id: string;
+          actions_tab: string;
+          cafe_url: string | null;
+          openchat_chat_room_id: string | null;
+          openchat_notice_room_id: string | null;
+          premium_enabled: boolean | null;
+          openchat_premium_room_id: string | null;
+          vip_enabled: boolean | null;
+          openchat_vip_room_id: string | null;
+        }[]
+      >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
       const r = rows[0];
-      return r ? { id: r.id, courseKey: r.course_key, sheetId: r.sheet_id, actionsTab: r.actions_tab } : null;
+      return r
+        ? {
+            id: r.id,
+            courseKey: r.course_key,
+            sheetId: r.sheet_id,
+            actionsTab: r.actions_tab,
+            cafeUrl: r.cafe_url,
+            openchatChatRoomId: r.openchat_chat_room_id,
+            openchatNoticeRoomId: r.openchat_notice_room_id,
+            premiumEnabled: r.premium_enabled ?? true,
+            openchatPremiumRoomId: r.openchat_premium_room_id,
+            vipEnabled: r.vip_enabled ?? false,
+            openchatVipRoomId: r.openchat_vip_room_id,
+          }
+        : null;
     },
     async createCourse(input: z.infer<typeof CreateCourseBody>): Promise<CourseRow> {
       const data = CreateCourseBody.parse(input);
       const courseId = id("course");
       const sheetId = parseSheetId(data.sheetIdOrUrl);
-      await sql`insert into courseops_courses (id, course_key, sheet_id, actions_tab) values (${courseId}, ${data.courseKey}, ${sheetId}, ${data.actionsTab})`;
-      return { id: courseId, courseKey: data.courseKey, sheetId, actionsTab: data.actionsTab };
+      await sql`
+        insert into courseops_courses (
+          id, course_key, sheet_id, actions_tab,
+          cafe_url,
+          openchat_chat_room_id, openchat_notice_room_id,
+          premium_enabled, openchat_premium_room_id,
+          vip_enabled, openchat_vip_room_id
+        )
+        values (
+          ${courseId}, ${data.courseKey}, ${sheetId}, ${data.actionsTab},
+          ${data.cafeUrl || null},
+          ${data.openchatChatRoomId || null}, ${data.openchatNoticeRoomId || null},
+          ${Boolean(data.premiumEnabled)}, ${data.openchatPremiumRoomId || null},
+          ${Boolean(data.vipEnabled)}, ${data.openchatVipRoomId || null}
+        )
+      `;
+      return {
+        id: courseId,
+        courseKey: data.courseKey,
+        sheetId,
+        actionsTab: data.actionsTab,
+        cafeUrl: data.cafeUrl || null,
+        openchatChatRoomId: data.openchatChatRoomId || null,
+        openchatNoticeRoomId: data.openchatNoticeRoomId || null,
+        premiumEnabled: Boolean(data.premiumEnabled),
+        openchatPremiumRoomId: data.openchatPremiumRoomId || null,
+        vipEnabled: Boolean(data.vipEnabled),
+        openchatVipRoomId: data.openchatVipRoomId || null,
+      };
     },
     async getActionStates(courseId: string, actionKeys: string[]): Promise<ActionStateRow[]> {
       if (!actionKeys || actionKeys.length === 0) return [];

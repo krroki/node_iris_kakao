@@ -78,6 +78,19 @@ export default function QueueView() {
   }, []);
 
   useEffect(() => {
+    const onChanged = (ev: any) => {
+      const cid = String(ev?.detail?.courseId || "").trim();
+      if (!cid) return;
+      setCourseId(cid);
+      try {
+        window.localStorage.setItem("courseops_selected_course_id", cid);
+      } catch {}
+    };
+    window.addEventListener("courseops:selectedCourseChanged", onChanged);
+    return () => window.removeEventListener("courseops:selectedCourseChanged", onChanged);
+  }, []);
+
+  useEffect(() => {
     if (!courseId) return;
     loadActions(courseId);
     const t = setInterval(() => loadActions(courseId), 7000);
@@ -123,6 +136,9 @@ export default function QueueView() {
               setCourseId(v);
               try {
                 window.localStorage.setItem("courseops_selected_course_id", v);
+              } catch {}
+              try {
+                window.dispatchEvent(new CustomEvent("courseops:selectedCourseChanged", { detail: { courseId: v } }));
               } catch {}
             }}
           >
