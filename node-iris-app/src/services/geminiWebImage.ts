@@ -193,6 +193,9 @@ async function getOrCreatePersistentCtx(opts: {
     if (existing) {
       try {
         // best-effort health check
+        if (existing.ctx?.isClosed?.()) throw new Error("ctx_closed");
+        const browser = existing.ctx?.browser?.();
+        if (browser?.isConnected?.() === false) throw new Error("browser_disconnected");
         await existing.ctx.pages?.();
         existing.lastUsedAt = now;
         return existing;
@@ -350,14 +353,27 @@ async function bestEffortLocateAndFill(page: any, selectors: string[], text: str
 
 async function bestEffortAttachFile(page: any, selectors: string[], filePath: string): Promise<void> {
   const trySetInputFiles = async (timeoutMs: number): Promise<boolean> => {
-    for (const sel of selectors) {
-      try {
-        const loc = page.locator(sel).first();
-        await loc.waitFor({ state: "attached", timeout: timeoutMs });
-        await loc.setInputFiles(filePath, { timeout: timeoutMs });
-        return true;
-      } catch {
-        // try next
+    const targets: any[] = [];
+    try {
+      const frames = page.frames?.();
+      if (Array.isArray(frames) && frames.length > 0) targets.push(...frames);
+    } catch {}
+    if (targets.length === 0) targets.push(page);
+
+    for (const target of targets) {
+      for (const sel of selectors) {
+        try {
+          const list = target.locator(sel);
+          const count = Math.min(await list.count(), 6);
+          for (let i = 0; i < count; i++) {
+            const loc = list.nth(i);
+            await loc.waitFor({ state: "attached", timeout: timeoutMs });
+            await loc.setInputFiles(filePath, { timeout: timeoutMs });
+            return true;
+          }
+        } catch {
+          // try next selector/target
+        }
       }
     }
     return false;
@@ -991,6 +1007,8 @@ export async function generateGeminiWebImage(opts: GenerateOpts): Promise<string
           msg.includes("Browser closed") ||
           msg.includes("has been closed") ||
           msg.includes("Navigation failed") ||
+          msg.includes("file_input_not_found") ||
+          msg.includes("prompt_input_not_found") ||
           msg.includes("gemini_web_overall_timeout") ||
           msg.includes("gemini_web_eval_timeout");
         if (shouldDrop) {

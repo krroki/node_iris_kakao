@@ -55,6 +55,13 @@
 2) 평소 운영 기동
 - `windows/start_image_worker.ps1 -Restart`
 
+### (중요) 브라우저 창을 닫아버린 경우
+
+- Playwright가 띄운 Chrome 창을 실수로 닫아도, 다음 요청에서 **세션/컨텍스트를 자동으로 재생성**해 복구한다.
+- 다만 연속 실패가 반복되면 아래 순서로 복구한다.
+  1) `windows/start_image_worker.ps1 -Restart`
+  2) (로그인 필요 시) `node node-iris-app/dist/workers/image_worker.js --init-gemini-session`
+
 ## 환경 변수(선택)
 
 - `IMAGE_WORKER_MAX_CONCURRENCY`

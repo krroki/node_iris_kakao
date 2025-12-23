@@ -840,7 +840,9 @@ function isRetryableGeminiError(err: unknown): boolean {
     "gemini_web_lock_busy",
   ];
   if (needles.some((n) => msg.includes(n))) return true;
-  if (msg.includes("Target closed") || msg.includes("Navigation failed")) return true;
+  if (msg.includes("file_input_not_found") || msg.includes("prompt_input_not_found")) return true;
+  if (msg.includes("Target closed") || msg.includes("Navigation failed") || msg.includes("has been closed")) return true;
+  if (msg.includes("browserContext.newPage") || msg.includes("Browser closed")) return true;
   return false;
 }
 
