@@ -15,6 +15,7 @@
 | `course-roster-worker.md` | 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내, Sheets 업서트) |
 | `course-roster-v2-membership-audit.md` | 강의 운영 v2: 카페 등급(grade) 기반 톡방 참여 점검 + 통합 스프레드시트(RAW→VIEW) |
 | `course-ops-v2-web-console.md` | 강의 운영 v2: 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) – 작업 대기열/재검증/담당자·메모 |
+| `courseops-vercel-deploy.md` | CourseOps v2 콘솔(Vercel) 배포 + go.yoorang.kr DNS 연결 런북 |
 | `payment-ssot-google-sheets.md` | 결제 SSOT Google Sheets 연동(권한/검증/활용 기능) |
 | `image-worker.md` | Gemini 웹 기반 이미지 생성/수정 워커(`!사진 / !사진수정`) 운영/환경변수/세션 준비 |
 | `ui-3100-troubleshooting.md` | UI(3100) “남색 배경만/빈 화면” 문제(Next `/_next/static` 404) 원인·복구·재발 방지 |
