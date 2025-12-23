@@ -106,6 +106,11 @@ const IRIS_MEDIA_VERIFY_BASE: IrisReplyVerifyOptions = {
 
 // 최근에 IRIS 이미지 발송이 실패했던 방은, 같은 공지 내에서 추가 retry를 시도해도 체감 속도만 느려지는 경우가 많다.
 // 따라서 "최근 실패(10분)" 방은 첫 시도까지만 하고, 같은 공지 내 retry 대상에서 제외한다.
+// Announcement image forwarding can be very slow when we re-upload large images to many rooms.
+// Prefer downloading a resized variant from Kakao CDN to reduce upload time per room (IRIS /reply).
+const ANNOUNCE_IMAGE_MAX_EDGE = envInt("ANNOUNCE_IMAGE_MAX_EDGE", 1024);
+const ANNOUNCE_IMAGE_DOWNLOAD_TIMEOUT_MS = envInt("ANNOUNCE_IMAGE_DOWNLOAD_TIMEOUT_MS", 15_000);
+
 const IRIS_MEDIA_HEALTH_PATH = path.join(APP_ROOT, "data", "iris_media_health.json");
 const IRIS_MEDIA_RECENT_FAIL_TTL_MS = 10 * 60 * 1000;
 
@@ -121,6 +126,28 @@ function safeString(v: unknown): string {
   if (typeof v === "bigint") return v.toString();
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
   return String(v ?? "").trim();
+}
+
+function maybeResizeKakaoCdnUrl(rawUrl: string, maxEdge: number): string {
+  const u = safeString(rawUrl);
+  const edge = Math.floor(Number(maxEdge));
+  if (!u) return u;
+  if (!Number.isFinite(edge) || edge <= 0) return u;
+
+  try {
+    const parsed = new URL(u);
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (!host.endsWith("kakaocdn.net")) return u;
+    parsed.searchParams.set("convert", "resize");
+    parsed.searchParams.set("w", String(edge));
+    parsed.searchParams.set("h", String(edge));
+    return parsed.toString();
+  } catch {
+    if (!u.startsWith("http://") && !u.startsWith("https://")) return u;
+    if (!u.includes("kakaocdn.net")) return u;
+    const sep = u.includes("?") ? "&" : "?";
+    return `${u}${sep}convert=resize&w=${edge}&h=${edge}`;
+  }
 }
 
 function sleepMs(ms: number): Promise<void> {
@@ -661,9 +688,21 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
 
     const out: string[] = [];
     for (const url of limitedImages) {
+      const resizedUrl =
+        ANNOUNCE_IMAGE_MAX_EDGE > 0 ? maybeResizeKakaoCdnUrl(url, ANNOUNCE_IMAGE_MAX_EDGE) : safeString(url);
       try {
-        out.push(await downloadUrlAsBase64(url, 15000));
+        out.push(await downloadUrlAsBase64(resizedUrl, ANNOUNCE_IMAGE_DOWNLOAD_TIMEOUT_MS));
+        continue;
       } catch (e) {
+        if (resizedUrl && resizedUrl !== url) {
+          try {
+            out.push(await downloadUrlAsBase64(url, ANNOUNCE_IMAGE_DOWNLOAD_TIMEOUT_MS));
+            continue;
+          } catch (e2) {
+            logger.warn("[announce] image download failed", { roomId, url, err: String(e2) });
+            continue;
+          }
+        }
         logger.warn("[announce] image download failed", { roomId, url, err: String(e) });
       }
     }
