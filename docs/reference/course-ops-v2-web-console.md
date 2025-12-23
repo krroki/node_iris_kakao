@@ -34,6 +34,7 @@
 
 - 기본값: 로그인한 누구나 동기화(재검증/전체 동기화) 버튼을 사용할 수 있다.
 - 제한 모드: “허용된 이름 목록(allowlist)”에 포함된 이름만 동기화 버튼이 활성화된다.
+  - 환경 변수: `COURSEOPS_SYNC_ALLOWLIST` (콤마 구분 이름 목록, 비워두면 제한 없음)
 
 ---
 
@@ -43,6 +44,7 @@
 - **대시보드**: 대기 작업/트랙 분포/준수율 등 요약 지표
 - **전체 명단**: 통합 테이블(방 참여 현황 + 닉네임/트랙 + 예외 표시)
 - **설정**: 새 강의 등록(관리자) + 강의별 카페/톡방/시트 연결
+  - 카페는 `clubId`(숫자)가 필요하다. (카페 URL에 `clubid=`가 포함된 주소면 자동 인식되어 입력을 생략할 수 있다.)
 
 ---
 
@@ -140,6 +142,7 @@
 
 - `COURSEOPS_SHARED_PASSWORD` (공용 비밀번호)
 - `COURSEOPS_ADMIN_NAMES` (새 강의 등록 관리자 이름 목록)
+- `COURSEOPS_SYNC_ALLOWLIST` (동기화 허용 이름 목록, 옵션)
 - `COURSEOPS_SESSION_SECRET` (세션 서명용 시크릿)
 - `DATABASE_URL` (Postgres)
 - `GOOGLE_SERVICE_ACCOUNT_JSON` (Google Sheets 읽기용 서비스 계정 JSON)     
@@ -156,3 +159,9 @@
   - `COURSEOPS_AGENT_NAME=<표시 이름>`
   - `COURSEOPS_POLL_SEC=2`
   - `COURSEOPS_REPO_ROOT=C:\dev\12.kakao`
+
+- 실행(권장)
+  - `powershell -NoProfile -ExecutionPolicy Bypass -File windows/start_courseops_agent.ps1`
+
+- 자동 복구(Watchdog)
+  - `windows/watchdog.ps1`는 `COURSEOPS_CONSOLE_BASE_URL`/`COURSEOPS_AGENT_TOKEN`이 설정돼 있으면 `courseops-agent`를 자동 감지해(heartbeat stale/미실행) 재기동한다.

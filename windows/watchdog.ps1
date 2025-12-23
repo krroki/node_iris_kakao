@@ -47,6 +47,7 @@ param(
   [int]$RosterWorkerRestartCooldownSec = 120,
   [int]$OpenchatMembersSheetsWorkerRestartCooldownSec = 120,
   [int]$CourseMembershipAuditWorkerRestartCooldownSec = 120,
+  [int]$CourseOpsAgentRestartCooldownSec = 120,
   # Talk-API authHeader 재적용(파일 → /runtime) 주기: 캡처는 수동, 반영은 자동으로 드리프트를 줄인다.
   [int]$TalkApiAuthSyncIntervalSec = 1800,
   [int]$IrisRepairCooldownSec = 300,
@@ -77,6 +78,7 @@ $startWelcomeWorkerScript = Join-Path $root "windows\start_welcome_worker.ps1"
 $startRosterWorkerScript = Join-Path $root "windows\start_roster_worker.ps1"
 $startOpenchatMembersSheetsWorkerScript = Join-Path $root "windows\start_openchat_members_sheets_worker.ps1"
 $startCourseMembershipAuditWorkerScript = Join-Path $root "windows\start_course_membership_audit_worker.ps1"
+$startCourseOpsAgentScript = Join-Path $root "windows\start_courseops_agent.ps1"
 $smartRestartScript = Join-Path $root "windows\smart_restart_bot.ps1"
 $repairScript = Join-Path $root "windows\repair_redroid_iris.ps1"
 $kbServiceScript = Join-Path $root "windows\kb_service.ps1"
@@ -98,6 +100,7 @@ $script:lastAiWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastRosterWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastOpenchatMembersSheetsWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastCourseMembershipAuditWorkerRestartAt = Get-Date '2000-01-01T00:00:00Z'
+$script:lastCourseOpsAgentRestartAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastTalkApiAuthSyncAt = Get-Date '2000-01-01T00:00:00Z'
 $script:lastIrisRepairAt = Get-Date '2000-01-01T00:00:00Z'
 $script:webFailCount = 0
@@ -1247,6 +1250,85 @@ function Restart-CourseMembershipAuditWorker {
   }
 }
 
+function Test-CourseOpsAgentOk {
+  try {
+    if ($env:COURSEOPS_AGENT_DISABLE -eq '1') { return $true }
+    if (-not $env:COURSEOPS_CONSOLE_BASE_URL) { return $true }
+    if (-not $env:COURSEOPS_AGENT_TOKEN) { return $true }
+
+    # 중복 실행 감지: 동일 에이전트 프로세스가 2개 이상이면 비정상으로 간주해 자동 복구(재기동)한다.
+    try {
+      $procs = @(
+        Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+          Where-Object { $_.CommandLine -and ($_.CommandLine -match 'courseops[/\\\\]agent[/\\\\]src[/\\\\]index\\.js') } |
+          Select-Object ProcessId
+      )
+      if ($procs.Count -gt 1) { return $false }
+    } catch {}
+
+    $statusPath = Join-Path $root "node-iris-app\data\courseops_agent_status.json"
+    $pid = $null
+    $hbTs = $null
+    if (Test-Path $statusPath) {
+      try {
+        $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.pid) { $pid = [int]$j.pid }
+        if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
+      } catch {}
+    }
+
+    if ($hbTs) {
+      try {
+        $dt = [datetime]::Parse($hbTs).ToUniversalTime()
+        $age = ([datetime]::UtcNow - $dt).TotalSeconds
+        if ($age -gt 90) { return $false }
+        return $true
+      } catch {}
+    }
+
+    if ($pid) {
+      try {
+        $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        return $null -ne $p
+      } catch { return $false }
+    }
+
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Restart-CourseOpsAgent {
+  param([string]$Reason)
+
+  if ($env:COURSEOPS_AGENT_DISABLE -eq '1') { return }
+  if (-not $env:COURSEOPS_CONSOLE_BASE_URL) { return }
+  if (-not $env:COURSEOPS_AGENT_TOKEN) { return }
+
+  if (-not (Test-Path $startCourseOpsAgentScript)) {
+    Write-Log -Level 'WARN' -Message "start_courseops_agent.ps1 없음: $startCourseOpsAgentScript (courseops-agent 재시작 불가)"
+    return
+  }
+
+  $now = Get-Date
+  $cooldownUntil = $script:lastCourseOpsAgentRestartAt.AddSeconds($CourseOpsAgentRestartCooldownSec)
+  if ($now -lt $cooldownUntil) {
+    $remain = [math]::Max(0, [int]($cooldownUntil - $now).TotalSeconds)
+    Write-Log -Level 'WARN' -Message "courseops-agent 재시작 스킵(cooldown ${remain}s 남음). 사유: $Reason"
+    return
+  }
+  $script:lastCourseOpsAgentRestartAt = $now
+
+  Write-Log -Level 'ACTION' -Message "courseops-agent 재시작(start_courseops_agent.ps1 -Restart) 실행. 사유: $Reason"
+  try {
+    & $startCourseOpsAgentScript -Restart -TimeoutSec 25 2>&1 | ForEach-Object { Write-Log -Level 'INFO' -Message "[courseops_agent] $_" }
+    Write-Log -Level 'INFO' -Message "courseops-agent 재시작 호출 완료"
+  } catch {
+    Write-Log -Level 'ERROR' -Message "courseops-agent 재시작 실패: $($_.Exception.Message)"
+  }
+}
+
 function Maybe-Repair-Iris {
   param([string]$Reason)
   if (-not (Test-Path $repairScript)) {
@@ -1581,6 +1663,14 @@ try
       $ok = Test-CourseMembershipAuditWorkerOk
       if (-not $ok) {
         Restart-CourseMembershipAuditWorker -Reason "course-membership-audit-worker not running/heartbeat stale"
+      }
+    } catch {}
+
+    # courseops-agent stage - go.yoorang.kr 로컬 에이전트 자동 복구
+    try {
+      $ok = Test-CourseOpsAgentOk
+      if (-not $ok) {
+        Restart-CourseOpsAgent -Reason "courseops-agent not running/heartbeat stale"
       }
     } catch {}
 

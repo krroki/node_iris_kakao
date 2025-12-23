@@ -27,6 +27,10 @@
 - `COURSEOPS_ADMIN_NAMES`
   - 새 강의 등록 관리자 이름 목록(콤마로 구분)
   - 예: `glemfkcl`
+- `COURSEOPS_SYNC_ALLOWLIST` (옵션)
+  - 동기화(데이터 동기화/빠른 재검증) 권한 제한(콤마로 구분)
+  - 비워두면 로그인한 누구나 동기화 가능
+  - 예: `glemfkcl`
 - `COURSEOPS_SESSION_SECRET`
   - 세션 서명용 시크릿(길게 랜덤)
 - `DATABASE_URL`

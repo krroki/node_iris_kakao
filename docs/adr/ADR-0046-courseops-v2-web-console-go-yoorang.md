@@ -3,7 +3,7 @@
 ## Meta
 
 - **Date**: 2025-12-23
-- **Status**: Proposed
+- **Status**: Accepted
 - **Authors**: 운영(PM), Codex CLI
 - **Related**: ADR-0039(강의 운영 v2 membership-audit), ADR-0044(`/course` 탭 통합)
 
@@ -110,7 +110,7 @@
 - [ ] 문서(레퍼런스): `docs/reference/course-ops-v2-web-console.md` 추가
 - [ ] SSOT 갱신: `docs/ssot.md`에 전환 결정 기록
 - [ ] UI:
-  - [ ] `web/`에 `go.yoorang.kr` 전용 CourseOps 화면 추가(작업 대기열/대시보드/전체 명단/설정)
+  - [ ] `courseops/console/`에 `go.yoorang.kr` 전용 CourseOps 화면 추가(작업 대기열/대시보드/전체 명단/설정)
   - [ ] 로그인(이름+공용 비번) + 자동로그인(쿠키) + 동기화 권한 allowlist
 - [ ] API/저장소:
   - [ ] `ACTIONS` 산출 결과를 웹에서 조회 가능한 형태(JSON 스냅샷)로 제공
