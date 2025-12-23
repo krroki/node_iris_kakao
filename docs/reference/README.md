@@ -19,5 +19,6 @@
 | `image-worker.md` | Gemini 웹 기반 이미지 생성/수정 워커(`!사진 / !사진수정`) 운영/환경변수/세션 준비 |
 | `ui-3100-troubleshooting.md` | UI(3100) “남색 배경만/빈 화면” 문제(Next `/_next/static` 404) 원인·복구·재발 방지 |
 | `bridge-status.md` | StatusBar의 BRIDGE/LOG 판정 기준(`heartbeatAgeSec`/`lastEventAgeSec`/`logAgeSec`, LOG LAG) |
+| `shared-workingtree-multi-session.md` | 공유 워킹트리 멀티세션 운영 규칙(4.pint 준용): main-only/풀 금지/전역 원복·포맷·스테이징 금지 |
 
 > 신규 레퍼런스 문서를 추가할 때는 위 표에 링크를 추가하고, `agents.md`/`claude.md` 온보딩 절차에서 참고하도록 연결하세요.

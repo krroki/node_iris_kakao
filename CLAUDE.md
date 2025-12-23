@@ -289,6 +289,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 - `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2: 등급 기반 톡방 참여 점검 + 통합 스프레드시트
 - `docs/adr/ADR-0039-course-roster-v2-membership-audit.md` – 강의 운영 v2 결정(SSOT)
+- `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md` – 강의 운영 v2: 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) 결정
+- `docs/reference/course-ops-v2-web-console.md` – 강의 운영 v2: 운영 UI(go.yoorang.kr) 워크플로우/상태머신/빠른 재검증
+- `docs/reference/shared-workingtree-multi-session.md` – 공유 워킹트리 멀티세션 운영 규칙(4.pint 준용)
 
 ---
 
@@ -315,6 +318,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 > 이 워킹트리는 **동일한 작업 디렉터리에서 여러 세션/프로세스가 동시에 작업**할 수 있다.  
 > 따라서 “내 작업 범위 밖 파일”은 **절대 건드리지 않는다.**
 
+상세 규칙(레퍼런스): `docs/reference/shared-workingtree-multi-session.md`
+
 - 다른 세션 작업물이 보이더라도:
   - “정리/원복/포맷/리네임/삭제” 같은 행동을 하지 말고 **그냥 냅둔다**.
   - 필요하면 담당자에게 알리고, 나는 **내 범위만** 진행한다.
@@ -322,6 +327,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   - `git restore .`, `git reset --hard`, `git clean -fd` 같은 **전체 원복/삭제**
   - repo 전체 포맷/린트(예: `prettier --write .` 등)
   - `git add -A` (다른 세션 변경 파일이 섞일 수 있음)
+  - `git commit -am ...` (전역 스테이징과 동일하게 위험)
 - 커밋/포맷은 “내가 바꾼 파일만”:
   - 스테이징: `git add <내가 바꾼 파일 경로만>`
   - 포맷/린트: `<도구> <내가 바꾼 파일만>`
@@ -346,7 +352,7 @@ UI 전환 지침
 - 레거시 Streamlit `dashboard/`는 보존만 하고 운영 기본에서 제외
 - SAFE_MODE는 항상 ON이며 발신 UI/엔드포인트는 노출하지 않는다
 - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
-- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, **강의 운영 토글/강의톡방 배지**는 RoomCard의 **강의 운영** 섹션)  
+- **대시보드(신규, 기본)**: `web/` – Next.js/React UI, FastAPI SSE 구독. (Room ID/userId 클릭 시 클립보드 복사, 강의 운영은 `/course`(설정/워커) + go.yoorang.kr(CourseOps v2 운영 UI)로 역할 분리)  
 - **기본닉 멘션(ADR-0041)**: 방 카드의 `기본닉 멘션` 토글이 방별 스위치이며, 2차/3차 안내 간격(24h/48h 등)은 **3100 홈 상단 카드**에서 변경해 `runtime.nicknameReminder.warningSchedule`에 저장한다.
 - **실시간 서버**: `server/` – FastAPI + SSE(`/logs/stream`), 스냅샷(`/logs`), 상태(`/health`, `/rooms`, `/runtime`, `/templates`).  
 

@@ -66,6 +66,7 @@
 - `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md` – 강의 운영 v2: 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) 결정(ACTIONS 중심, 처리/재검증)
 - `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2(레거시/백업): 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear)
 - `docs/reference/course-ops-v2-web-console.md` – 강의 운영 v2(운영 UI): go.yoorang.kr 작업 대기열(ACTIONS) + 처리 완료/확인 대기/빠른 재검증/전체 동기화 + 담당자·메모
+- `docs/reference/shared-workingtree-multi-session.md` – 공유 워킹트리 멀티세션 운영 규칙(4.pint 준용): 전역 원복/포맷/스테이징 금지
 
 ---
 
@@ -175,6 +176,9 @@
   - 목표: 내부 운영진이 **동시접속**으로 “작업 대기열(ACTIONS)”을 보고 조치/확인까지 끝낼 수 있게 한다.
   - 불변식: 카카오/Redroid 연동(수집/판정)은 **12.kakao 1대**만 수행한다(외부 웹에서 카카오에 직접 붙지 않음).
   - 인증: **이름 + 공용 비번** + 자동 로그인(쿠키).
+  - 접속은 네트워크(IP) 제한을 전제로 하지 않는다(어디서든 접속). 따라서 보안 가드는 필수다:
+    - 로그인 실패 레이트리밋/지연(브루트포스 억제) + 실패 기록(감사)
+    - 공용 비번 교체(로테이션) 가능 + 유출/의심 시 즉시 교체
   - 동기화 권한: 기본은 모두 허용하되, 필요 시 **이름 allowlist**로 제한 가능해야 한다.
   - 버튼(2개):
     - `빠른 재검증`: `확인 대기` 항목이 참조하는 **필요한 방만** 갱신하고 해당 항목만 재판정한다(조치 확인용).
@@ -209,6 +213,8 @@
 > 이 워킹트리는 **동일한 작업 디렉터리에서 여러 세션/프로세스가 동시에 작업**할 수 있다.  
 > 따라서 “내 작업 범위 밖 파일”은 **절대 건드리지 않는다.**
 
+상세 규칙(레퍼런스): `docs/reference/shared-workingtree-multi-session.md`
+
 - 다른 세션 작업물이 보이더라도:
   - “정리/원복/포맷/리네임/삭제” 같은 행동을 하지 말고 **그냥 냅둔다**.
   - 필요하면 담당자에게 알리고, 나는 **내 범위만** 진행한다.
@@ -216,6 +222,7 @@
   - `git restore .`, `git reset --hard`, `git clean -fd` 같은 **전체 원복/삭제**
   - repo 전체 포맷/린트(예: `npx biome check --write src/`, `prettier --write .` 등)
   - `git add -A` (다른 세션 변경 파일이 섞일 수 있음)
+  - `git commit -am ...` (전역 스테이징과 동일하게 위험)
 - 커밋/포맷은 “내가 바꾼 파일만”:
   - 스테이징: `git add <내가 바꾼 파일 경로만>`
   - 포맷/린트: `<도구> <내가 바꾼 파일만>`
