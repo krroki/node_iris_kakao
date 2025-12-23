@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Course = { id: string; courseKey: string };
+import { useSelectedCourse } from "@/app/(app)/ui/useSelectedCourse";
+
 type ActionItem = {
   key: string;
   priority: "지금" | "오늘" | "확인" | "정리";
@@ -20,6 +21,13 @@ type ActionItem = {
   };
 };
 
+function formatTs(ts: string | null) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString("ko-KR");
+}
+
 function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
   const cls =
     p === "지금"
@@ -33,27 +41,14 @@ function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
 }
 
 export default function QueueView() {
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [courseId, setCourseId] = useState<string>("");
+  const { courses, courseId } = useSelectedCourse();
   const [items, setItems] = useState<ActionItem[]>([]);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [filterPriority, setFilterPriority] = useState<string>("전체");
   const [filterType, setFilterType] = useState<string>("전체");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [memoByKey, setMemoByKey] = useState<Record<string, string>>({});
-
-  const loadCourses = async () => {
-    const res = await fetch("/api/courses", { cache: "no-store" });
-    const j = (await res.json().catch(() => ({}))) as any;
-    const list: Course[] = Array.isArray(j?.courses) ? j.courses : [];
-    setCourses(list);
-    const saved = typeof window !== "undefined" ? window.localStorage.getItem("courseops_selected_course_id") : "";
-    if (!courseId && saved && list.some((c) => String(c.id) === String(saved))) {
-      setCourseId(String(saved));
-      return;
-    }
-    if (!courseId && list.length > 0) setCourseId(String(list[0].id));
-  };
 
   const loadActions = async (cid: string) => {
     if (!cid) return;
@@ -65,6 +60,7 @@ export default function QueueView() {
       if (!res.ok) throw new Error(String(j?.error || "불러오지 못했어요."));
       const list: ActionItem[] = Array.isArray(j?.items) ? j.items : [];
       setItems(list);
+      setLastUpdatedAt(j?.lastUpdatedAt ? String(j.lastUpdatedAt) : null);
     } catch (e: any) {
       setError(String(e?.message || "불러오지 못했어요."));
     } finally {
@@ -73,28 +69,11 @@ export default function QueueView() {
   };
 
   useEffect(() => {
-    loadCourses();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const onChanged = (ev: any) => {
-      const cid = String(ev?.detail?.courseId || "").trim();
-      if (!cid) return;
-      setCourseId(cid);
-      try {
-        window.localStorage.setItem("courseops_selected_course_id", cid);
-      } catch {}
-    };
-    window.addEventListener("courseops:selectedCourseChanged", onChanged);
-    return () => window.removeEventListener("courseops:selectedCourseChanged", onChanged);
-  }, []);
-
-  useEffect(() => {
     if (!courseId) return;
     loadActions(courseId);
     const t = setInterval(() => loadActions(courseId), 7000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId]);
 
   const types = useMemo(() => {
@@ -123,38 +102,18 @@ export default function QueueView() {
     await loadActions(courseId);
   };
 
+  if (courses.length === 0) {
+    return <div className="rounded-2xl border bg-white p-10 text-center text-sm text-slate-600">등록된 강의가 없어요. 설정에서 먼저 강의를 등록해 주세요.</div>;
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 rounded-2xl border bg-white p-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center">
-          <div className="text-sm font-medium text-slate-700">강의</div>
-          <select
-            className="w-full rounded-lg border px-3 py-2 text-sm md:w-80"
-            value={courseId}
-            onChange={(e) => {
-              const v = e.target.value;
-              setCourseId(v);
-              try {
-                window.localStorage.setItem("courseops_selected_course_id", v);
-              } catch {}
-              try {
-                window.dispatchEvent(new CustomEvent("courseops:selectedCourseChanged", { detail: { courseId: v } }));
-              } catch {}
-            }}
-          >
-            {courses.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.courseKey}
-              </option>
-            ))}
-          </select>
+        <div className="text-sm text-slate-600">
+          마지막 동기화: <span className="font-medium text-slate-900">{formatTs(lastUpdatedAt)}</span>
         </div>
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
-          <select
-            className="rounded-lg border px-3 py-2 text-sm"
-            value={filterPriority}
-            onChange={(e) => setFilterPriority(e.target.value)}
-          >
+          <select className="rounded-lg border px-3 py-2 text-sm" value={filterPriority} onChange={(e) => setFilterPriority(e.target.value)}>
             {["전체", "지금", "오늘", "확인", "정리"].map((x) => (
               <option key={x} value={x}>
                 {x === "전체" ? "모든 우선순위" : x}
@@ -195,10 +154,7 @@ export default function QueueView() {
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{status}</div>
-                  <button
-                    onClick={() => markDone(it.key)}
-                    className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
-                  >
+                  <button onClick={() => markDone(it.key)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700">
                     처리 완료
                   </button>
                 </div>
@@ -211,17 +167,17 @@ export default function QueueView() {
                 </div>
                 <div className="rounded-xl bg-slate-50 p-3">
                   <div className="text-xs font-medium text-slate-500">필요한 방</div>
-                  <div className="mt-1 text-sm font-medium text-slate-900 whitespace-pre-wrap">{it.rooms || "-"}</div>
+                  <div className="mt-1 whitespace-pre-wrap text-sm font-medium text-slate-900">{it.rooms || "-"}</div>
                 </div>
                 <div className="rounded-xl bg-slate-50 p-3">
                   <div className="text-xs font-medium text-slate-500">현재 닉네임</div>
-                  <div className="mt-1 text-sm text-slate-900 whitespace-pre-wrap">{it.currentNicknames || "-"}</div>
+                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-900">{it.currentNicknames || "-"}</div>
                 </div>
               </div>
 
               {it.recommendedNickname ? (
                 <div className="mt-3 rounded-xl bg-brand-50 p-3">
-                  <div className="text-xs font-medium text-brand-700">요청 닉네임(권장)</div>
+                  <div className="text-xs font-medium text-brand-700">요청 닉네임</div>
                   <div className="mt-1 text-sm font-semibold text-brand-700">{it.recommendedNickname}</div>
                 </div>
               ) : null}
@@ -252,3 +208,4 @@ export default function QueueView() {
     </div>
   );
 }
+

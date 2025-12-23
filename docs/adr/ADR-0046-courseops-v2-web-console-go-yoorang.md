@@ -76,6 +76,9 @@
 
 1. **카카오/Redroid 연동 주체는 12.kakao 1대만** 유지한다. (외부 웹은 카카오에 직접 붙지 않는다)
 2. `go.yoorang.kr`에는 **CourseOps v2 화면만 노출**한다. (기존 운영 UI(`/settings` 등) 외부 노출 금지)
+   - 호스팅: Vercel (`courseops/console/` → `go.yoorang.kr`)
+   - 상태/잡/메모 저장소: Supabase Postgres (외부 동시접속을 위한 공유 저장소)
+   - DB 비밀번호/토큰/키 같은 시크릿은 **레포/문서/커밋에 저장하지 않는다**. (로컬 `data/`에만 보관)
 3. 인증은 **이름 + 공용 비밀번호**로 시작하고, 세션 쿠키로 자동 로그인한다.
    - 접속은 네트워크(IP) 제한을 전제로 하지 않는다(어디서든 접속 가능). 제한은 **인증**으로만 건다.
    - 공용 비번은 교체(로테이션) 가능해야 하며, 로그인 실패 레이트리밋/지연 등 브루트포스 억제 장치가 필요하다.
@@ -126,3 +129,7 @@
 
 - Related ADR: ADR-0039, ADR-0044
 - Reference(기존 v2): `docs/reference/course-roster-v2-membership-audit.md`
+- Reference(웹 콘솔): `docs/reference/course-ops-v2-web-console.md`
+- Deploy 런북(Vercel): `docs/reference/courseops-vercel-deploy.md`
+- 결제 SSOT(Google Sheets): `docs/reference/payment-ssot-google-sheets.md`
+- 코드: `courseops/README.md`

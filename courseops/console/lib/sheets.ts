@@ -12,6 +12,21 @@ export type ActionItem = {
   currentNicknames: string;
 };
 
+export type SheetTable = { header: string[]; rows: string[][] };
+
+function normalizeNick(input: string) {
+  return String(input || "")
+    .replace(/\s+/gu, "")
+    .trim();
+}
+
+function splitCsv(input: string) {
+  return String(input || "")
+    .split(/[,，]/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 function stableKey(
   courseSheetId: string,
   row: {
@@ -47,6 +62,15 @@ async function getSheets() {
   });
   const sheets = google.sheets({ version: "v4", auth });
   return sheets;
+}
+
+async function fetchTable(opts: { sheetId: string; range: string }): Promise<SheetTable> {
+  const sheets = await getSheets();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: opts.sheetId, range: opts.range });
+  const values = (res.data.values || []) as string[][];
+  const header = (values[0] || []).map((x) => String(x || "").trim()).filter(Boolean);
+  const rows = values.slice(1).map((r) => (Array.isArray(r) ? r.map((x) => String(x || "").trim()) : []));
+  return { header, rows };
 }
 
 export async function fetchActionsFromSheet(opts: { sheetId: string; actionsTab: string }) {
@@ -104,3 +128,33 @@ export async function fetchActionsFromSheet(opts: { sheetId: string; actionsTab:
   return { lastUpdatedAt, items: out };
 }
 
+export async function fetchRulesRawTable(opts: { sheetId: string; tab?: string }) {
+  const tab = opts.tab || "RULES_RAW";
+  const t = await fetchTable({ sheetId: opts.sheetId, range: `${tab}!A1:B2000` });
+  const map: Record<string, string> = {};
+  const keyIdx = t.header.indexOf("key");
+  const valIdx = t.header.indexOf("value");
+  for (const r of t.rows) {
+    const k = String((r[keyIdx] ?? "") || "").trim();
+    if (!k) continue;
+    map[k] = String((r[valIdx] ?? "") || "").trim();
+  }
+  return map;
+}
+
+export async function fetchAuditViewTable(opts: { sheetId: string; tab?: string }) {
+  const tab = opts.tab || "AUDIT_VIEW";
+  return fetchTable({ sheetId: opts.sheetId, range: `${tab}!A1:Y20000` });
+}
+
+export async function fetchOpenchatRawTable(opts: { sheetId: string; tab?: string }) {
+  const tab = opts.tab || "OPENCHAT_RAW";
+  return fetchTable({ sheetId: opts.sheetId, range: `${tab}!A1:Q20000` });
+}
+
+export async function fetchSsotRawTable(opts: { sheetId: string; tab?: string }) {
+  const tab = opts.tab || "SSOT_RAW";
+  return fetchTable({ sheetId: opts.sheetId, range: `${tab}!A1:J6000` });
+}
+
+export const sheetsUtil = { normalizeNick, splitCsv };

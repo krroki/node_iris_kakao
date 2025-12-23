@@ -291,3 +291,23 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 4. 필요 시 `docs/ssot.md`와 `docs/todo.md`를 업데이트하여 후속 조치 기록.
 
 본 레퍼런스는 `agents.md`/`claude.md` 체크리스트와 함께 사용되며, 명령 추가 시 두 문서를 동기화해야 한다.
+
+---
+
+## 10. CourseOps v2 (go.yoorang.kr)
+
+### 10.1) 콘솔(Next.js) 로컬 스모크 (`courseops/console/`)
+
+| 목적 | 명령 | 비고 |
+|------|------|------|
+| 콘솔 빌드 | `cd courseops/console && npm run build` | 타입체크 포함 |
+| 콘솔 로컬 실행(dev) | `cd courseops/console && npm run dev` | 기본 포트 `3200` |
+| DB 스키마 초기화 | `cd courseops/console && npm run db:init` | `DATABASE_URL` 필요 |
+
+### 10.2) 로컬 에이전트(12.kakao) 운영/복구
+
+| 목적 | 명령 | 비고 |
+|------|------|------|
+| 에이전트 재기동 | `powershell -ExecutionPolicy Bypass -File windows/start_courseops_agent.ps1 -Restart` | 전역 `node` 종료 금지 |
+| watchdog로 자동 복구 확인 | `powershell -ExecutionPolicy Bypass -File windows/watchdog.ps1` | Task Scheduler 실행이 기본(권장) |
+| 상태 파일 확인 | `type node-iris-app\\data\\courseops_agent_status.json` | heartbeat/progress/마지막 실행 기록 |

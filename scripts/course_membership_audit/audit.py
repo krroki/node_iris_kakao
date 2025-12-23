@@ -334,6 +334,7 @@ def build_ssot_raw_rows(*, course_key: str, fetched_at: str, ssot_records: list[
             "fetchedAt",
             "ssotUserId",
             "ssotNickname",
+            "ssotNicknameAliases",
             "ssotName",
             "ssotGrade",
             "ssotTrack",
@@ -344,12 +345,19 @@ def build_ssot_raw_rows(*, course_key: str, fetched_at: str, ssot_records: list[
     for r in ssot_records or []:
         if not isinstance(r, dict):
             continue
+        aliases = r.get("ssotNicknameAliases")
+        alias_csv = ""
+        if isinstance(aliases, list):
+            alias_csv = ", ".join([str(x or "").strip() for x in aliases if str(x or "").strip()])
+        elif isinstance(aliases, str):
+            alias_csv = aliases.strip()
         rows.append(
             [
                 str(course_key or "").strip(),
                 str(fetched_at or "").strip(),
                 str(r.get("ssotUserId") or "").strip(),
                 str(r.get("ssotNickname") or "").strip(),
+                alias_csv,
                 str(r.get("ssotName") or "").strip(),
                 str(r.get("ssotGrade") or "").strip(),
                 str(r.get("ssotTrack") or "").strip(),

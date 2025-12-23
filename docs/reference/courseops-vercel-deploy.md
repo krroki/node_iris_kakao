@@ -56,9 +56,11 @@
    - `supabase projects create courseops --org-id <ORG_ID> --region ap-northeast-2 --db-password <DB_PASSWORD> --output json --yes`
 3. `DATABASE_URL` 준비(Supabase 권장: pooler)
    - 기본(직접): `postgresql://postgres:<DB_PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres`
-   - 권장(pooler/서버리스): `postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?sslmode=require`
+   - 권장(pooler/서버리스):
+     - 트랜잭션(pooler): `postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?sslmode=require`
+     - 세션(pooler): `postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require` (6543이 막히거나 드라이버 호환 이슈가 있으면 사용)
    - ⚠️ 일부 환경(IPv6 미지원)에서는 `db.<PROJECT_REF>.supabase.co`가 IPv4(A 레코드)가 없어 연결이 실패할 수 있다.
-     이 경우 **pooler**를 사용한다.
+      이 경우 **pooler**를 사용한다.
 4. 스키마 적용
    - `courseops/console`에서 `DATABASE_URL` 설정 후 `npm run db:init`
 
@@ -90,6 +92,27 @@ DB 제공자 콘솔(Supabase/Neon/Vercel Postgres 등)에서 `schema.sql` 내용
 - `go.yoorang.kr`에 기존 레코드(A/CNAME)가 있으면 충돌할 수 있으니 제거/정리한다.
 - 일부 환경에서는 “소유권 확인(TXT)” 레코드가 추가로 필요할 수 있다.  
   → Vercel 화면에 표시된 값을 그대로 추가한다.
+
+---
+
+## 5) 배포 후 점검(필수)
+
+1. `https://go.yoorang.kr/login` 접속 → 로그인 화면이 바로 떠야 한다.
+2. `설정`에서 강의가 보이는지 확인한다(관리자만 신규 강의 등록 가능).
+
+주의:
+
+- Vercel의 **Deployment Protection(Password/SSO 등)** 이 켜져 있으면, 앱 로그인 이전에 401로 막힐 수 있다.  
+  운영 방식(이름+공용 비번 로그인)을 쓰려면 Deployment Protection은 **꺼두는 것을 기본값**으로 한다.
+
+---
+
+## 6) 로컬 시크릿 파일(커밋 금지)
+
+이 저장소는 **시크릿(비밀번호/토큰/키)을 문서/커밋에 저장하지 않는다.**
+
+- Supabase/DB 관련: `data/courseops_supabase_secrets.json`
+- 콘솔/에이전트 공통(토큰/세션 시크릿 등): `data/courseops_console_secrets.json`
 
 ---
 

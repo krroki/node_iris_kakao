@@ -1260,7 +1260,20 @@ class CourseMembershipAuditWorker:
         ssot_rows = (
             audit_mod.build_ssot_raw_rows(course_key=course.course_key, fetched_at=now_iso, ssot_records=ssot_records)
             if ssot_records
-            else [["courseKey", "fetchedAt", "ssotUserId", "ssotNickname", "ssotName", "ssotGrade", "ssotTrack", "ssotKind", "sourceRow"]]
+            else [
+                [
+                    "courseKey",
+                    "fetchedAt",
+                    "ssotUserId",
+                    "ssotNickname",
+                    "ssotNicknameAliases",
+                    "ssotName",
+                    "ssotGrade",
+                    "ssotTrack",
+                    "ssotKind",
+                    "sourceRow",
+                ]
+            ]
         )
 
         # upsert(no clear) + change history
