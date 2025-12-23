@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 type Course = {
   id: string;
   courseKey: string;
+  clubId: string | null;
   sheetId: string;
   actionsTab: string;
   cafeUrl: string | null;
@@ -21,6 +22,7 @@ export default function SettingsView() {
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseKey, setCourseKey] = useState("");
   const [cafeUrl, setCafeUrl] = useState("");
+  const [clubId, setClubId] = useState("");
   const [sheetIdOrUrl, setSheetIdOrUrl] = useState("");
   const [actionsTab, setActionsTab] = useState("ACTIONS");
   const [openchatChatRoomId, setOpenchatChatRoomId] = useState("");
@@ -64,6 +66,7 @@ export default function SettingsView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           courseKey,
+          clubId,
           cafeUrl,
           sheetIdOrUrl,
           actionsTab,
@@ -83,6 +86,7 @@ export default function SettingsView() {
       }
       setCourseKey("");
       setCafeUrl("");
+      setClubId("");
       setSheetIdOrUrl("");
       setActionsTab("ACTIONS");
       setOpenchatChatRoomId("");
@@ -112,7 +116,7 @@ export default function SettingsView() {
           </div>
         ) : null}
 
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
           <div>
             <div className="text-xs font-medium text-slate-500">강의 이름</div>
             <input
@@ -130,6 +134,16 @@ export default function SettingsView() {
               onChange={(e) => setCafeUrl(e.target.value)}
               placeholder="https://cafe.naver.com/..."
             />
+          </div>
+          <div>
+            <div className="text-xs font-medium text-slate-500">카페 clubId</div>
+            <input
+              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+              value={clubId}
+              onChange={(e) => setClubId(e.target.value)}
+              placeholder="숫자 (예: 123456)"
+            />
+            <div className="mt-1 text-xs text-slate-500">카페 URL에 clubid=가 포함되어 있으면 clubId는 비워도 돼요.</div>
           </div>
           <div>
             <div className="text-xs font-medium text-slate-500">스프레드시트 URL 또는 ID</div>
@@ -232,6 +246,7 @@ export default function SettingsView() {
             <div key={c.id} className="rounded-xl border bg-slate-50 p-3 text-sm">
               <div className="font-semibold">{c.courseKey}</div>
               <div className="mt-1 text-slate-600">카페: {c.cafeUrl || "-"}</div>
+              <div className="text-slate-600">clubId: {c.clubId || "-"}</div>
               <div className="text-slate-600">시트: {c.sheetId}</div>
               <div className="text-slate-600">탭: {c.actionsTab}</div>
               <div className="mt-2 grid gap-2 md:grid-cols-2">

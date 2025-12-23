@@ -6,6 +6,7 @@ import { getSql } from "@/lib/storeDb";
 export type CourseRow = {
   id: string;
   courseKey: string;
+  clubId: string | null;
   sheetId: string;
   actionsTab: string;
   cafeUrl: string | null;
@@ -41,6 +42,7 @@ export type JobRow = {
 const CreateCourseBody = z
   .object({
     courseKey: z.string().trim().min(1),
+    clubId: z.string().trim().optional().default(""),
     sheetIdOrUrl: z.string().trim().min(1),
     actionsTab: z.string().trim().min(1),
     cafeUrl: z.string().trim().optional().default(""),
@@ -52,6 +54,14 @@ const CreateCourseBody = z
     openchatVipRoomId: z.string().trim().optional().default(""),
   })
   .superRefine((data, ctx) => {
+    const cid = parseClubId(data.clubId || data.cafeUrl);
+    if (!cid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["clubId"],
+        message: "카페 clubId를 입력해 주세요.",
+      });
+    }
     if (data.premiumEnabled && !String(data.openchatPremiumRoomId || "").trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -78,96 +88,192 @@ function parseSheetId(raw: string) {
   return (m ? m[1] : s).trim();
 }
 
+function parseClubId(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const m1 = s.match(/[?&]clubid=(\d+)/i);
+  if (m1) return String(m1[1] || "").trim();
+  const m2 = s.match(/\/ca-fe\/cafes\/(\d+)(?:\/|$)/i);
+  if (m2) return String(m2[1] || "").trim();
+  const m3 = s.match(/\/cafes\/(\d+)(?:\/|$)/i);
+  if (m3) return String(m3[1] || "").trim();
+  const m4 = s.match(/^\d+$/);
+  if (m4) return s;
+  return "";
+}
+
 export async function coursesStore() {
   const sql = getSql();
   await sql`select 1`;
   return {
     async listCourses(): Promise<CourseRow[]> {
-      const rows = await sql<
-        {
-          id: string;
-          course_key: string;
-          sheet_id: string;
-          actions_tab: string;
-          cafe_url: string | null;
-          openchat_chat_room_id: string | null;
-          openchat_notice_room_id: string | null;
-          premium_enabled: boolean | null;
-          openchat_premium_room_id: string | null;
-          vip_enabled: boolean | null;
-          openchat_vip_room_id: string | null;
-        }[]
-      >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
-      return rows.map((r) => ({
-        id: r.id,
-        courseKey: r.course_key,
-        sheetId: r.sheet_id,
-        actionsTab: r.actions_tab,
-        cafeUrl: r.cafe_url,
-        openchatChatRoomId: r.openchat_chat_room_id,
-        openchatNoticeRoomId: r.openchat_notice_room_id,
-        premiumEnabled: r.premium_enabled ?? true,
-        openchatPremiumRoomId: r.openchat_premium_room_id,
-        vipEnabled: r.vip_enabled ?? false,
-        openchatVipRoomId: r.openchat_vip_room_id,
-      }));
+      try {
+        const rows = await sql<
+          {
+            id: string;
+            course_key: string;
+            club_id: string | null;
+            sheet_id: string;
+            actions_tab: string;
+            cafe_url: string | null;
+            openchat_chat_room_id: string | null;
+            openchat_notice_room_id: string | null;
+            premium_enabled: boolean | null;
+            openchat_premium_room_id: string | null;
+            vip_enabled: boolean | null;
+            openchat_vip_room_id: string | null;
+          }[]
+        >`select id, course_key, club_id, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
+        return rows.map((r) => ({
+          id: r.id,
+          courseKey: r.course_key,
+          clubId: r.club_id,
+          sheetId: r.sheet_id,
+          actionsTab: r.actions_tab,
+          cafeUrl: r.cafe_url,
+          openchatChatRoomId: r.openchat_chat_room_id,
+          openchatNoticeRoomId: r.openchat_notice_room_id,
+          premiumEnabled: r.premium_enabled ?? true,
+          openchatPremiumRoomId: r.openchat_premium_room_id,
+          vipEnabled: r.vip_enabled ?? false,
+          openchatVipRoomId: r.openchat_vip_room_id,
+        }));
+      } catch {
+        // 구버전 스키마( club_id 컬럼이 없던 시점 ) 호환
+        const rows = await sql<
+          {
+            id: string;
+            course_key: string;
+            sheet_id: string;
+            actions_tab: string;
+            cafe_url: string | null;
+            openchat_chat_room_id: string | null;
+            openchat_notice_room_id: string | null;
+            premium_enabled: boolean | null;
+            openchat_premium_room_id: string | null;
+            vip_enabled: boolean | null;
+            openchat_vip_room_id: string | null;
+          }[]
+        >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
+        return rows.map((r) => ({
+          id: r.id,
+          courseKey: r.course_key,
+          clubId: null,
+          sheetId: r.sheet_id,
+          actionsTab: r.actions_tab,
+          cafeUrl: r.cafe_url,
+          openchatChatRoomId: r.openchat_chat_room_id,
+          openchatNoticeRoomId: r.openchat_notice_room_id,
+          premiumEnabled: r.premium_enabled ?? true,
+          openchatPremiumRoomId: r.openchat_premium_room_id,
+          vipEnabled: r.vip_enabled ?? false,
+          openchatVipRoomId: r.openchat_vip_room_id,
+        }));
+      }
     },
     async getCourse(courseId: string): Promise<CourseRow | null> {
-      const rows = await sql<
-        {
-          id: string;
-          course_key: string;
-          sheet_id: string;
-          actions_tab: string;
-          cafe_url: string | null;
-          openchat_chat_room_id: string | null;
-          openchat_notice_room_id: string | null;
-          premium_enabled: boolean | null;
-          openchat_premium_room_id: string | null;
-          vip_enabled: boolean | null;
-          openchat_vip_room_id: string | null;
-        }[]
-      >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
-      const r = rows[0];
-      return r
-        ? {
-            id: r.id,
-            courseKey: r.course_key,
-            sheetId: r.sheet_id,
-            actionsTab: r.actions_tab,
-            cafeUrl: r.cafe_url,
-            openchatChatRoomId: r.openchat_chat_room_id,
-            openchatNoticeRoomId: r.openchat_notice_room_id,
-            premiumEnabled: r.premium_enabled ?? true,
-            openchatPremiumRoomId: r.openchat_premium_room_id,
-            vipEnabled: r.vip_enabled ?? false,
-            openchatVipRoomId: r.openchat_vip_room_id,
-          }
-        : null;
+      try {
+        const rows = await sql<
+          {
+            id: string;
+            course_key: string;
+            club_id: string | null;
+            sheet_id: string;
+            actions_tab: string;
+            cafe_url: string | null;
+            openchat_chat_room_id: string | null;
+            openchat_notice_room_id: string | null;
+            premium_enabled: boolean | null;
+            openchat_premium_room_id: string | null;
+            vip_enabled: boolean | null;
+            openchat_vip_room_id: string | null;
+          }[]
+        >`select id, course_key, club_id, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
+        const r = rows[0];
+        return r
+          ? {
+              id: r.id,
+              courseKey: r.course_key,
+              clubId: r.club_id,
+              sheetId: r.sheet_id,
+              actionsTab: r.actions_tab,
+              cafeUrl: r.cafe_url,
+              openchatChatRoomId: r.openchat_chat_room_id,
+              openchatNoticeRoomId: r.openchat_notice_room_id,
+              premiumEnabled: r.premium_enabled ?? true,
+              openchatPremiumRoomId: r.openchat_premium_room_id,
+              vipEnabled: r.vip_enabled ?? false,
+              openchatVipRoomId: r.openchat_vip_room_id,
+            }
+          : null;
+      } catch {
+        const rows = await sql<
+          {
+            id: string;
+            course_key: string;
+            sheet_id: string;
+            actions_tab: string;
+            cafe_url: string | null;
+            openchat_chat_room_id: string | null;
+            openchat_notice_room_id: string | null;
+            premium_enabled: boolean | null;
+            openchat_premium_room_id: string | null;
+            vip_enabled: boolean | null;
+            openchat_vip_room_id: string | null;
+          }[]
+        >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
+        const r = rows[0];
+        return r
+          ? {
+              id: r.id,
+              courseKey: r.course_key,
+              clubId: null,
+              sheetId: r.sheet_id,
+              actionsTab: r.actions_tab,
+              cafeUrl: r.cafe_url,
+              openchatChatRoomId: r.openchat_chat_room_id,
+              openchatNoticeRoomId: r.openchat_notice_room_id,
+              premiumEnabled: r.premium_enabled ?? true,
+              openchatPremiumRoomId: r.openchat_premium_room_id,
+              vipEnabled: r.vip_enabled ?? false,
+              openchatVipRoomId: r.openchat_vip_room_id,
+            }
+          : null;
+      }
     },
     async createCourse(input: z.infer<typeof CreateCourseBody>): Promise<CourseRow> {
       const data = CreateCourseBody.parse(input);
       const courseId = id("course");
       const sheetId = parseSheetId(data.sheetIdOrUrl);
-      await sql`
-        insert into courseops_courses (
-          id, course_key, sheet_id, actions_tab,
-          cafe_url,
-          openchat_chat_room_id, openchat_notice_room_id,
-          premium_enabled, openchat_premium_room_id,
-          vip_enabled, openchat_vip_room_id
-        )
-        values (
-          ${courseId}, ${data.courseKey}, ${sheetId}, ${data.actionsTab},
-          ${data.cafeUrl || null},
-          ${data.openchatChatRoomId || null}, ${data.openchatNoticeRoomId || null},
-          ${Boolean(data.premiumEnabled)}, ${data.openchatPremiumRoomId || null},
-          ${Boolean(data.vipEnabled)}, ${data.openchatVipRoomId || null}
-        )
-      `;
+      const clubId = parseClubId(data.clubId || data.cafeUrl);
+      try {
+        await sql`
+          insert into courseops_courses (
+            id, course_key, club_id, sheet_id, actions_tab,
+            cafe_url,
+            openchat_chat_room_id, openchat_notice_room_id,
+            premium_enabled, openchat_premium_room_id,
+            vip_enabled, openchat_vip_room_id
+          )
+          values (
+            ${courseId}, ${data.courseKey}, ${clubId || null}, ${sheetId}, ${data.actionsTab},
+            ${data.cafeUrl || null},
+            ${data.openchatChatRoomId || null}, ${data.openchatNoticeRoomId || null},
+            ${Boolean(data.premiumEnabled)}, ${data.openchatPremiumRoomId || null},
+            ${Boolean(data.vipEnabled)}, ${data.openchatVipRoomId || null}
+          )
+        `;
+      } catch (e: any) {
+        const msg = String(e?.message || "");
+        if (msg.includes("club_id") && msg.includes("does not exist")) {
+          throw new Error("DB 스키마 업데이트가 필요해요. 관리자에게 `npm run db:init`을 요청해 주세요.");
+        }
+        throw e;
+      }
       return {
         id: courseId,
         courseKey: data.courseKey,
+        clubId: clubId || null,
         sheetId,
         actionsTab: data.actionsTab,
         cafeUrl: data.cafeUrl || null,
@@ -249,6 +355,23 @@ export async function coursesStore() {
         progressMessage: r.progress_message,
         updatedAt: r.updated_at ? r.updated_at.toISOString() : null,
       };
+    },
+    async listJobEvents(jobId: string, limit = 80): Promise<Array<{ level: "INFO" | "WARN" | "ERROR"; message: string; ts: string }>> {
+      const max = Math.max(1, Math.min(200, Number(limit || 80)));
+      const rows = await sql<
+        {
+          level: string;
+          message: string;
+          ts: Date;
+        }[]
+      >`select level, message, ts from courseops_job_events where job_id=${jobId} order by ts desc limit ${max}`;
+      return rows
+        .map((r) => ({
+          level: (r.level as "INFO" | "WARN" | "ERROR") || "INFO",
+          message: r.message,
+          ts: r.ts.toISOString(),
+        }))
+        .reverse();
     },
     async claimNextJob(agentName: string): Promise<(JobRow & { payload: any }) | null> {
       const rows = await sql<

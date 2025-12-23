@@ -12,6 +12,37 @@ if (!consoleBase) throw new Error("COURSEOPS_CONSOLE_BASE_URL is required");
 if (!agentToken) throw new Error("COURSEOPS_AGENT_TOKEN is required");
 
 const statePath = path.join(repoRoot, "node-iris-app", "data", "course_membership_audit_worker_state.json");
+const agentStatusPath = path.join(repoRoot, "node-iris-app", "data", "courseops_agent_status.json");
+const agentStartedTs = new Date().toISOString();
+let lastHeartbeatMs = 0;
+
+function writeAgentStatus(extra = {}) {
+  const now = new Date().toISOString();
+  const j = {
+    pid: process.pid,
+    agentName,
+    consoleBase,
+    startedTs: agentStartedTs,
+    heartbeatTs: now,
+    ...extra,
+  };
+  try {
+    writeJsonAtomic(agentStatusPath, j);
+  } catch {}
+}
+
+function heartbeat(extra = {}) {
+  const nowMs = Date.now();
+  if (nowMs - lastHeartbeatMs < 1500) return;
+  lastHeartbeatMs = nowMs;
+  writeAgentStatus(extra);
+}
+
+function resolveAuditConfigPath() {
+  const raw = String(process.env.COURSE_MEMBERSHIP_AUDIT_CONFIG || "").trim();
+  if (!raw) return path.join(repoRoot, "data", "course_membership_audit.json");
+  return path.isAbsolute(raw) ? raw : path.join(repoRoot, raw);
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -39,6 +70,103 @@ function writeJsonAtomic(p, obj) {
   const tmp = `${p}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", "utf8");
   fs.renameSync(tmp, p);
+}
+
+function readJsonStrict(p) {
+  const s = readText(p).trim();
+  if (!s) return {};
+  let j = null;
+  try {
+    j = JSON.parse(s);
+  } catch {
+    throw new Error("설정 파일(JSON) 파싱에 실패했어요.");
+  }
+  if (!j || typeof j !== "object" || Array.isArray(j)) {
+    throw new Error("설정 파일(JSON) 형식이 올바르지 않아요.");
+  }
+  return j;
+}
+
+function parseClubId(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    const qp = String(u.searchParams.get("clubid") || u.searchParams.get("clubId") || "").trim();
+    if (/^\d+$/.test(qp)) return qp;
+    const m2 = u.pathname.match(/\/ca-fe\/cafes\/(\d+)(?:\/|$)/i);
+    if (m2) return String(m2[1] || "").trim();
+    const m3 = u.pathname.match(/\/cafes\/(\d+)(?:\/|$)/i);
+    if (m3) return String(m3[1] || "").trim();
+  } catch {}
+  const m1 = s.match(/[?&]clubid=(\d+)/i);
+  if (m1) return String(m1[1] || "").trim();
+  const m4 = s.match(/\/ca-fe\/cafes\/(\d+)(?:\/|$)/i);
+  if (m4) return String(m4[1] || "").trim();
+  const m5 = s.match(/\/cafes\/(\d+)(?:\/|$)/i);
+  if (m5) return String(m5[1] || "").trim();
+  if (/^\d+$/.test(s)) return s;
+  return "";
+}
+
+function upsertLocalCourseConfig(course) {
+  const p = resolveAuditConfigPath();
+  const courseKey = String(course?.courseKey || course?.course_key || "").trim();
+  if (!courseKey) return { ok: false, error: "강의 정보를 찾지 못했어요." };
+
+  let cfg;
+  try {
+    cfg = readJsonStrict(p);
+  } catch (e) {
+    return { ok: false, error: String(e?.message || "로컬 설정 파일을 읽지 못했어요.") };
+  }
+  if (!cfg || typeof cfg !== "object") cfg = {};
+  const courses = typeof cfg.courses === "object" && cfg.courses ? cfg.courses : {};
+
+  const prev = typeof courses[courseKey] === "object" && courses[courseKey] ? courses[courseKey] : {};
+  const next = { ...prev };
+
+  next.enabled = true;
+
+  const clubId =
+    String(prev.clubId || prev.club_id || "").trim() ||
+    String(prev?.cafe?.clubId || prev?.cafe?.club_id || "").trim() ||
+    parseClubId(course?.clubId || course?.club_id || course?.cafeUrl || course?.cafe_url || "");
+  if (clubId) next.clubId = clubId;
+
+  const sheetId = String(course?.sheetId || course?.sheet_id || "").trim();
+  if (sheetId) next.spreadsheetId = sheetId;
+
+  const tabs = typeof next.tabs === "object" && next.tabs ? { ...next.tabs } : {};
+  const actionsTab = String(course?.actionsTab || course?.actions_tab || "").trim();
+  if (actionsTab) tabs.actions = actionsTab;
+  if (Object.keys(tabs).length > 0) next.tabs = tabs;
+
+  const rooms = typeof next.rooms === "object" && next.rooms ? { ...next.rooms } : {};
+  const chatRoomId = String(course?.openchatChatRoomId || course?.openchat_chat_room_id || "").trim();
+  const noticeRoomId = String(course?.openchatNoticeRoomId || course?.openchat_notice_room_id || "").trim();
+  const premiumEnabled = course?.premiumEnabled ?? course?.premium_enabled ?? true;
+  const premiumRoomId = String(course?.openchatPremiumRoomId || course?.openchat_premium_room_id || "").trim();
+  const vipEnabled = Boolean(course?.vipEnabled ?? course?.vip_enabled ?? false);
+  const vipRoomId = String(course?.openchatVipRoomId || course?.openchat_vip_room_id || "").trim();
+
+  if (chatRoomId) rooms.chat = chatRoomId;
+  if (noticeRoomId) rooms.notice = noticeRoomId;
+  rooms.premium = premiumEnabled ? premiumRoomId : "";
+  // NOTE: 현 워커(v2 audit)는 vip 룸을 사용하지 않지만, 설정을 미리 보관한다.
+  if (vipEnabled) rooms.vip = vipRoomId;
+  if (Object.keys(rooms).length > 0) next.rooms = rooms;
+
+  const cafeUrl = String(course?.cafeUrl || course?.cafe_url || "").trim();
+  if (cafeUrl) next.cafeUrl = cafeUrl;
+
+  courses[courseKey] = next;
+  cfg.courses = courses;
+  if (!cfg.version) cfg.version = 1;
+  writeJsonAtomic(p, cfg);
+
+  const okClubId = Boolean(String(next.clubId || "").trim());
+  return { ok: true, path: p, courseKey, clubId: okClubId ? String(next.clubId || "") : "" };
 }
 
 async function postJson(url, body) {
@@ -194,6 +322,25 @@ async function runSyncFull(job) {
     return;
   }
 
+  try {
+    const r = upsertLocalCourseConfig(job.course || job?.payload?.course || {});
+    if (!r.ok) {
+      await report(job.id, { status: "FAILED", resultMessage: String(r.error || "설정에 실패했어요.") });
+      return;
+    }
+    if (!r.clubId) {
+      await report(job.id, {
+        status: "FAILED",
+        resultMessage: "카페 clubId가 필요해요. 설정에서 clubId를 입력해 주세요.",
+        events: [{ level: "ERROR", message: "코스 설정에 clubId가 없어요. (카페 URL에 clubid=가 포함된 주소면 clubId 입력을 생략할 수 있어요.)" }],
+      });
+      return;
+    }
+  } catch (e) {
+    await report(job.id, { status: "FAILED", resultMessage: "로컬 설정을 업데이트하지 못했어요." });
+    return;
+  }
+
   await ensureWorkerRunning();
 
   const startedAt = triggerCourseRunOnce(courseKey);
@@ -277,6 +424,54 @@ function roomTypeFromLabel(label) {
   return "";
 }
 
+function readOpenchatLoadOpts() {
+  const fallback = { serial: "", scrolls: 200, scrollPauseMs: 400, timeoutSec: 300 };
+  try {
+    const cfg = readJsonStrict(resolveAuditConfigPath());
+    const w = cfg?.worker && typeof cfg.worker === "object" ? cfg.worker : {};
+    const o = w?.openchatAutoLoad && typeof w.openchatAutoLoad === "object" ? w.openchatAutoLoad : {};
+    const serial = String(o.serial || o.adbSerial || o.adb_serial || "").trim();
+    const scrolls = Math.max(50, Math.min(3000, Number(o.scrolls || 200)));
+    const scrollPauseMs = Math.max(150, Math.min(2000, Number(o.scrollPauseMs || 400)));
+    const timeoutSec = Math.max(60, Math.min(1800, Number(o.timeoutSec || 300)));
+    return { serial, scrolls, scrollPauseMs, timeoutSec };
+  } catch {
+    return fallback;
+  }
+}
+
+async function refreshRoomMembers(roomId, label, jobId) {
+  const script = path.join(repoRoot, "scripts", "openchat_load_members.ps1");
+  if (!fs.existsSync(script)) return { ok: false, code: 404 };
+
+  const opts = readOpenchatLoadOpts();
+  await report(jobId, {
+    status: "RUNNING",
+    progressMessage: `${label} 멤버를 새로 불러오는 중...`,
+    events: [{ level: "INFO", message: `${label} 멤버 DB 갱신을 시작했어요.` }],
+  });
+
+  const args = [
+    "-RoomId",
+    String(roomId),
+    "-Scrolls",
+    String(opts.scrolls),
+    "-ScrollPauseMs",
+    String(opts.scrollPauseMs),
+    "-IrisQueryBase",
+    readIrisBase(),
+  ];
+  if (opts.serial) args.push("-Serial", opts.serial);
+  const r = await runPowershell(script, args);
+  const ok = r.code === 0;
+  await report(jobId, {
+    status: "RUNNING",
+    progressMessage: ok ? `${label} 멤버 갱신 완료` : `${label} 멤버 갱신이 미완료예요`,
+    events: [{ level: ok ? "INFO" : "WARN", message: ok ? `${label} 멤버 DB 갱신이 끝났어요.` : `${label} 멤버 DB 갱신이 미완료예요. (데이터 미완전으로 처리될 수 있어요.)` }],
+  });
+  return { ok, code: r.code };
+}
+
 async function runReverifyPending(job) {
   const courseKey = pickCourseKey(job);
   const items = Array.isArray(job?.payload?.items) ? job.payload.items : [];
@@ -292,22 +487,56 @@ async function runReverifyPending(job) {
     return;
   }
 
+  try {
+    upsertLocalCourseConfig(job.course || job?.payload?.course || {});
+  } catch {}
+
   const cs = getCourseState(courseKey);
-  const lastRooms = cs?.lastRooms || cs?.last_rooms || null;
+  let lastRooms = cs?.lastRooms || cs?.last_rooms || null;
   if (!lastRooms || typeof lastRooms !== "object") {
+    lastRooms = {};
     await report(job.id, {
-      status: "FAILED",
-      progressPct: 100,
-      progressMessage: "방 정보를 찾지 못했어요. 먼저 '데이터 동기화'를 실행해 주세요.",
-      resultMessage: "방 정보를 찾지 못했어요. 먼저 '데이터 동기화'를 실행해 주세요.",
-      events: [{ level: "ERROR", message: "방 정보를 찾지 못했어요. 먼저 '데이터 동기화'를 실행해 주세요." }],
-      actionUpdates: [],
+      status: "RUNNING",
+      progressPct: 1,
+      progressMessage: "방 정보가 없어 코스 설정의 roomId로 재검증해요.",
+      events: [{ level: "WARN", message: "최근 동기화 정보가 없어서 코스 설정(roomId) 기준으로 재검증을 진행해요." }],
     });
-    return;
   }
 
   const updates = [];
   const memberCache = new Map();
+
+  const course = job?.course || null;
+  const courseRooms = {
+    chat: String(course?.openchatChatRoomId || course?.openchat_chat_room_id || "").trim(),
+    notice: String(course?.openchatNoticeRoomId || course?.openchat_notice_room_id || "").trim(),
+    premium: Boolean(course?.premiumEnabled ?? course?.premium_enabled ?? true)
+      ? String(course?.openchatPremiumRoomId || course?.openchat_premium_room_id || "").trim()
+      : "",
+  };
+
+  const neededRoomTypes = new Set();
+  for (const it of items) {
+    const labels = parseRoomLabels(String(it.rooms || ""));
+    for (const l of labels) {
+      const rt = roomTypeFromLabel(l);
+      if (rt) neededRoomTypes.add(rt);
+    }
+  }
+
+  // 1) 빠른 재검증은 '필요한 방'만 멤버 DB를 먼저 갱신한다.
+  const roomRefresh = new Map();
+  for (const rt of Array.from(neededRoomTypes)) {
+    const info = (lastRooms && typeof lastRooms === "object" ? lastRooms?.[rt] : null) || null;
+    const roomId = String(info?.roomId || courseRooms?.[rt] || "").trim();
+    if (!roomId) {
+      roomRefresh.set(rt, { ok: false, code: 400, roomId: "" });
+      continue;
+    }
+    const label = rt === "chat" ? "사담방" : rt === "notice" ? "공지방" : "프리미엄방";
+    const rr = await refreshRoomMembers(roomId, label, job.id);
+    roomRefresh.set(rt, { ...rr, roomId });
+  }
 
   const total = items.length;
   let processed = 0;
@@ -344,9 +573,9 @@ async function runReverifyPending(job) {
     let unknown = false;
     const roomIds = [];
     for (const rt of roomTypes) {
-      const info = lastRooms?.[rt];
-      const roomId = String(info?.roomId || "").trim();
-      const incomplete = Boolean(info?.incomplete);
+      const rr = roomRefresh.get(rt) || null;
+      const roomId = String(rr?.roomId || "").trim();
+      const incomplete = rr && rr.ok === false;
       if (!roomId || incomplete) {
         unknown = true;
         break;
@@ -386,6 +615,7 @@ async function runReverifyPending(job) {
 
 async function handleJob(job) {
   if (!job) return;
+  heartbeat({ lastJobId: String(job.id || ""), lastJobKind: String(job.kind || "") });
   if (job.kind === "SYNC_FULL") {
     await runSyncFull(job);
     return;
@@ -398,16 +628,20 @@ async function handleJob(job) {
 }
 
 async function main() {
+  writeAgentStatus({ state: "STARTING" });
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
+      heartbeat({ state: "POLLING" });
       const r = await postJson(`${consoleBase}/api/agent/poll`, { agentName, version: "0.1" });
       if (r.ok && r.json?.job) {
+        heartbeat({ state: "WORKING" });
         await handleJob(r.json.job);
       } else {
         await sleep(pollSec * 1000);
       }
     } catch {
+      heartbeat({ state: "ERROR" });
       await sleep(Math.max(2, pollSec) * 1000);
     }
   }

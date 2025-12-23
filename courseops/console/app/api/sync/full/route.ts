@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireSession } from "@/lib/session";
+import { requireSyncSession } from "@/lib/admin";
 import { coursesStore } from "@/lib/store";
 
 const Body = z.object({ courseId: z.string().min(1) });
@@ -9,9 +9,9 @@ const Body = z.object({ courseId: z.string().min(1) });
 export async function POST(req: Request) {
   let session;
   try {
-    session = await requireSession();
+    session = await requireSyncSession();
   } catch {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const parsed = Body.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: "입력값이 올바르지 않아요." }, { status: 400 });

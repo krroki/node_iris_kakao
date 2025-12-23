@@ -8,6 +8,7 @@ import { coursesStore } from "@/lib/store";
 const CreateBody = z
   .object({
     courseKey: z.string().trim().min(1, "강의 이름을 입력해 주세요."),
+    clubId: z.string().trim().optional().default(""),
     sheetIdOrUrl: z.string().trim().min(1, "스프레드시트 URL 또는 ID를 입력해 주세요."),
     actionsTab: z.string().trim().min(1).default("ACTIONS"),
     cafeUrl: z.string().trim().optional().default(""),
@@ -49,6 +50,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "입력값이 올바르지 않아요." }, { status: 400 });
   }
   const store = await coursesStore();
-  const course = await store.createCourse(parsed.data);
-  return NextResponse.json({ course });
+  try {
+    const course = await store.createCourse(parsed.data);
+    return NextResponse.json({ course });
+  } catch (e: any) {
+    return NextResponse.json({ error: String(e?.message || "저장에 실패했어요.") }, { status: 500 });
+  }
 }

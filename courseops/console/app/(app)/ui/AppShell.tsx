@@ -22,7 +22,15 @@ function NavItem({ href, label }: { href: string; label: string }) {
   );
 }
 
-export default function AppShell({ children, userName }: { children: React.ReactNode; userName: string }) {
+export default function AppShell({
+  children,
+  userName,
+  canSync,
+}: {
+  children: React.ReactNode;
+  userName: string;
+  canSync: boolean;
+}) {
   return (
     <div className="min-h-screen">
       <div className="flex">
@@ -43,11 +51,10 @@ export default function AppShell({ children, userName }: { children: React.React
           </div>
         </aside>
         <main className="min-w-0 flex-1">
-          <TopBar userName={userName} />
+          <TopBar userName={userName} canSync={canSync} />
           <div className="p-4 md:p-8">{children}</div>
         </main>
       </div>
     </div>
   );
 }
-

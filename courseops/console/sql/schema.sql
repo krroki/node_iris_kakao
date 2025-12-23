@@ -1,6 +1,7 @@
 create table if not exists courseops_courses (
   id text primary key,
   course_key text not null unique,
+  club_id text,
   sheet_id text not null,
   actions_tab text not null default 'ACTIONS',
   cafe_url text,
@@ -13,6 +14,7 @@ create table if not exists courseops_courses (
   created_at timestamptz not null default now()
 );
 
+alter table courseops_courses add column if not exists club_id text;
 alter table courseops_courses add column if not exists cafe_url text;
 alter table courseops_courses add column if not exists openchat_chat_room_id text;
 alter table courseops_courses add column if not exists openchat_notice_room_id text;
