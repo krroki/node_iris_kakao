@@ -22,13 +22,15 @@
 
 `courseops/console/.env.example` 기준으로 아래를 설정한다.
 
-- `COURSEOPS_SHARED_PASSWORD`  
+- `COURSEOPS_SHARED_PASSWORD`
   - 공용 비밀번호(로그인에 사용)
-- `COURSEOPS_SESSION_SECRET`  
+- `COURSEOPS_ADMIN_NAMES`
+  - 새 강의 등록 관리자 이름 목록(콤마로 구분)
+- `COURSEOPS_SESSION_SECRET`
   - 세션 서명용 시크릿(길게 랜덤)
-- `DATABASE_URL`  
+- `DATABASE_URL`
   - Postgres 접속 URL
-- `GOOGLE_SERVICE_ACCOUNT_JSON`  
+- `GOOGLE_SERVICE_ACCOUNT_JSON`
   - Google Sheets 읽기용 서비스 계정 JSON(문자열 1개)
 - `COURSEOPS_AGENT_TOKEN`  
   - 로컬 에이전트 인증 토큰(콘솔/에이전트 동일)
@@ -41,13 +43,27 @@
 
 초기화는 아래 중 하나로 수행한다.
 
-### 옵션 A) 로컬에서 init 스크립트 실행(권장)
+### 옵션 A) Supabase CLI로 새 프로젝트 생성(권장)
+
+1. 조직 확인
+   - `supabase orgs list`
+2. 프로젝트 생성(예: Seoul)
+   - `supabase projects create courseops --org-id <ORG_ID> --region ap-northeast-2 --db-password <DB_PASSWORD> --output json --yes`
+3. `DATABASE_URL` 준비(Supabase 권장: pooler)
+   - 기본(직접): `postgresql://postgres:<DB_PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres`
+   - 권장(pooler/서버리스): `postgresql://postgres.<PROJECT_REF>:<DB_PASSWORD>@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?sslmode=require`
+   - ⚠️ 일부 환경(IPv6 미지원)에서는 `db.<PROJECT_REF>.supabase.co`가 IPv4(A 레코드)가 없어 연결이 실패할 수 있다.
+     이 경우 **pooler**를 사용한다.
+4. 스키마 적용
+   - `courseops/console`에서 `DATABASE_URL` 설정 후 `npm run db:init`
+
+### 옵션 B) 로컬에서 init 스크립트 실행(권장)
 
 1. `courseops/console`에서 의존성 설치
 2. `DATABASE_URL`을 실제 DB로 설정
 3. `npm run db:init` 실행
 
-### 옵션 B) DB 콘솔에서 schema.sql 실행
+### 옵션 C) DB 콘솔에서 schema.sql 실행
 
 DB 제공자 콘솔(Supabase/Neon/Vercel Postgres 등)에서 `schema.sql` 내용을 실행한다.
 
@@ -85,4 +101,3 @@ DB 제공자 콘솔(Supabase/Neon/Vercel Postgres 등)에서 `schema.sql` 내용
 - `npm start`
 
 운영에서는 Watchdog/스케줄러로 “항상 떠 있도록” 보장한다.
-
