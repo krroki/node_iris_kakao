@@ -39,6 +39,14 @@ export type JobRow = {
   updatedAt: string | null;
 };
 
+export type UserRow = {
+  name: string;
+  enabled: boolean;
+  canSync: boolean;
+  createdAt: string;
+  updatedAt: string | null;
+};
+
 const CreateCourseBody = z
   .object({
     courseKey: z.string().trim().min(1),
@@ -462,6 +470,91 @@ export async function coursesStore() {
           }
         }
       }
+    },
+
+    async hasAnyUsers(): Promise<boolean> {
+      try {
+        const rows = await sql<{ name: string }[]>`select name from courseops_users limit 1`;
+        return Boolean(rows[0]?.name);
+      } catch {
+        return false;
+      }
+    },
+
+    async getUser(name: string): Promise<UserRow | null> {
+      const n = String(name || "").trim();
+      if (!n) return null;
+      try {
+        const rows = await sql<
+          {
+            name: string;
+            enabled: boolean | null;
+            can_sync: boolean | null;
+            created_at: Date;
+            updated_at: Date | null;
+          }[]
+        >`select name, enabled, can_sync, created_at, updated_at from courseops_users where name=${n} limit 1`;
+        const r = rows[0];
+        if (!r) return null;
+        return {
+          name: r.name,
+          enabled: r.enabled ?? true,
+          canSync: r.can_sync ?? true,
+          createdAt: r.created_at.toISOString(),
+          updatedAt: r.updated_at ? r.updated_at.toISOString() : null,
+        };
+      } catch {
+        return null;
+      }
+    },
+
+    async listUsers(): Promise<UserRow[]> {
+      try {
+        const rows = await sql<
+          {
+            name: string;
+            enabled: boolean | null;
+            can_sync: boolean | null;
+            created_at: Date;
+            updated_at: Date | null;
+          }[]
+        >`select name, enabled, can_sync, created_at, updated_at from courseops_users order by name asc`;
+        return rows.map((r) => ({
+          name: r.name,
+          enabled: r.enabled ?? true,
+          canSync: r.can_sync ?? true,
+          createdAt: r.created_at.toISOString(),
+          updatedAt: r.updated_at ? r.updated_at.toISOString() : null,
+        }));
+      } catch {
+        return [];
+      }
+    },
+
+    async upsertUser(input: { name: string; enabled: boolean; canSync: boolean }): Promise<UserRow> {
+      const n = String(input.name || "").trim();
+      if (!n) throw new Error("name is required");
+      const enabled = Boolean(input.enabled);
+      const canSync = Boolean(input.canSync);
+      await sql`
+        insert into courseops_users (name, enabled, can_sync, updated_at)
+        values (${n}, ${enabled}, ${canSync}, now())
+        on conflict (name) do update set
+          enabled=excluded.enabled,
+          can_sync=excluded.can_sync,
+          updated_at=now()
+      `;
+      const out = await this.getUser(n);
+      if (!out) throw new Error("failed to upsert user");
+      return out;
+    },
+
+    async deleteUser(name: string) {
+      const n = String(name || "").trim();
+      if (!n) return;
+      try {
+        await sql`delete from courseops_users where name=${n}`;
+      } catch {}
     },
   };
 }

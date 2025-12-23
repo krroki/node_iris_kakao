@@ -13,6 +13,7 @@
 - `courseops/console/`
   - Vercel 배포용 Next.js 콘솔
   - 로그인: `이름 + 공용 비밀번호`(쿠키 자동 로그인)
+  - 계정 관리(관리자만): 운영진 계정 등록/차단 + 동기화 권한 조절(`/accounts`)
   - 기능: 작업 대기열(ACTIONS), 대시보드, 전체 명단(추후), 설정, 동기화/재검증 트리거
 - `courseops/agent/`
   - 12.kakao(로컬)에서 실행되는 에이전트
@@ -22,4 +23,3 @@
 
 - ADR: `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`
 - 운영 워크플로우: `docs/reference/course-ops-v2-web-console.md`
-

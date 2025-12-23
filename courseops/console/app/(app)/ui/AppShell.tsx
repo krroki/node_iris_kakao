@@ -26,10 +26,12 @@ export default function AppShell({
   children,
   userName,
   canSync,
+  isAdmin,
 }: {
   children: React.ReactNode;
   userName: string;
   canSync: boolean;
+  isAdmin: boolean;
 }) {
   return (
     <div className="min-h-screen">
@@ -44,6 +46,7 @@ export default function AppShell({
             <NavItem href="/dashboard" label="대시보드" />
             <NavItem href="/roster" label="전체 명단" />
             <NavItem href="/settings" label="설정" />
+            {isAdmin ? <NavItem href="/accounts" label="계정 관리" /> : null}
           </div>
           <div className="mt-6 rounded-xl bg-slate-50 p-3 text-sm">
             <div className="text-slate-500">로그인</div>

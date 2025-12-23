@@ -60,3 +60,11 @@ create table if not exists courseops_job_events (
   message text not null,
   ts timestamptz not null default now()
 );
+
+create table if not exists courseops_users (
+  name text primary key,
+  enabled boolean not null default true,
+  can_sync boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz
+);
