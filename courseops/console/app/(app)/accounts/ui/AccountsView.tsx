@@ -108,7 +108,7 @@ export default function AccountsView() {
         <div className="mt-2 text-sm text-slate-600">
           1) `go.yoorang.kr` 접속
           <br />
-          2) 이름 + 공용 비밀번호로 로그인
+          2) 이름 + 비밀번호로 로그인
           <br />
           3) 계정을 등록하기 시작하면, 등록된 사람만 로그인할 수 있어요. (관리자는 항상 가능)
         </div>

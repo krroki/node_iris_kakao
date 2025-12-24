@@ -43,7 +43,7 @@ export default function LoginForm() {
         />
       </div>
       <div>
-        <label className="block text-sm font-medium text-slate-700">공용 비밀번호</label>
+        <label className="block text-sm font-medium text-slate-700">비밀번호</label>
         <input
           className="mt-1 w-full rounded-lg border px-3 py-2 outline-none focus:ring-2 focus:ring-brand-200"
           value={form.password}
@@ -66,4 +66,3 @@ export default function LoginForm() {
     </form>
   );
 }
-
