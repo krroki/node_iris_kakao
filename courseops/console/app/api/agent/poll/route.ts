@@ -9,8 +9,8 @@ const Body = z.object({
 });
 
 function requireAgent(req: Request) {
-  const expected = String(process.env.COURSEOPS_AGENT_TOKEN || "");
-  const got = String(req.headers.get("x-courseops-agent-token") || "");
+  const expected = String(process.env.COURSEOPS_AGENT_TOKEN || "").trim();
+  const got = String(req.headers.get("x-courseops-agent-token") || "").trim();
   if (!expected || got !== expected) {
     throw new Error("unauthorized");
   }
@@ -33,4 +33,3 @@ export async function POST(req: Request) {
   const course = await store.getCourse(job.courseId);
   return NextResponse.json({ job: { ...job, course } });
 }
-

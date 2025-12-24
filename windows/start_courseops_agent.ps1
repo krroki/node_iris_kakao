@@ -103,29 +103,29 @@ if (-not (Test-Path $agentEntry)) {
 Write-Host ("[courseops-agent] starting (timeout {0}s)" -f $TimeoutSec) -ForegroundColor Green
 try { Remove-Item -Force -ErrorAction SilentlyContinue $outLog,$errLog | Out-Null } catch {}
 $proc = Start-Process -FilePath node -ArgumentList @("`"$agentEntry`"") -WorkingDirectory $root -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden -PassThru
-$pid = $proc.Id
+$procId = $proc.Id
 
 $deadline = (Get-Date).AddSeconds([math]::Max(5, $TimeoutSec))
 $ready = $false
 do {
   Start-Sleep -Seconds 1
-  $alive = $null -ne (Get-Process -Id $pid -ErrorAction SilentlyContinue)
+  $alive = $null -ne (Get-Process -Id $procId -ErrorAction SilentlyContinue)
   if (-not $alive) { break }
   try {
     if (Test-Path $statusPath) {
       $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
       $spid = $null
       try { if ($j.pid) { $spid = [int]$j.pid } } catch {}
-      if ($spid -and $spid -eq $pid) { $ready = $true; break }
+      if ($spid -and $spid -eq $procId) { $ready = $true; break }
     }
   } catch {}
 } while ((Get-Date) -lt $deadline)
 
-$alive = $null -ne (Get-Process -Id $pid -ErrorAction SilentlyContinue)
+$alive = $null -ne (Get-Process -Id $procId -ErrorAction SilentlyContinue)
 if ($ready) {
-  Write-Host ("[courseops-agent] READY pid={0}" -f $pid) -ForegroundColor Green
+  Write-Host ("[courseops-agent] READY pid={0}" -f $procId) -ForegroundColor Green
 } elseif ($alive) {
-  Write-Host ("[courseops-agent] STARTED pid={0} (status not ready). See logs {1} / {2}" -f $pid, $outLog, $errLog) -ForegroundColor Yellow
+  Write-Host ("[courseops-agent] STARTED pid={0} (status not ready). See logs {1} / {2}" -f $procId, $outLog, $errLog) -ForegroundColor Yellow
 } else {
   Write-Host ("[courseops-agent] FAILED (process exited). See logs {0} / {1}" -f $outLog, $errLog) -ForegroundColor Red
   exit 1
