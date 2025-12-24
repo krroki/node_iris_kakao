@@ -3,7 +3,7 @@
 이 문서는 **강의 운영 v2의 “현업 운영 UI”**(ACTIONS 중심)를 웹으로 제공하는 방법과 운영 흐름을 정리한다.
 
 - 관련 ADR: `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`
-- 기존 v2(시트 산출 중심): `docs/reference/course-roster-v2-membership-audit.md`
+- 기존 v2(시트 산출/레거시): `docs/reference/course-roster-v2-membership-audit.md`
 
 ---
 
@@ -29,6 +29,7 @@
 
 - 새 강의 등록은 **관리자만** 가능하다.
 - 관리자는 환경 변수 `COURSEOPS_ADMIN_NAMES`(콤마 구분 이름 목록)으로 지정한다.
+  - 운영 초기 부트스트랩을 위해 `COURSEOPS_ADMIN_NAMES`가 비어있으면 `glemfkcl`을 기본 관리자로 취급한다.
 
 ### 계정 관리(관리자 전용)
 
@@ -54,7 +55,7 @@
 - **작업 대기열**: ACTIONS 카드 목록(필터/정렬 + 처리/검증 상태)
 - **대시보드**: 대기 작업/트랙 분포/준수율 등 요약 지표
 - **전체 명단**: 통합 테이블(방 참여 현황 + 닉네임/트랙 + 예외 표시)
-- **설정**: 새 강의 등록(관리자) + 강의별 카페/톡방/시트 연결
+- **설정**: 새 강의 등록(관리자) + 강의별 카페/톡방 연결
   - 카페는 `clubId`(숫자)가 필요하다. (카페 URL에 `clubid=`가 포함된 주소면 자동 인식되어 입력을 생략할 수 있다.)
 
 ---
@@ -156,7 +157,7 @@
 - `COURSEOPS_SYNC_ALLOWLIST` (동기화 허용 이름 목록, 옵션)
 - `COURSEOPS_SESSION_SECRET` (세션 서명용 시크릿)
 - `DATABASE_URL` (Postgres)
-- `GOOGLE_SERVICE_ACCOUNT_JSON` (Google Sheets 읽기용 서비스 계정 JSON)     
+- `GOOGLE_SERVICE_ACCOUNT_JSON` (옵션: 결제 SSOT(Google Sheets) 읽기용 서비스 계정 JSON)
 - `COURSEOPS_AGENT_TOKEN` (에이전트 인증 토큰)
 
 ### 9.2) 로컬 에이전트 실행(예시)

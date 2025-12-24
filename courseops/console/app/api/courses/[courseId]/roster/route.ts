@@ -2,13 +2,8 @@ import { NextResponse } from "next/server";
 
 import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
-import {
-  fetchAuditViewTable,
-  fetchOpenchatRawTable,
-  fetchRulesRawTable,
-  fetchSsotRawTable,
-  sheetsUtil,
-} from "@/lib/sheets";
+import { asTable, getSnapshotTables } from "@/lib/snapshot";
+import { normalizeNick, splitCsv } from "@/lib/textUtil";
 
 function asBool(input: string) {
   return String(input || "").trim().toUpperCase() === "TRUE";
@@ -37,7 +32,7 @@ function parseAliasesCell(cell: string) {
     const j = JSON.parse(raw);
     if (Array.isArray(j)) return j.map((x) => String(x || "").trim()).filter(Boolean);
   } catch {}
-  return sheetsUtil.splitCsv(raw);
+  return splitCsv(raw);
 }
 
 function trackLabel(track: string) {
@@ -59,12 +54,11 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
   const course = await store.getCourse(params.courseId);
   if (!course) return NextResponse.json({ error: "강의를 찾지 못했어요." }, { status: 404 });
 
-  const [rules, audit, openchat, ssot] = await Promise.all([
-    fetchRulesRawTable({ sheetId: course.sheetId }).catch(() => ({} as Record<string, string>)),
-    fetchAuditViewTable({ sheetId: course.sheetId }).catch(() => ({ header: [] as string[], rows: [] as string[][] })),
-    fetchOpenchatRawTable({ sheetId: course.sheetId }).catch(() => ({ header: [] as string[], rows: [] as string[][] })),
-    fetchSsotRawTable({ sheetId: course.sheetId }).catch(() => ({ header: [] as string[], rows: [] as string[][] })),
-  ]);
+  const snap = await store.getCourseSnapshot(course.id);
+  const tables = getSnapshotTables(snap?.payload);
+  const audit = asTable(tables.auditView);
+  const openchat = asTable(tables.openchatRaw);
+  const ssot = asTable(tables.ssotRaw);
 
   // --- SSOT 인덱스(닉 변경: old->new 포함) ---
   const idxSsot = (name: string) => ssot.header.indexOf(name);
@@ -101,7 +95,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
     const kind = idxSsotKind >= 0 ? String(r[idxSsotKind] || "").trim() : "";
 
     ssotByUserId.set(userId, { userId, nickname, aliases, name, grade, track, kind });
-    const variants = [nickname, ...aliases].map((x) => sheetsUtil.normalizeNick(x)).filter(Boolean);
+    const variants = [nickname, ...aliases].map((x) => normalizeNick(x)).filter(Boolean);
     for (const v of variants) if (!nickNormToUserId.has(v)) nickNormToUserId.set(v, userId);
   }
 
@@ -155,7 +149,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
     const ssotUserId = idxSsotUserId2 >= 0 ? String(r[idxSsotUserId2] || "").trim() : "";
     const ssotRec = ssotUserId ? ssotByUserId.get(ssotUserId) || null : null;
 
-    const required = sheetsUtil.splitCsv(idxRequiredRooms >= 0 ? String(r[idxRequiredRooms] || "") : "");
+    const required = splitCsv(idxRequiredRooms >= 0 ? String(r[idxRequiredRooms] || "") : "");
     const requiredSet = new Set(required);
 
     const room = (label: string, present: boolean): MemberRoom => ({
@@ -183,7 +177,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
         : null,
       inCafe: idxInCafe >= 0 ? asBool(r[idxInCafe] || "") : false,
       requiredRooms: required,
-      missingRooms: sheetsUtil.splitCsv(idxMissingRooms >= 0 ? String(r[idxMissingRooms] || "") : ""),
+      missingRooms: splitCsv(idxMissingRooms >= 0 ? String(r[idxMissingRooms] || "") : ""),
       auditStatus: idxAuditStatus >= 0 ? String(r[idxAuditStatus] || "").trim() : "",
       rooms: {
         chat: room("사담방", idxInChat >= 0 ? asBool(r[idxInChat] || "") : false),
@@ -194,7 +188,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
     members.push(row);
 
     if (ssotUserId) bySsotUserId.set(ssotUserId, row);
-    const norm = sheetsUtil.normalizeNick(cafeNickname);
+    const norm = normalizeNick(cafeNickname);
     if (norm && !byCafeNickNorm.has(norm)) byCafeNickNorm.set(norm, row);
   }
 
@@ -216,7 +210,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
     const parsed = idxParsedCafeNick >= 0 ? String(r[idxParsedCafeNick] || "").trim() : "";
     const extracted = extractCafeNickFromOpenchatNickname(openchatNickname);
     const candidate = resolved || parsed || extracted;
-    const norm = sheetsUtil.normalizeNick(candidate);
+    const norm = normalizeNick(candidate);
 
     let member: MemberRow | undefined;
     if (norm) {
@@ -257,7 +251,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
 
   return NextResponse.json({
     course: { id: course.id, courseKey: course.courseKey },
-    updatedAt: String(rules["updatedAt"] || "").trim() || null,
+    updatedAt: String(snap?.fetchedAt || "").trim() || null,
     stats: {
       members: members.length,
       ssot: ssotCount,

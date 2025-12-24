@@ -36,6 +36,7 @@
     - 카카오 UI의 Participants 표기는 화면 진입 실패/언어/렌더링 상태에 따라 읽지 못하는 케이스가 있어 **보조 지표**로만 사용한다.
   - `loaded < active`이면 **발신하지 않고**, 먼저 Redroid에서 멤버 목록 스크롤 로딩을 수행한다.
     - 스크롤 로딩: `scripts/openchat_load_members.ps1`(송신 없음)
+      - 참고: open.kakao join scheme(`kakaoopen://join?...&r=...`)은 adb shell에서 `&` 이스케이프가 필요하며, 스크립트가 자동 처리한다.
     - (검증/리포트) 기본닉 후보를 DB 기준으로 뽑아 “UI Participants vs DB”를 증명하려면:
       - `scripts/report_default_nickname_candidates.ps1` (JSON: `node-iris-app/data/reports/default_nickname_candidates/`)
     - 완료 확인 후에만 멘션 발신

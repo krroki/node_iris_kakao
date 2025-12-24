@@ -5,6 +5,7 @@
 - 목적: 루팅 안드로이드 + IRIS + Hyper-V 리눅스 봇 서버 조합으로 카카오톡 오픈채팅(명령어, 환영, 방송)을 안정적으로 운영.
 - 현재 상태: Hyper-V/루팅 단말 기반 설치 가이드 정리 및 요구사항 문서 갱신 완료 (2025-10-28).
 
+- 2025-12-24: openchat_load_members 안정화 — adb shell에서 open.kakao join scheme(`kakaoopen://join?...&r=...`) 실행 시 `&` 이스케이프 누락으로 단말이 런처로 떨어져 IRIS 이미지 발신(reply_media)이 실패(Welcome 템플릿 이미지 미발송)하는 케이스를 수정(스크립트에서 자동 escape + 실패 시 KakaoTalk foreground 복귀). 또한 기본닉 판별 regex에 “캐릭터명 단독” 패턴을 추가(예: `춘식이`, `팬더주니어`).
 - 2025-12-23: 강의 운영 v2 “운영 UI”를 스프레드시트(ACTIONS)에서 **CourseOps 웹 콘솔(go.yoorang.kr)**로 전환 — 이름+공용 비번 로그인(자동 로그인) + `처리 완료→확인 대기→빠른 재검증/전체 동기화`로 완료를 검증 확정 + 담당자/시간/메모(선택) 기록(동시접속 충돌 방지). (ADR-0046, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md`)
 - 2025-12-22: 강의 운영 v2 결제 SSOT 연동 정합성 보강 + 현업 시트 UX 개선 — `/course`에서 `paymentSsot` 입력 지원 + 설정 API가 `paymentSsot`/`SSOT_RAW`/`OVERVIEW`/`ACTIONS`를 보존(저장 시 누락 방지) + 결제 닉네임 변경(`old->new`) alias 매칭 지원 + `ACTIONS`를 단일 표(`우선순위: 지금/오늘/확인/정리`) “할 일 큐”로 단순화(`바꿀 닉네임`은 결제 SSOT의 `성함`을 기반으로 `정@@록(카페닉)` 형태로 추천, 성함이 없으면 `<이름마스킹>(카페닉)` placeholder).
 - 2025-12-22: Welcome 후속: 기본닉 + 첫 이미지(하트스샷)에서 “감사합니다…” Reply 대신 “닉변 요청” Reply(type=26) 발신 + 요청 시점부터 15분 내 닉변 확인 시 일반 멘션으로 마무리(레이스 방지: 요청 이전 `feedType=2` 캐시 무시) + Reply(type=26) 발신(`/send/talkapi/dispatch_raw`)도 `mentionees` 지원.
@@ -84,6 +85,7 @@
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
 | --- | --- | --- |
+| 2025-12-24 | CourseOps: 시트 입력 제거 + Supabase 스냅샷(JSON) 저장/업로드로 전환 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `courseops/agent/src/index.js`, `scripts/course_membership_audit/worker.py`, `courseops/console/app/api/agent/snapshot/route.ts` |
 | 2025-12-23 | 강의 운영 v2: 운영 UI를 CourseOps 웹 콘솔(go.yoorang.kr)로 전환(동시접속) + 처리/검증 상태머신 + 빠른 재검증/전체 동기화 + 담당자·메모 기록 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md` |
 | 2025-12-22 | 강의 운영 v2 결제 SSOT 연동 + ACTIONS/시트 UX 개선 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md`, `docs/reference/payment-ssot-google-sheets.md`, `scripts/course_membership_audit/audit.py`, `scripts/course_membership_audit/sheets.py`, `scripts/course_membership_audit/worker.py` |
 | 2025-12-22 | Welcome: 기본닉+첫 이미지 닉변요청/확인(15m) + Reply raw 멘션 지원 | `docs/adr/ADR-0026-welcome-followup-first-image-reply.md`, `docs/adr/ADR-0045-welcome-open-profile-guide-first-image-no-reminders.md`, `docs/reference/kakao-mentions-and-reply.md`, `node-iris-app/src/workers/welcome_worker.ts`, `node-iris-app/src/utils/talkapi.ts`, `server/app.py` |

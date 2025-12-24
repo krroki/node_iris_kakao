@@ -2,7 +2,7 @@ create table if not exists courseops_courses (
   id text primary key,
   course_key text not null unique,
   club_id text,
-  sheet_id text not null,
+  sheet_id text,
   actions_tab text not null default 'ACTIONS',
   cafe_url text,
   openchat_chat_room_id text,
@@ -23,9 +23,23 @@ alter table courseops_courses add column if not exists openchat_premium_room_id 
 alter table courseops_courses add column if not exists vip_enabled boolean not null default false;
 alter table courseops_courses add column if not exists openchat_vip_room_id text;
 
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema='public'
+      and table_name='courseops_courses'
+      and column_name='sheet_id'
+      and is_nullable='NO'
+  ) then
+    execute 'alter table courseops_courses alter column sheet_id drop not null';
+  end if;
+end $$;
+
 create table if not exists courseops_action_state (
   action_key text primary key,
-  course_id text not null references courseops_courses(id) on delete cascade,
+  course_id text not null references courseops_courses(id) on delete cascade,   
   status text not null,
   handled_by text,
   handled_at timestamptz,
@@ -68,3 +82,13 @@ create table if not exists courseops_users (
   created_at timestamptz not null default now(),
   updated_at timestamptz
 );
+
+create table if not exists courseops_course_snapshots (
+  course_id text primary key references courseops_courses(id) on delete cascade,
+  fetched_at timestamptz,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists courseops_course_snapshots_updated_at_idx on courseops_course_snapshots(updated_at desc);

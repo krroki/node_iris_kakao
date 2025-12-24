@@ -134,14 +134,6 @@ function upsertLocalCourseConfig(course) {
     parseClubId(course?.clubId || course?.club_id || course?.cafeUrl || course?.cafe_url || "");
   if (clubId) next.clubId = clubId;
 
-  const sheetId = String(course?.sheetId || course?.sheet_id || "").trim();
-  if (sheetId) next.spreadsheetId = sheetId;
-
-  const tabs = typeof next.tabs === "object" && next.tabs ? { ...next.tabs } : {};
-  const actionsTab = String(course?.actionsTab || course?.actions_tab || "").trim();
-  if (actionsTab) tabs.actions = actionsTab;
-  if (Object.keys(tabs).length > 0) next.tabs = tabs;
-
   const rooms = typeof next.rooms === "object" && next.rooms ? { ...next.rooms } : {};
   const chatRoomId = String(course?.openchatChatRoomId || course?.openchat_chat_room_id || "").trim();
   const noticeRoomId = String(course?.openchatNoticeRoomId || course?.openchat_notice_room_id || "").trim();
@@ -177,6 +169,22 @@ async function postJson(url, body) {
   });
   const j = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, json: j };
+}
+
+function safeFilename(s) {
+  const bad = /[<>:"/\\|?*]/g;
+  const out = String(s || "").trim().replace(bad, "_");
+  return out || "course";
+}
+
+function readJsonFileStrict(p) {
+  const s = readText(p).trim();
+  if (!s) throw new Error("스냅샷 파일이 비어 있어요.");
+  try {
+    return JSON.parse(s);
+  } catch {
+    throw new Error("스냅샷 파일(JSON) 파싱에 실패했어요.");
+  }
 }
 
 function runPowershell(scriptPath, args = []) {
@@ -376,13 +384,44 @@ async function runSyncFull(job) {
     const lastResult = String(cs?.lastResult || "").trim();
     if (lastRunMs && lastRunMs >= startedAt && (lastResult === "OK" || lastResult === "ERROR")) {
       if (lastResult === "OK") {
-        await report(job.id, {
-          status: "DONE",
-          progressPct: 100,
-          progressMessage: "완료됐어요.",
-          resultMessage: "완료됐어요.",
-          events: [{ level: "INFO", message: "완료됐어요." }],
-        });
+        // 스냅샷 업로드까지 성공해야 웹 콘솔에 결과가 반영된다.
+        try {
+          await report(job.id, {
+            status: "RUNNING",
+            progressPct: 99,
+            progressMessage: "웹 콘솔로 결과를 전송하는 중...",
+            events: [{ level: "INFO", message: "웹 콘솔로 결과를 전송하는 중..." }],
+          });
+
+          const courseId = String(job?.course?.id || job?.courseId || "").trim();
+          if (!courseId) throw new Error("courseId를 찾지 못했어요.");
+
+          const snapshotPath =
+            String(cs?.lastSnapshotPath || "").trim() ||
+            path.join(repoRoot, "node-iris-app", "data", "courseops_snapshots", `${safeFilename(courseKey)}.json`);
+          const payload = readJsonFileStrict(snapshotPath);
+          const fetchedAt = String(payload?.fetchedAt || cs?.lastSnapshotFetchedAt || cs?.lastOkTs || "").trim() || null;
+
+          const up = await postJson(`${consoleBase}/api/agent/snapshot`, { courseId, fetchedAt, payload });
+          if (!up.ok) throw new Error(`스냅샷 업로드에 실패했어요(HTTP ${up.status}).`);
+
+          await report(job.id, {
+            status: "DONE",
+            progressPct: 100,
+            progressMessage: "완료됐어요.",
+            resultMessage: "완료됐어요.",
+            events: [{ level: "INFO", message: "완료됐어요." }],
+          });
+        } catch (e) {
+          const msg = String(e?.message || "스냅샷 업로드에 실패했어요.");
+          await report(job.id, {
+            status: "FAILED",
+            progressPct: 100,
+            progressMessage: msg,
+            resultMessage: msg,
+            events: [{ level: "ERROR", message: msg }],
+          });
+        }
       } else {
         const errUser = String(cs?.lastErrorUser || cs?.lastError || "").trim() || "실패했어요.";
         await report(job.id, {

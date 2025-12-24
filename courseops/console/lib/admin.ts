@@ -2,10 +2,12 @@ import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
 
 function parseAdmins() {
-  return String(process.env.COURSEOPS_ADMIN_NAMES || "")
+  const fromEnv = String(process.env.COURSEOPS_ADMIN_NAMES || "")
     .split(/[,\n\r]+/g)
     .map((x) => x.trim())
     .filter(Boolean);
+  // 운영 초기 부트스트랩(환경 변수 누락으로 관리자 잠금 방지)
+  return fromEnv.length > 0 ? fromEnv : ["glemfkcl"];
 }
 
 function parseSyncAllowlist() {

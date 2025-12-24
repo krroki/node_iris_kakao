@@ -166,13 +166,20 @@ if (-not $joinScheme) {
 }
 
 Write-Log "launch join scheme: $joinScheme"
-& adb -s $Serial shell am start -a android.intent.action.VIEW -d "$joinScheme" | Out-Null
+# NOTE: adb shell is executed via Android /system/bin/sh, so unescaped '&' breaks the URI
+# (treated as background operator). Escape it to keep the join scheme intact.
+$joinSchemeForShell = $joinScheme.Replace("&", "\&")
+if ($joinSchemeForShell -ne $joinScheme) {
+  Write-Log "join scheme contains '&' -> escape for adb shell: $joinSchemeForShell" "WARN"
+}
+& adb -s $Serial shell am start -a android.intent.action.VIEW -d "$joinSchemeForShell" | Out-Null
 Start-Sleep -Seconds 6
 
 $pkg = Get-ResumedPackage
 Write-Log "resumed package=$pkg"
 if ($pkg -and $pkg -ne "com.kakao.talk") {
-  Write-Log "Foreground is not com.kakao.talk (pkg=$pkg). Abort." "ERROR"
+  Write-Log "Foreground is not com.kakao.talk (pkg=$pkg). Try to bring KakaoTalk to foreground, then abort." "WARN"
+  try { & adb -s $Serial shell am start -p com.kakao.talk | Out-Null } catch {}
   exit 2
 }
 

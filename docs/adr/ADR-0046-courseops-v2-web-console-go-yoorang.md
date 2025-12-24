@@ -78,6 +78,7 @@
 2. `go.yoorang.kr`에는 **CourseOps v2 화면만 노출**한다. (기존 운영 UI(`/settings` 등) 외부 노출 금지)
    - 호스팅: Vercel (`courseops/console/` → `go.yoorang.kr`)
    - 상태/잡/메모 저장소: Supabase Postgres (외부 동시접속을 위한 공유 저장소)
+   - 결과 데이터는 **JSON 스냅샷**으로 저장/조회한다. (스프레드시트는 레거시 옵션)
    - DB 비밀번호/토큰/키 같은 시크릿은 **레포/문서/커밋에 저장하지 않는다**. (로컬 `data/`에만 보관)
 3. 인증은 **이름 + 공용 비밀번호**로 시작하고, 세션 쿠키로 자동 로그인한다.
    - 접속은 네트워크(IP) 제한을 전제로 하지 않는다(어디서든 접속 가능). 제한은 **인증**으로만 건다.
@@ -112,15 +113,15 @@
 
 ### 후속 작업
 
-- [ ] 문서(레퍼런스): `docs/reference/course-ops-v2-web-console.md` 추가
+- [x] 문서(레퍼런스): `docs/reference/course-ops-v2-web-console.md` 추가        
 - [ ] SSOT 갱신: `docs/ssot.md`에 전환 결정 기록
 - [ ] UI:
   - [ ] `courseops/console/`에 `go.yoorang.kr` 전용 CourseOps 화면 추가(작업 대기열/대시보드/전체 명단/설정)
-  - [ ] 로그인(이름+공용 비번) + 자동로그인(쿠키) + 동기화 권한 allowlist
+  - [x] 로그인(이름+공용 비번) + 자동로그인(쿠키) + 동기화 권한 allowlist       
 - [ ] API/저장소:
-  - [ ] `ACTIONS` 산출 결과를 웹에서 조회 가능한 형태(JSON 스냅샷)로 제공
-  - [ ] 처리/메모/검증 상태를 영속 저장(append-only audit 포함)
-  - [ ] “빠른 재검증” 입력(확인 대기 항목 기준으로 필요한 방만 갱신)
+  - [x] `ACTIONS` 산출 결과를 웹에서 조회 가능한 형태(JSON 스냅샷)로 제공       
+  - [x] 처리/메모/검증 상태를 영속 저장(append-only audit 포함)
+  - [x] “빠른 재검증” 입력(확인 대기 항목 기준으로 필요한 방만 갱신)
 - [ ] 운영/배포:
   - [ ] `go.yoorang.kr` 도메인 연결(runbook) 문서화(터널/HTTPS)
   - [ ] 동기화/워커 단일 실행 락 + watchdog 자동 복구 연계

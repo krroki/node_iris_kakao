@@ -6,8 +6,6 @@ type Course = {
   id: string;
   courseKey: string;
   clubId: string | null;
-  sheetId: string;
-  actionsTab: string;
   cafeUrl: string | null;
   openchatChatRoomId: string | null;
   openchatNoticeRoomId: string | null;
@@ -23,8 +21,6 @@ export default function SettingsView() {
   const [courseKey, setCourseKey] = useState("");
   const [cafeUrl, setCafeUrl] = useState("");
   const [clubId, setClubId] = useState("");
-  const [sheetIdOrUrl, setSheetIdOrUrl] = useState("");
-  const [actionsTab, setActionsTab] = useState("ACTIONS");
   const [openchatChatRoomId, setOpenchatChatRoomId] = useState("");
   const [openchatNoticeRoomId, setOpenchatNoticeRoomId] = useState("");
   const [premiumEnabled, setPremiumEnabled] = useState(true);
@@ -68,8 +64,6 @@ export default function SettingsView() {
           courseKey,
           clubId,
           cafeUrl,
-          sheetIdOrUrl,
-          actionsTab,
           openchatChatRoomId,
           openchatNoticeRoomId,
           premiumEnabled,
@@ -87,8 +81,6 @@ export default function SettingsView() {
       setCourseKey("");
       setCafeUrl("");
       setClubId("");
-      setSheetIdOrUrl("");
-      setActionsTab("ACTIONS");
       setOpenchatChatRoomId("");
       setOpenchatNoticeRoomId("");
       setPremiumEnabled(true);
@@ -106,7 +98,7 @@ export default function SettingsView() {
       <div className="rounded-2xl border bg-white p-4 shadow-sm">
         <div className="text-sm font-semibold">새 강의 등록</div>
         <div className="mt-1 text-sm text-slate-600">
-          강의별로 카페/톡방/시트를 묶어서 관리해요. (새 강의 등록은 관리자만 가능)
+          강의별로 카페/톡방을 묶어서 관리해요. (새 강의 등록은 관리자만 가능)
         </div>
 
         {!isAdmin ? (
@@ -116,7 +108,7 @@ export default function SettingsView() {
           </div>
         ) : null}
 
-        <div className="mt-4 grid gap-3 md:grid-cols-4">
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
           <div>
             <div className="text-xs font-medium text-slate-500">강의 이름</div>
             <input
@@ -145,26 +137,8 @@ export default function SettingsView() {
             />
             <div className="mt-1 text-xs text-slate-500">카페 URL에 clubid=가 포함되어 있으면 clubId는 비워도 돼요.</div>
           </div>
-          <div>
-            <div className="text-xs font-medium text-slate-500">스프레드시트 URL 또는 ID</div>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-              value={sheetIdOrUrl}
-              onChange={(e) => setSheetIdOrUrl(e.target.value)}
-              placeholder="https://docs.google.com/spreadsheets/d/..."
-            />
-          </div>
         </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
-          <div>
-            <div className="text-xs font-medium text-slate-500">ACTIONS 탭 이름</div>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-              value={actionsTab}
-              onChange={(e) => setActionsTab(e.target.value)}
-              placeholder="ACTIONS"
-            />
-          </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
           <div>
             <div className="text-xs font-medium text-slate-500">사담방 ID</div>
             <input
@@ -247,8 +221,6 @@ export default function SettingsView() {
               <div className="font-semibold">{c.courseKey}</div>
               <div className="mt-1 text-slate-600">카페: {c.cafeUrl || "-"}</div>
               <div className="text-slate-600">clubId: {c.clubId || "-"}</div>
-              <div className="text-slate-600">시트: {c.sheetId}</div>
-              <div className="text-slate-600">탭: {c.actionsTab}</div>
               <div className="mt-2 grid gap-2 md:grid-cols-2">
                 <div className="rounded-lg bg-white px-3 py-2 text-xs text-slate-700">
                   사담방: {c.openchatChatRoomId || "-"}

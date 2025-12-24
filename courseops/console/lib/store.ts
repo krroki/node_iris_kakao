@@ -7,8 +7,6 @@ export type CourseRow = {
   id: string;
   courseKey: string;
   clubId: string | null;
-  sheetId: string;
-  actionsTab: string;
   cafeUrl: string | null;
   openchatChatRoomId: string | null;
   openchatNoticeRoomId: string | null;
@@ -47,12 +45,17 @@ export type UserRow = {
   updatedAt: string | null;
 };
 
+export type CourseSnapshotRow = {
+  courseId: string;
+  fetchedAt: string | null;
+  payload: any;
+  updatedAt: string;
+};
+
 const CreateCourseBody = z
   .object({
     courseKey: z.string().trim().min(1),
     clubId: z.string().trim().optional().default(""),
-    sheetIdOrUrl: z.string().trim().min(1),
-    actionsTab: z.string().trim().min(1),
     cafeUrl: z.string().trim().optional().default(""),
     openchatChatRoomId: z.string().trim().min(1),
     openchatNoticeRoomId: z.string().trim().min(1),
@@ -90,12 +93,6 @@ function id(prefix: string) {
   return `${prefix}_${crypto.randomBytes(10).toString("hex")}`;
 }
 
-function parseSheetId(raw: string) {
-  const s = String(raw || "").trim();
-  const m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  return (m ? m[1] : s).trim();
-}
-
 function parseClubId(raw: string) {
   const s = String(raw || "").trim();
   if (!s) return "";
@@ -121,8 +118,6 @@ export async function coursesStore() {
             id: string;
             course_key: string;
             club_id: string | null;
-            sheet_id: string;
-            actions_tab: string;
             cafe_url: string | null;
             openchat_chat_room_id: string | null;
             openchat_notice_room_id: string | null;
@@ -131,13 +126,11 @@ export async function coursesStore() {
             vip_enabled: boolean | null;
             openchat_vip_room_id: string | null;
           }[]
-        >`select id, course_key, club_id, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
+        >`select id, course_key, club_id, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
         return rows.map((r) => ({
           id: r.id,
           courseKey: r.course_key,
           clubId: r.club_id,
-          sheetId: r.sheet_id,
-          actionsTab: r.actions_tab,
           cafeUrl: r.cafe_url,
           openchatChatRoomId: r.openchat_chat_room_id,
           openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -152,8 +145,6 @@ export async function coursesStore() {
           {
             id: string;
             course_key: string;
-            sheet_id: string;
-            actions_tab: string;
             cafe_url: string | null;
             openchat_chat_room_id: string | null;
             openchat_notice_room_id: string | null;
@@ -162,13 +153,11 @@ export async function coursesStore() {
             vip_enabled: boolean | null;
             openchat_vip_room_id: string | null;
           }[]
-        >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
+        >`select id, course_key, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
         return rows.map((r) => ({
           id: r.id,
           courseKey: r.course_key,
           clubId: null,
-          sheetId: r.sheet_id,
-          actionsTab: r.actions_tab,
           cafeUrl: r.cafe_url,
           openchatChatRoomId: r.openchat_chat_room_id,
           openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -186,8 +175,6 @@ export async function coursesStore() {
             id: string;
             course_key: string;
             club_id: string | null;
-            sheet_id: string;
-            actions_tab: string;
             cafe_url: string | null;
             openchat_chat_room_id: string | null;
             openchat_notice_room_id: string | null;
@@ -196,15 +183,13 @@ export async function coursesStore() {
             vip_enabled: boolean | null;
             openchat_vip_room_id: string | null;
           }[]
-        >`select id, course_key, club_id, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
+        >`select id, course_key, club_id, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
         const r = rows[0];
         return r
           ? {
               id: r.id,
               courseKey: r.course_key,
               clubId: r.club_id,
-              sheetId: r.sheet_id,
-              actionsTab: r.actions_tab,
               cafeUrl: r.cafe_url,
               openchatChatRoomId: r.openchat_chat_room_id,
               openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -219,8 +204,6 @@ export async function coursesStore() {
           {
             id: string;
             course_key: string;
-            sheet_id: string;
-            actions_tab: string;
             cafe_url: string | null;
             openchat_chat_room_id: string | null;
             openchat_notice_room_id: string | null;
@@ -229,15 +212,13 @@ export async function coursesStore() {
             vip_enabled: boolean | null;
             openchat_vip_room_id: string | null;
           }[]
-        >`select id, course_key, sheet_id, actions_tab, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
+        >`select id, course_key, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
         const r = rows[0];
         return r
           ? {
               id: r.id,
               courseKey: r.course_key,
               clubId: null,
-              sheetId: r.sheet_id,
-              actionsTab: r.actions_tab,
               cafeUrl: r.cafe_url,
               openchatChatRoomId: r.openchat_chat_room_id,
               openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -252,19 +233,18 @@ export async function coursesStore() {
     async createCourse(input: z.infer<typeof CreateCourseBody>): Promise<CourseRow> {
       const data = CreateCourseBody.parse(input);
       const courseId = id("course");
-      const sheetId = parseSheetId(data.sheetIdOrUrl);
       const clubId = parseClubId(data.clubId || data.cafeUrl);
       try {
         await sql`
           insert into courseops_courses (
-            id, course_key, club_id, sheet_id, actions_tab,
+            id, course_key, club_id, sheet_id,
             cafe_url,
             openchat_chat_room_id, openchat_notice_room_id,
             premium_enabled, openchat_premium_room_id,
             vip_enabled, openchat_vip_room_id
           )
           values (
-            ${courseId}, ${data.courseKey}, ${clubId || null}, ${sheetId}, ${data.actionsTab},
+            ${courseId}, ${data.courseKey}, ${clubId || null}, 'DISABLED',
             ${data.cafeUrl || null},
             ${data.openchatChatRoomId || null}, ${data.openchatNoticeRoomId || null},
             ${Boolean(data.premiumEnabled)}, ${data.openchatPremiumRoomId || null},
@@ -282,8 +262,6 @@ export async function coursesStore() {
         id: courseId,
         courseKey: data.courseKey,
         clubId: clubId || null,
-        sheetId,
-        actionsTab: data.actionsTab,
         cafeUrl: data.cafeUrl || null,
         openchatChatRoomId: data.openchatChatRoomId || null,
         openchatNoticeRoomId: data.openchatNoticeRoomId || null,
@@ -292,6 +270,46 @@ export async function coursesStore() {
         vipEnabled: Boolean(data.vipEnabled),
         openchatVipRoomId: data.openchatVipRoomId || null,
       };
+    },
+    async getCourseSnapshot(courseId: string): Promise<CourseSnapshotRow | null> {
+      const cid = String(courseId || "").trim();
+      if (!cid) return null;
+      try {
+        const rows = await sql<
+          {
+            course_id: string;
+            fetched_at: Date | null;
+            payload: any;
+            updated_at: Date;
+          }[]
+        >`select course_id, fetched_at, payload, updated_at from courseops_course_snapshots where course_id=${cid} limit 1`;
+        const r = rows[0];
+        if (!r) return null;
+        const payload = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
+        return {
+          courseId: r.course_id,
+          fetchedAt: r.fetched_at ? r.fetched_at.toISOString() : null,
+          payload,
+          updatedAt: r.updated_at ? r.updated_at.toISOString() : new Date().toISOString(),
+        };
+      } catch {
+        return null;
+      }
+    },
+    async upsertCourseSnapshot(input: { courseId: string; fetchedAt?: string | null; payload: any }) {
+      const cid = String(input.courseId || "").trim();
+      if (!cid) throw new Error("courseId is required");
+      const fetchedAt = input.fetchedAt ? String(input.fetchedAt) : null;
+      const payload = input.payload ?? {};
+      await sql`
+        insert into courseops_course_snapshots (course_id, fetched_at, payload, updated_at)
+        values (${cid}, ${fetchedAt}, ${JSON.stringify(payload)}, now())
+        on conflict (course_id) do update set
+          fetched_at=excluded.fetched_at,
+          payload=excluded.payload,
+          updated_at=now()
+      `;
+      return this.getCourseSnapshot(cid);
     },
     async getActionStates(courseId: string, actionKeys: string[]): Promise<ActionStateRow[]> {
       if (!actionKeys || actionKeys.length === 0) return [];

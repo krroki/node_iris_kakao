@@ -9,8 +9,6 @@ const CreateBody = z
   .object({
     courseKey: z.string().trim().min(1, "강의 이름을 입력해 주세요."),
     clubId: z.string().trim().optional().default(""),
-    sheetIdOrUrl: z.string().trim().min(1, "스프레드시트 URL 또는 ID를 입력해 주세요."),
-    actionsTab: z.string().trim().min(1).default("ACTIONS"),
     cafeUrl: z.string().trim().optional().default(""),
     openchatChatRoomId: z.string().trim().min(1, "사담방 ID를 입력해 주세요."),
     openchatNoticeRoomId: z.string().trim().min(1, "공지방 ID를 입력해 주세요."),

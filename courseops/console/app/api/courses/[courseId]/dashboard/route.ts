@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 
 import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
-import { fetchActionsFromSheet, fetchAuditViewTable, fetchRulesRawTable } from "@/lib/sheets";
+import { parseActionsFromValues } from "@/lib/actions";
+import { asTable, getSnapshotTables } from "@/lib/snapshot";
 
 function asBool(input: string) {
   return String(input || "").trim().toUpperCase() === "TRUE";
@@ -33,14 +34,10 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
   const course = await store.getCourse(params.courseId);
   if (!course) return NextResponse.json({ error: "강의를 찾지 못했어요." }, { status: 404 });
 
-  const [rules, audit, rawActions] = await Promise.all([
-    fetchRulesRawTable({ sheetId: course.sheetId }).catch(() => ({} as Record<string, string>)),
-    fetchAuditViewTable({ sheetId: course.sheetId }).catch(() => ({ header: [] as string[], rows: [] as string[][] })),
-    fetchActionsFromSheet({ sheetId: course.sheetId, actionsTab: course.actionsTab }).catch(() => ({
-      lastUpdatedAt: null as string | null,
-      items: [],
-    })),
-  ]);
+  const snap = await store.getCourseSnapshot(course.id);
+  const tables = getSnapshotTables(snap?.payload);
+  const audit = asTable(tables.auditView);
+  const rawActions = parseActionsFromValues({ courseId: course.id, values: tables.actions });
 
   // --- 멤버/준수율(SSOT 기준) ---
   const idx = (name: string) => audit.header.indexOf(name);
@@ -105,7 +102,7 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
       id: course.id,
       courseKey: course.courseKey,
     },
-    updatedAt: String(rules["updatedAt"] || rawActions.lastUpdatedAt || "").trim() || null,
+    updatedAt: String(snap?.fetchedAt || rawActions.lastUpdatedAt || "").trim() || null,
     members: {
       ssot: ssotMembers,
       normal: normalMembers,

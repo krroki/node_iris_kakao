@@ -1132,156 +1132,36 @@ class CourseMembershipAuditWorker:
 
         return room_infos, members_by_room, fetched_at
 
-    def _run_course_once(self, cfg: AuditConfig, course: CourseConfig, rooms: list[dict], interval_sec: int) -> str:
-        now_iso = _iso_now()
-        cs = self._course_state(course.course_key)
-
-        # basic validation
-        if not course.club_id:
-            raise SystemExit("clubId가 비어 있습니다.")
-        if not course.spreadsheet_id:
-            raise SystemExit("spreadsheetId가 비어 있습니다.")
-
-        resolved_rooms, room_err = self._resolve_rooms(course, rooms)
-        if not resolved_rooms:
-            raise SystemExit(f"rooms 해석 실패: {room_err}")
-
-        # openchat
-        self._set_course_progress(course_key=course.course_key, stage="OPENCHAT", message="톡방(3방) 데이터를 불러오는 중", pct=15)
-        room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(
-            course.course_key,
-            resolved_rooms,
-            cfg.worker.openchat_auto_load,
-        )
-
-        # crawler
-        self._set_course_progress(course_key=course.course_key, stage="CAFE", message="카페 멤버를 불러오는 중", pct=55)
-        c = cfg.worker.crawler
-        if not c.repo_path or not Path(c.repo_path).exists():
-            raise SystemExit(f"crawler.repoPath가 없거나 경로가 없습니다: {c.repo_path}")
-        if not c.python_exe or not Path(c.python_exe).exists():
-            raise SystemExit(f"crawler.pythonExe가 없거나 경로가 없습니다: {c.python_exe}")
-        if c.settings_path and not Path(c.settings_path).exists():
-            raise SystemExit(f"crawler.settingsPath 경로가 없습니다: {c.settings_path}")
-
-        snap_dir = (self.root / "data" / "course_membership_audit" / "snapshots").resolve()
-        out_json = snap_dir / f"cafe_{_safe_filename(course.course_key)}.json"
-        code, cafe_snapshot, _stdout, _stderr, crawl_dur = crawl_cafe_members(
-            python_exe=c.python_exe,
-            crawler_repo=c.repo_path,
-            settings_path=c.settings_path,
-            club_id=course.club_id,
-            cafe_name=course.course_key,
-            output_json=out_json,
-            timeout_sec=900,
-        )
-        if code != 0 or not bool(cafe_snapshot.get("ok")):
-            err = str(cafe_snapshot.get("error") or "").strip() or f"crawl_failed(code={code})"
-            raise SystemExit(f"카페 크롤링 실패: {err}")
-
-        # sheets
-        total_cnt = cafe_snapshot.get("totalCount")
-        if total_cnt is not None:
-            self._append_course_event(course_key=course.course_key, level="INFO", message=f"카페 멤버 {int(total_cnt) if str(total_cnt).isdigit() else total_cnt}명 불러옴", stage="CAFE", pct=70)
-            self._save_state()
-
-        self._set_course_progress(course_key=course.course_key, stage="SHEETS", message="시트에 반영하는 중", pct=85)
-        sa_json = self._resolve_service_account_json()
-        svc = build_sheets_client(sa_json)
-
-        # payment ssot (optional)
-        ssot_records: list[dict] = []
-        ssot_stats: dict[str, int] = {}
-        if getattr(course, "payment_ssot", None):
-            self._set_course_progress(course_key=course.course_key, stage="SSOT", message="결제 SSOT(결제 확인 시트) 불러오는 중", pct=78)
-            ssot_records, ssot_stats = self._fetch_payment_ssot_records(svc, course)
-            if ssot_records:
-                self._append_course_event(
-                    course_key=course.course_key,
-                    level="INFO",
-                    message=f"결제 SSOT {len(ssot_records)}명 불러옴(일반 {ssot_stats.get('normal',0)}, 프리미엄 {ssot_stats.get('premium',0)}, 운영진 {ssot_stats.get('staff',0)})",
-                    stage="SSOT",
-                    pct=82,
-                )
-                self._save_state()
-
-        # build rows
-        worker_info = {
-            "intervalSec": str(interval_sec),
-            "realtimeBase": self.realtime_base,
-            "irisBase": self.iris_base,
-        }
-        course_info = {
-            "clubId": course.club_id,
-            "spreadsheetId": course.spreadsheet_id_raw or course.spreadsheet_id,
-        }
-
-        cafe_rows = audit_mod.build_cafe_raw_rows(course_key=course.course_key, cafe_snapshot=cafe_snapshot, rules=course.grade_rules)
-        cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
-        cafe_nick_set = {
-            str(it.get("cafeNickname") or "").strip()
-            for it in cafe_members
-            if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
-        }
-        ssot_nick_set: set[str] = set()
-        for r in (ssot_records or []) if isinstance(ssot_records, list) else []:
-            if not isinstance(r, dict):
-                continue
-            for nn in audit_mod.iter_ssot_nickname_variants(r):
-                if nn:
-                    ssot_nick_set.add(str(nn).strip())
-        canonical_cafe_nick_set = audit_mod.build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
-        openchat_rows = audit_mod.build_openchat_raw_rows(
-            course_key=course.course_key,
-            fetched_at=openchat_fetched_at,
-            room_infos=room_infos,
-            members_by_room=members_by_room,
-            cafe_nick_set=canonical_cafe_nick_set,
-        )
-        rules_rows = audit_mod.build_rules_raw_rows(
-            course_key=course.course_key,
-            now_iso=now_iso,
-            worker_info=worker_info,
-            course_info=course_info,
-            room_infos=room_infos,
-            rules=course.grade_rules,
-            cafe_snapshot=cafe_snapshot,
-            openchat_fetched_at=openchat_fetched_at,
-        )
-        audit_rows = audit_mod.build_audit_view_rows(
-            course_key=course.course_key,
-            cafe_snapshot=cafe_snapshot,
-            rules=course.grade_rules,
-            room_infos=room_infos,
-            members_by_room=members_by_room,
-            openchat_fetched_at=openchat_fetched_at,
-            ssot_records=ssot_records,
-        )
-        ssot_rows = (
-            audit_mod.build_ssot_raw_rows(course_key=course.course_key, fetched_at=now_iso, ssot_records=ssot_records)
-            if ssot_records
-            else [
-                [
-                    "courseKey",
-                    "fetchedAt",
-                    "ssotUserId",
-                    "ssotNickname",
-                    "ssotNicknameAliases",
-                    "ssotName",
-                    "ssotGrade",
-                    "ssotTrack",
-                    "ssotKind",
-                    "sourceRow",
-                ]
-            ]
-        )
-
+    def _export_to_sheets(
+        self,
+        *,
+        svc,
+        course: CourseConfig,
+        cafe_rows: list[list[str]],
+        openchat_rows: list[list[str]],
+        ssot_rows: list[list[str]],
+        rules_rows: list[list[str]],
+        audit_rows: list[list[str]],
+        cafe_snapshot: dict,
+        room_infos: dict[str, dict],
+        ssot_records: list[dict],
+        now_iso: str,
+    ) -> None:
         # upsert(no clear) + change history
         tabs = course.tabs
         log_tab = getattr(tabs, "audit_log", "") or "AUDIT_LOG"
         overview_tab = getattr(tabs, "overview", "") or "OVERVIEW"
         actions_tab = getattr(tabs, "actions", "") or "ACTIONS"
-        for tab in [overview_tab, actions_tab, tabs.cafe_raw, tabs.openchat_raw, getattr(tabs, "ssot_raw", "") or "SSOT_RAW", tabs.rules_raw, tabs.audit, log_tab]:
+        for tab in [
+            overview_tab,
+            actions_tab,
+            tabs.cafe_raw,
+            tabs.openchat_raw,
+            getattr(tabs, "ssot_raw", "") or "SSOT_RAW",
+            tabs.rules_raw,
+            tabs.audit,
+            log_tab,
+        ]:
             ensure_sheet_exists(svc, course.spreadsheet_id, tab)
         # overview 탭은 사용성을 위해 항상 "가장 앞"으로 이동한다.
         move_sheet_to_index(svc, course.spreadsheet_id, overview_tab, 0)
@@ -1372,7 +1252,7 @@ class CourseMembershipAuditWorker:
         recent_logs: list[list[str]] = []
         try:
             keep_rows = 5000  # header 제외, 최신 N개만 유지
-            show_rows = 120  # Overview에서는 build_overview_rows에서 추가로 60개만 표시
+            show_rows = 120  # Overview에서 최신 로그 일부 표시
 
             col_a = get_values(svc, course.spreadsheet_id, f"{log_tab}!A:A")
             total_rows = len(col_a)  # header 포함
@@ -1401,7 +1281,6 @@ class CourseMembershipAuditWorker:
         )
         clear_values(svc, course.spreadsheet_id, overview_tab)
         update_values(svc, course.spreadsheet_id, overview_tab, overview_rows)
-        # '프로그램 화면'처럼 보기 좋게: gridlines 숨김/타이틀/섹션 헤더/테이블 헤더 강조 + 상단 freeze
         apply_overview_sheet_format(svc, course.spreadsheet_id, overview_tab, overview_rows, frozen_rows=16)
 
         # ACTIONS 탭(운영자가 "지금 당장 해야 할 일"을 상세히 확인)
@@ -1417,6 +1296,215 @@ class CourseMembershipAuditWorker:
         clear_values(svc, course.spreadsheet_id, actions_tab)
         update_values(svc, course.spreadsheet_id, actions_tab, actions_rows)
         apply_actions_sheet_format(svc, course.spreadsheet_id, actions_tab, actions_rows, frozen_rows=6)
+
+    def _run_course_once(self, cfg: AuditConfig, course: CourseConfig, rooms: list[dict], interval_sec: int) -> str:
+        now_iso = _iso_now()
+        cs = self._course_state(course.course_key)
+
+        # basic validation
+        if not course.club_id:
+            raise SystemExit("clubId가 비어 있습니다.")
+
+        resolved_rooms, room_err = self._resolve_rooms(course, rooms)
+        if not resolved_rooms:
+            raise SystemExit(f"rooms 해석 실패: {room_err}")
+
+        # openchat
+        self._set_course_progress(course_key=course.course_key, stage="OPENCHAT", message="톡방(3방) 데이터를 불러오는 중", pct=15)
+        room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(
+            course.course_key,
+            resolved_rooms,
+            cfg.worker.openchat_auto_load,
+        )
+
+        # crawler
+        self._set_course_progress(course_key=course.course_key, stage="CAFE", message="카페 멤버를 불러오는 중", pct=55)
+        c = cfg.worker.crawler
+        if not c.repo_path or not Path(c.repo_path).exists():
+            raise SystemExit(f"crawler.repoPath가 없거나 경로가 없습니다: {c.repo_path}")
+        if not c.python_exe or not Path(c.python_exe).exists():
+            raise SystemExit(f"crawler.pythonExe가 없거나 경로가 없습니다: {c.python_exe}")
+        if c.settings_path and not Path(c.settings_path).exists():
+            raise SystemExit(f"crawler.settingsPath 경로가 없습니다: {c.settings_path}")
+
+        snap_dir = (self.root / "data" / "course_membership_audit" / "snapshots").resolve()
+        out_json = snap_dir / f"cafe_{_safe_filename(course.course_key)}.json"
+        code, cafe_snapshot, _stdout, _stderr, crawl_dur = crawl_cafe_members(
+            python_exe=c.python_exe,
+            crawler_repo=c.repo_path,
+            settings_path=c.settings_path,
+            club_id=course.club_id,
+            cafe_name=course.course_key,
+            output_json=out_json,
+            timeout_sec=900,
+        )
+        if code != 0 or not bool(cafe_snapshot.get("ok")):
+            err = str(cafe_snapshot.get("error") or "").strip() or f"crawl_failed(code={code})"
+            raise SystemExit(f"카페 크롤링 실패: {err}")
+
+        total_cnt = cafe_snapshot.get("totalCount")
+        if total_cnt is not None:
+            self._append_course_event(
+                course_key=course.course_key,
+                level="INFO",
+                message=f"카페 멤버 {int(total_cnt) if str(total_cnt).isdigit() else total_cnt}명 불러옴",
+                stage="CAFE",
+                pct=70,
+            )
+            self._save_state()
+
+        wants_sheets_export = (
+            bool(str(getattr(course, "spreadsheet_id", "") or "").strip())
+            and str(getattr(course, "spreadsheet_id", "") or "").strip().upper() not in ("DISABLED", "NONE", "N/A")
+        )
+        needs_sheets_client = wants_sheets_export or bool(getattr(course, "payment_ssot", None))
+
+        svc = None
+        if needs_sheets_client:
+            sa_json = self._resolve_service_account_json()
+            svc = build_sheets_client(sa_json)
+
+        # payment ssot (optional)
+        ssot_records: list[dict] = []
+        ssot_stats: dict[str, int] = {}
+        if getattr(course, "payment_ssot", None):
+            if not svc:
+                raise SystemExit("결제 SSOT를 읽기 위해 Google Sheets 인증 설정이 필요해요.")
+            self._set_course_progress(course_key=course.course_key, stage="SSOT", message="결제 SSOT(결제 확인 시트) 불러오는 중", pct=78)
+            ssot_records, ssot_stats = self._fetch_payment_ssot_records(svc, course)
+            if ssot_records:
+                self._append_course_event(
+                    course_key=course.course_key,
+                    level="INFO",
+                    message=f"결제 SSOT {len(ssot_records)}명 불러옴(일반 {ssot_stats.get('normal',0)}, 프리미엄 {ssot_stats.get('premium',0)}, 운영진 {ssot_stats.get('staff',0)})",
+                    stage="SSOT",
+                    pct=82,
+                )
+                self._save_state()
+
+        # build rows
+        self._set_course_progress(course_key=course.course_key, stage="CALC", message="데이터를 정리하는 중", pct=85)
+        worker_info = {
+            "intervalSec": str(interval_sec),
+            "realtimeBase": self.realtime_base,
+            "irisBase": self.iris_base,
+        }
+        course_info = {"clubId": course.club_id, "spreadsheetId": (course.spreadsheet_id_raw or course.spreadsheet_id) if wants_sheets_export else ""}
+
+        cafe_rows = audit_mod.build_cafe_raw_rows(course_key=course.course_key, cafe_snapshot=cafe_snapshot, rules=course.grade_rules)
+        cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
+        cafe_nick_set = {
+            str(it.get("cafeNickname") or "").strip()
+            for it in cafe_members
+            if isinstance(it, dict) and str(it.get("cafeNickname") or "").strip()
+        }
+        ssot_nick_set: set[str] = set()
+        for r in (ssot_records or []) if isinstance(ssot_records, list) else []:
+            if not isinstance(r, dict):
+                continue
+            for nn in audit_mod.iter_ssot_nickname_variants(r):
+                if nn:
+                    ssot_nick_set.add(str(nn).strip())
+        canonical_cafe_nick_set = audit_mod.build_canonical_cafe_nick_set(cafe_nick_set, ssot_nick_set)
+        openchat_rows = audit_mod.build_openchat_raw_rows(
+            course_key=course.course_key,
+            fetched_at=openchat_fetched_at,
+            room_infos=room_infos,
+            members_by_room=members_by_room,
+            cafe_nick_set=canonical_cafe_nick_set,
+        )
+        rules_rows = audit_mod.build_rules_raw_rows(
+            course_key=course.course_key,
+            now_iso=now_iso,
+            worker_info=worker_info,
+            course_info=course_info,
+            room_infos=room_infos,
+            rules=course.grade_rules,
+            cafe_snapshot=cafe_snapshot,
+            openchat_fetched_at=openchat_fetched_at,
+        )
+        audit_rows = audit_mod.build_audit_view_rows(
+            course_key=course.course_key,
+            cafe_snapshot=cafe_snapshot,
+            rules=course.grade_rules,
+            room_infos=room_infos,
+            members_by_room=members_by_room,
+            openchat_fetched_at=openchat_fetched_at,
+            ssot_records=ssot_records,
+        )
+        ssot_rows = (
+            audit_mod.build_ssot_raw_rows(course_key=course.course_key, fetched_at=now_iso, ssot_records=ssot_records)
+            if ssot_records
+            else [
+                [
+                    "courseKey",
+                    "fetchedAt",
+                    "ssotUserId",
+                    "ssotNickname",
+                    "ssotNicknameAliases",
+                    "ssotName",
+                    "ssotGrade",
+                    "ssotTrack",
+                    "ssotKind",
+                    "sourceRow",
+                ]
+            ]
+        )
+
+        actions_rows = audit_mod.build_actions_rows(
+            course_key=course.course_key,
+            now_iso=now_iso,
+            cafe_snapshot=cafe_snapshot,
+            room_infos=room_infos,
+            audit_rows=audit_rows,
+            openchat_rows=openchat_rows,
+            ssot_records=ssot_records,
+        )
+
+        # snapshot(json) — 웹 콘솔(Supabase) 업로드용
+        self._set_course_progress(course_key=course.course_key, stage="SNAPSHOT", message="스냅샷을 저장하는 중", pct=92)
+        snap_dir2 = (self.root / "node-iris-app" / "data" / "courseops_snapshots").resolve()
+        snap_path = snap_dir2 / f"{_safe_filename(course.course_key)}.json"
+        snapshot_payload = {
+            "version": 1,
+            "courseKey": course.course_key,
+            "fetchedAt": now_iso,
+            "cafeFetchedAt": str(cafe_snapshot.get("fetchedAt") or "").strip(),
+            "openchatFetchedAt": openchat_fetched_at,
+            "roomInfos": room_infos,
+            "ssotStats": ssot_stats,
+            "tables": {
+                "rulesRaw": rules_rows,
+                "auditView": audit_rows,
+                "openchatRaw": openchat_rows,
+                "ssotRaw": ssot_rows,
+                "actions": actions_rows,
+            },
+        }
+        _write_json_atomic(snap_path, snapshot_payload)
+
+        cs["lastSnapshotPath"] = str(snap_path)
+        cs["lastSnapshotFetchedAt"] = now_iso
+        cs["lastSnapshotMs"] = _now_ms()
+
+        # legacy: 구글 시트 export(옵션)
+        if wants_sheets_export:
+            if not svc:
+                raise SystemExit("시트 export를 위해 Google Sheets 인증 설정이 필요해요.")
+            self._set_course_progress(course_key=course.course_key, stage="SHEETS", message="레거시: 시트에 반영하는 중", pct=97)
+            self._export_to_sheets(
+                svc=svc,
+                course=course,
+                cafe_rows=cafe_rows,
+                openchat_rows=openchat_rows,
+                ssot_rows=ssot_rows,
+                rules_rows=rules_rows,
+                audit_rows=audit_rows,
+                cafe_snapshot=cafe_snapshot,
+                room_infos=room_infos,
+                ssot_records=ssot_records,
+                now_iso=now_iso,
+            )
 
         # state update
         cs["lastCafeFetchedAt"] = str(cafe_snapshot.get("fetchedAt") or "").strip()

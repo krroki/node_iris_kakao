@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 
 import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
-import { fetchActionsFromSheet } from "@/lib/sheets";
+import { parseActionsFromValues } from "@/lib/actions";
+import { getSnapshotTables } from "@/lib/snapshot";
 
 export async function GET(_req: Request, { params }: { params: { courseId: string } }) {
   try {
@@ -14,7 +15,9 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
   const course = await store.getCourse(params.courseId);
   if (!course) return NextResponse.json({ error: "강의를 찾지 못했어요." }, { status: 404 });
 
-  const raw = await fetchActionsFromSheet({ sheetId: course.sheetId, actionsTab: course.actionsTab });
+  const snap = await store.getCourseSnapshot(course.id);
+  const tables = getSnapshotTables(snap?.payload);
+  const raw = parseActionsFromValues({ courseId: course.id, values: tables.actions });
   const state = await store.getActionStates(course.id, raw.items.map((it) => it.key));
 
   const byKey = new Map(state.map((s) => [s.actionKey, s]));
@@ -33,5 +36,5 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
     };
   });
 
-  return NextResponse.json({ course, lastUpdatedAt: raw.lastUpdatedAt, items });
+  return NextResponse.json({ course, lastUpdatedAt: snap?.fetchedAt || raw.lastUpdatedAt, items });
 }

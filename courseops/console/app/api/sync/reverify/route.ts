@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import { requireSyncSession } from "@/lib/admin";
 import { coursesStore } from "@/lib/store";
-import { fetchActionsFromSheet } from "@/lib/sheets";
+import { parseActionsFromValues } from "@/lib/actions";
+import { getSnapshotTables } from "@/lib/snapshot";
 
 const Body = z.object({ courseId: z.string().min(1) });
 
@@ -22,7 +23,9 @@ export async function POST(req: Request) {
   const course = await store.getCourse(parsed.data.courseId);
   if (!course) return NextResponse.json({ error: "강의를 찾지 못했어요." }, { status: 404 });
 
-  const raw = await fetchActionsFromSheet({ sheetId: course.sheetId, actionsTab: course.actionsTab });
+  const snap = await store.getCourseSnapshot(course.id);
+  const tables = getSnapshotTables(snap?.payload);
+  const raw = parseActionsFromValues({ courseId: course.id, values: tables.actions });
   const states = await store.getActionStates(course.id, raw.items.map((it) => it.key));
   const waitingKeys = new Set(states.filter((s) => s.status === "확인 대기").map((s) => s.actionKey));
 
