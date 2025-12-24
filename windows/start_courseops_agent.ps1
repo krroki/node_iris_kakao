@@ -11,6 +11,20 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location -LiteralPath $root
 
+function Import-CourseOpsAgentEnvIfNeeded {
+  try {
+    if ($env:COURSEOPS_CONSOLE_BASE_URL -and $env:COURSEOPS_AGENT_TOKEN) { return }
+    $p = Join-Path $root 'node-iris-app\data\courseops_agent_env.json'
+    if (-not (Test-Path $p)) { return }
+    $j = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $env:COURSEOPS_CONSOLE_BASE_URL -and $j.consoleBaseUrl) { $env:COURSEOPS_CONSOLE_BASE_URL = [string]$j.consoleBaseUrl }
+    if (-not $env:COURSEOPS_AGENT_TOKEN -and $j.agentToken) { $env:COURSEOPS_AGENT_TOKEN = [string]$j.agentToken }
+    if (-not $env:COURSEOPS_AGENT_NAME -and $j.agentName) { $env:COURSEOPS_AGENT_NAME = [string]$j.agentName }
+  } catch {}
+}
+
+Import-CourseOpsAgentEnvIfNeeded
+
 if (-not $LogDir) { $LogDir = Join-Path $root 'windows\logs' }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $outLog = Join-Path $LogDir 'courseops_agent.out.log'
@@ -116,4 +130,3 @@ if ($ready) {
   Write-Host ("[courseops-agent] FAILED (process exited). See logs {0} / {1}" -f $outLog, $errLog) -ForegroundColor Red
   exit 1
 }
-

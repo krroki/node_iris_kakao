@@ -174,6 +174,12 @@
   - `COURSEOPS_POLL_SEC=2`
   - `COURSEOPS_REPO_ROOT=C:\dev\12.kakao`
 
+- 참고(로컬 파일로 주입):
+  - 시스템 환경 변수 설정이 어렵다면, 로컬(12.kakao PC)에 `node-iris-app/data/courseops_agent_env.json`을 두고 아래 형태로 저장해도 된다.
+    - `windows/start_courseops_agent.ps1` / `windows/watchdog.ps1`가 **환경 변수가 비어 있을 때만** 자동으로 읽어 설정한다.
+  - 예시(JSON):
+    - `{"consoleBaseUrl":"https://go.yoorang.kr","agentToken":"(비공개)","agentName":"courseops-agent"}`
+
 - 실행(권장)
   - `powershell -NoProfile -ExecutionPolicy Bypass -File windows/start_courseops_agent.ps1`
 

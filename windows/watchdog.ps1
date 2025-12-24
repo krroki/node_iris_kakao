@@ -1250,7 +1250,20 @@ function Restart-CourseMembershipAuditWorker {
   }
 }
 
+function Import-CourseOpsAgentEnvIfNeeded {
+  try {
+    if ($env:COURSEOPS_CONSOLE_BASE_URL -and $env:COURSEOPS_AGENT_TOKEN) { return }
+    $p = Join-Path $root "node-iris-app\\data\\courseops_agent_env.json"
+    if (-not (Test-Path $p)) { return }
+    $j = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $env:COURSEOPS_CONSOLE_BASE_URL -and $j.consoleBaseUrl) { $env:COURSEOPS_CONSOLE_BASE_URL = [string]$j.consoleBaseUrl }
+    if (-not $env:COURSEOPS_AGENT_TOKEN -and $j.agentToken) { $env:COURSEOPS_AGENT_TOKEN = [string]$j.agentToken }
+    if (-not $env:COURSEOPS_AGENT_NAME -and $j.agentName) { $env:COURSEOPS_AGENT_NAME = [string]$j.agentName }
+  } catch {}
+}
+
 function Test-CourseOpsAgentOk {
+  Import-CourseOpsAgentEnvIfNeeded
   try {
     if ($env:COURSEOPS_AGENT_DISABLE -eq '1') { return $true }
     if (-not $env:COURSEOPS_CONSOLE_BASE_URL) { return $true }
@@ -1302,6 +1315,7 @@ function Test-CourseOpsAgentOk {
 function Restart-CourseOpsAgent {
   param([string]$Reason)
 
+  Import-CourseOpsAgentEnvIfNeeded
   if ($env:COURSEOPS_AGENT_DISABLE -eq '1') { return }
   if (-not $env:COURSEOPS_CONSOLE_BASE_URL) { return }
   if (-not $env:COURSEOPS_AGENT_TOKEN) { return }
