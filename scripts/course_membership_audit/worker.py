@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import audit as audit_mod
-from .config import AuditConfig, CourseConfig, DEFAULT_CONFIG_PATH, OpenchatAutoLoadConfig, load_config, repo_root
+from .config import AuditConfig, CourseConfig, DEFAULT_CONFIG_PATH, GradeRules, OpenchatAutoLoadConfig, load_config, repo_root
 from .crawler import crawl_cafe_members
 from .iris import fetch_loaded_member_count, fetch_openchat_members, fetch_room_meta, fetch_rooms, read_iris_base, read_realtime_base
 from .room_infer import infer_room_type_and_course_key
@@ -878,7 +878,13 @@ class CourseMembershipAuditWorker:
         default = (self.root / "data" / "gcp_service_account.json").resolve()
         return str(default)
 
-    def _fetch_payment_ssot_records(self, svc: Any, course: CourseConfig) -> tuple[list[dict], dict[str, int]]:
+    def _fetch_payment_ssot_records(
+        self,
+        svc: Any,
+        course: CourseConfig,
+        *,
+        premium_enabled: bool,
+    ) -> tuple[list[dict], dict[str, int]]:
         """
         결제/수기 SSOT(구글 시트)에서 코스 멤버 목록을 읽어온다.
 
@@ -1011,6 +1017,9 @@ class CourseMembershipAuditWorker:
                 continue
 
             ssot_track = audit_mod.classify_track_from_payment(ssot_grade, ssot_kind)
+            # 프리미엄방이 없는 코스에서는 프리미엄 트랙을 쓰지 않는다(전체를 일반로 간주).
+            if (not premium_enabled) and ssot_track == "premium":
+                ssot_track = "normal"
             stats[ssot_track] = int(stats.get(ssot_track) or 0) + 1
 
             rec = {
@@ -1065,13 +1074,17 @@ class CourseMembershipAuditWorker:
 
     def _resolve_rooms(self, course: CourseConfig, rooms: list[dict]) -> Tuple[Optional[dict], str]:
         if course.rooms.any_set():
-            if not (course.rooms.chat and course.rooms.notice and course.rooms.premium):
+            if not (course.rooms.chat and course.rooms.notice):
                 return None, "ROOMS_OVERRIDE_INCOMPLETE"
-            return {
+
+            out: dict[str, dict] = {
                 "chat": {"roomId": course.rooms.chat, "roomName": ""},
                 "notice": {"roomId": course.rooms.notice, "roomName": ""},
-                "premium": {"roomId": course.rooms.premium, "roomName": ""},
-            }, ""
+            }
+            # 프리미엄방이 "없는 코스"를 지원한다. (rooms.premium이 비어있으면 프리미엄방 미사용)
+            if str(course.rooms.premium or "").strip():
+                out["premium"] = {"roomId": course.rooms.premium, "roomName": ""}
+            return out, ""
         return self._infer_rooms_for_course(course.course_key, rooms)
 
     def _fetch_openchat_bundle(
@@ -1084,7 +1097,12 @@ class CourseMembershipAuditWorker:
         room_infos: dict[str, dict] = {}
         members_by_room: dict[str, list[dict]] = {}
 
-        for i, rt in enumerate(["chat", "notice", "premium"]):
+        # resolved_rooms에 존재하는 방만 수집한다(premium 없는 코스 지원).
+        room_types = ["chat", "notice"]
+        if isinstance(resolved_rooms.get("premium"), dict) and str(resolved_rooms.get("premium", {}).get("roomId") or "").strip():
+            room_types.append("premium")
+
+        for i, rt in enumerate(room_types):
             info = resolved_rooms.get(rt) if isinstance(resolved_rooms.get(rt), dict) else {}
             room_id = str(info.get("roomId") or "").strip()
             if not room_id:
@@ -1305,12 +1323,17 @@ class CourseMembershipAuditWorker:
         if not course.club_id:
             raise SystemExit("clubId가 비어 있습니다.")
 
-        resolved_rooms, room_err = self._resolve_rooms(course, rooms)
+        resolved_rooms, room_err = self._resolve_rooms(course, rooms)     
         if not resolved_rooms:
             raise SystemExit(f"rooms 해석 실패: {room_err}")
 
+        has_premium_room = bool(
+            isinstance(resolved_rooms.get("premium"), dict)
+            and str(resolved_rooms.get("premium", {}).get("roomId") or "").strip()
+        )
+
         # openchat
-        self._set_course_progress(course_key=course.course_key, stage="OPENCHAT", message="톡방(3방) 데이터를 불러오는 중", pct=15)
+        self._set_course_progress(course_key=course.course_key, stage="OPENCHAT", message="톡방 데이터를 불러오는 중", pct=15)
         room_infos, members_by_room, openchat_fetched_at = self._fetch_openchat_bundle(
             course.course_key,
             resolved_rooms,
@@ -1371,7 +1394,7 @@ class CourseMembershipAuditWorker:
             if not svc:
                 raise SystemExit("결제 SSOT를 읽기 위해 Google Sheets 인증 설정이 필요해요.")
             self._set_course_progress(course_key=course.course_key, stage="SSOT", message="결제 SSOT(결제 확인 시트) 불러오는 중", pct=78)
-            ssot_records, ssot_stats = self._fetch_payment_ssot_records(svc, course)
+            ssot_records, ssot_stats = self._fetch_payment_ssot_records(svc, course, premium_enabled=has_premium_room)
             if ssot_records:
                 self._append_course_event(
                     course_key=course.course_key,
@@ -1391,7 +1414,12 @@ class CourseMembershipAuditWorker:
         }
         course_info = {"clubId": course.club_id, "spreadsheetId": (course.spreadsheet_id_raw or course.spreadsheet_id) if wants_sheets_export else ""}
 
-        cafe_rows = audit_mod.build_cafe_raw_rows(course_key=course.course_key, cafe_snapshot=cafe_snapshot, rules=course.grade_rules)
+        rules_eff = course.grade_rules
+        if not has_premium_room:
+            # 프리미엄방이 없는 코스에서는 프리미엄 트랙 판정을 끈다.
+            rules_eff = GradeRules(premium_grades=[], staff_grades=course.grade_rules.staff_grades)
+
+        cafe_rows = audit_mod.build_cafe_raw_rows(course_key=course.course_key, cafe_snapshot=cafe_snapshot, rules=rules_eff)
         cafe_members = cafe_snapshot.get("members") if isinstance(cafe_snapshot.get("members"), list) else []
         cafe_nick_set = {
             str(it.get("cafeNickname") or "").strip()
@@ -1419,14 +1447,14 @@ class CourseMembershipAuditWorker:
             worker_info=worker_info,
             course_info=course_info,
             room_infos=room_infos,
-            rules=course.grade_rules,
+            rules=rules_eff,
             cafe_snapshot=cafe_snapshot,
             openchat_fetched_at=openchat_fetched_at,
         )
         audit_rows = audit_mod.build_audit_view_rows(
             course_key=course.course_key,
             cafe_snapshot=cafe_snapshot,
-            rules=course.grade_rules,
+            rules=rules_eff,
             room_infos=room_infos,
             members_by_room=members_by_room,
             openchat_fetched_at=openchat_fetched_at,
