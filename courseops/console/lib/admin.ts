@@ -10,6 +10,14 @@ function parseAdmins() {
   return fromEnv.length > 0 ? fromEnv : ["glemfkcl"];
 }
 
+function parseCourseManagers() {
+  const fromEnv = String(process.env.COURSEOPS_COURSE_MANAGER_NAMES || "")
+    .split(/[,\n\r]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return fromEnv.length > 0 ? fromEnv : ["glemfkcl"];
+}
+
 function parseSyncAllowlist() {
   return String(process.env.COURSEOPS_SYNC_ALLOWLIST || "")
     .split(/[,\n\r]+/g)
@@ -21,6 +29,12 @@ export function isAdminName(name: string) {
   const admins = parseAdmins();
   if (admins.length === 0) return false;
   return admins.includes(String(name || "").trim());
+}
+
+export function isCourseManagerName(name: string) {
+  const managers = parseCourseManagers();
+  if (managers.length === 0) return false;
+  return managers.includes(String(name || "").trim());
 }
 
 export function canSyncName(name: string) {
@@ -50,6 +64,14 @@ export async function canSyncNameResolved(name: string) {
 export async function requireAdminSession() {
   const session = await requireSession();
   if (!isAdminName(session.name)) {
+    throw new Error("forbidden");
+  }
+  return session;
+}
+
+export async function requireCourseManagerSession() {
+  const session = await requireSession();
+  if (!isCourseManagerName(session.name)) {
     throw new Error("forbidden");
   }
   return session;

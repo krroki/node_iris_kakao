@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireAdminSession } from "@/lib/admin";
+import { requireCourseManagerSession } from "@/lib/admin";
 import { coursesStore } from "@/lib/store";
 
 const PatchBody = z
@@ -15,7 +15,7 @@ const PatchBody = z
 
 export async function PATCH(req: Request, { params }: { params: { name: string } }) {
   try {
-    await requireAdminSession();
+    await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -40,7 +40,7 @@ export async function PATCH(req: Request, { params }: { params: { name: string }
 
 export async function DELETE(_req: Request, { params }: { params: { name: string } }) {
   try {
-    await requireAdminSession();
+    await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -50,4 +50,3 @@ export async function DELETE(_req: Request, { params }: { params: { name: string
   await store.deleteUser(name);
   return NextResponse.json({ ok: true });
 }
-

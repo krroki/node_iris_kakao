@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireAdminSession } from "@/lib/admin";
+import { requireCourseManagerSession } from "@/lib/admin";
 import { coursesStore } from "@/lib/store";
 
 const CreateBody = z.object({
@@ -12,7 +12,7 @@ const CreateBody = z.object({
 
 export async function GET() {
   try {
-    await requireAdminSession();
+    await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -24,7 +24,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    await requireAdminSession();
+    await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -42,4 +42,3 @@ export async function POST(req: Request) {
   });
   return NextResponse.json({ user });
 }
-

@@ -24,8 +24,11 @@
 
 - `COURSEOPS_SHARED_PASSWORD`
   - 공용 비밀번호(로그인에 사용)
-- `COURSEOPS_ADMIN_NAMES`
-  - 새 강의 등록 관리자 이름 목록(콤마로 구분)
+- `COURSEOPS_COURSE_MANAGER_NAMES`
+  - 강의 관리(`/courses`)·계정 관리(`/accounts`) 권한 이름 목록(콤마로 구분)
+  - 예: `glemfkcl`
+- `COURSEOPS_ADMIN_NAMES` (비상용/레거시)
+  - 로그인/동기화 예외를 위한 관리자 이름 목록(콤마로 구분)
   - 예: `glemfkcl`
 - `COURSEOPS_SYNC_ALLOWLIST` (옵션)
   - 동기화(데이터 동기화/빠른 재검증) 권한 제한(콤마로 구분)
@@ -99,9 +102,9 @@ DB 제공자 콘솔(Supabase/Neon/Vercel Postgres 등)에서 `schema.sql` 내용
 ## 5) 배포 후 점검(필수)
 
 1. `https://go.yoorang.kr/login` 접속 → 로그인 화면이 바로 떠야 한다.
-2. 관리자(`COURSEOPS_ADMIN_NAMES`, 예: `glemfkcl`)로 로그인 후 아래를 확인한다.
+2. 강의 관리자(`COURSEOPS_COURSE_MANAGER_NAMES`, 예: `glemfkcl`)로 로그인 후 아래를 확인한다.
    - `/accounts`(계정 관리)가 사이드바에 보이고, 페이지 접근이 되는지
-   - `/settings`에서 강의가 보이는지(관리자만 신규 강의 등록 가능)
+   - `/courses`에서 강의 목록이 보이는지(강의 관리자만 신규 강의 등록 가능)
 3. 계정 1명이라도 등록하면(enabled=true), 이후 로그인은 **등록된 이름만** 허용된다(관리자는 예외).
 
 주의:

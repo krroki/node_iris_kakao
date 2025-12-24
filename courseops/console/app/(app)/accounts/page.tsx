@@ -1,11 +1,11 @@
 import { redirect } from "next/navigation";
 
-import { requireAdminSession } from "@/lib/admin";
+import { requireCourseManagerSession } from "@/lib/admin";
 import AccountsView from "./ui/AccountsView";
 
 export default async function AccountsPage() {
   try {
-    await requireAdminSession();
+    await requireCourseManagerSession();
   } catch {
     redirect("/queue");
   }
@@ -22,4 +22,3 @@ export default async function AccountsPage() {
     </div>
   );
 }
-

@@ -52,7 +52,7 @@
 
 1. 결제 SSOT 시트에 서비스 계정 이메일을 **Viewer**로 공유한다.
 2. 로컬에 `data/gcp_service_account.json`이 존재하는지 확인한다.
-3. CourseOps 콘솔 `https://go.yoorang.kr/settings`에서 대상 강의를 열고, **결제 SSOT 시트 URL/ID + 탭/헤더/컬럼명**을 저장한다.
+3. CourseOps 콘솔 `https://go.yoorang.kr/courses`에서 대상 강의를 열고, **결제 SSOT 시트 URL/ID + 탭/헤더/컬럼명**을 저장한다.
    - 로컬 설정 파일을 직접 만질 필요 없이, 콘솔 설정을 저장하면 로컬 에이전트가 `data/course_membership_audit.json`에 반영한다.
 4. `전체 동기화`를 실행해 결제 SSOT가 정상 반영되는지 확인한다.
 5. `작업 대기열`/`전체 명단`에서 트랙/누락/닉네임 이슈가 결제 SSOT 기준으로 잡히는지 확인한다.

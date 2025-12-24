@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireAdminSession } from "@/lib/admin";
+import { requireCourseManagerSession } from "@/lib/admin";
 import { coursesStore } from "@/lib/store";
 
 const PatchBody = z
@@ -38,7 +38,7 @@ const PatchBody = z
 export async function PATCH(req: Request, { params }: { params: { courseId: string } }) {
   let session;
   try {
-    session = await requireAdminSession();
+    session = await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -70,7 +70,7 @@ export async function PATCH(req: Request, { params }: { params: { courseId: stri
 export async function DELETE(_req: Request, { params }: { params: { courseId: string } }) {
   let session;
   try {
-    session = await requireAdminSession();
+    session = await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -85,4 +85,3 @@ export async function DELETE(_req: Request, { params }: { params: { courseId: st
     return NextResponse.json({ error: String(e?.message || "삭제에 실패했어요.") }, { status: 500 });
   }
 }
-

@@ -4,6 +4,25 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useSelectedCourse } from "@/app/(app)/ui/useSelectedCourse";
 
+const LS_HIDE_HIDDEN = "courseops_pref_hide_hidden_actions";
+const LS_HIDE_INCOMPLETE = "courseops_pref_hide_incomplete_actions";
+
+function readBool(key: string, fallback: boolean) {
+  try {
+    const v = window.localStorage.getItem(key);
+    if (v === null) return fallback;
+    return v === "1" || v === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBool(key: string, v: boolean) {
+  try {
+    window.localStorage.setItem(key, v ? "1" : "0");
+  } catch {}
+}
+
 type ActionStatus = "대기" | "확인 대기" | "완료(검증됨)" | "미해결(재확인)" | "확인 불가(데이터 미완전)";
 
 type ActionItem = {
@@ -110,6 +129,11 @@ export default function QueueView() {
   };
 
   useEffect(() => {
+    setHideHidden(readBool(LS_HIDE_HIDDEN, true));
+    setHideIncomplete(readBool(LS_HIDE_INCOMPLETE, true));
+  }, []);
+
+  useEffect(() => {
     if (!courseId) return;
     loadActions(courseId);
     const t = setInterval(() => loadActions(courseId), 7000);
@@ -182,11 +206,27 @@ export default function QueueView() {
             ))}
           </select>
           <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm text-slate-700">
-            <input type="checkbox" checked={hideHidden} onChange={(e) => setHideHidden(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={hideHidden}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setHideHidden(v);
+                writeBool(LS_HIDE_HIDDEN, v);
+              }}
+            />
             숨김 항목 숨기기
           </label>
           <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm text-slate-700">
-            <input type="checkbox" checked={hideIncomplete} onChange={(e) => setHideIncomplete(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={hideIncomplete}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setHideIncomplete(v);
+                writeBool(LS_HIDE_INCOMPLETE, v);
+              }}
+            />
             데이터 미완전 숨기기
           </label>
           <button

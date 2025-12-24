@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { isAdminName, requireAdminSession } from "@/lib/admin";
+import { isCourseManagerName, requireCourseManagerSession } from "@/lib/admin";
 import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
 
@@ -43,16 +43,16 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   const url = new URL(req.url);
-  const includeArchived = url.searchParams.get("includeArchived") === "1";
-  const canSeeArchived = includeArchived && isAdminName(session.name);
+  const includeArchived = url.searchParams.get("includeArchived") === "1";      
+  const canSeeArchived = includeArchived && isCourseManagerName(session.name);
   const store = await coursesStore();
-  const courses = await store.listCourses({ includeArchived: canSeeArchived });
+  const courses = await store.listCourses({ includeArchived: canSeeArchived }); 
   return NextResponse.json({ courses });
 }
 
 export async function POST(req: Request) {
   try {
-    await requireAdminSession();
+    await requireCourseManagerSession();
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

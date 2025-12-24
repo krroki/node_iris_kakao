@@ -26,13 +26,14 @@ export default function AppShell({
   children,
   userName,
   canSync,
-  isAdmin,
+  isCourseManager,
 }: {
   children: React.ReactNode;
   userName: string;
   canSync: boolean;
-  isAdmin: boolean;
+  isCourseManager: boolean;
 }) {
+  const isAdmin = isCourseManager;
   return (
     <div className="min-h-screen">
       <div className="flex">
@@ -42,6 +43,7 @@ export default function AppShell({
             <div className="font-semibold">CourseOps v2</div>
           </div>
           <div className="mt-4 space-y-1">
+            {isCourseManager ? <NavItem href="/courses" label="강의 관리" /> : null}
             <NavItem href="/queue" label="작업 대기열" />
             <NavItem href="/dashboard" label="대시보드" />
             <NavItem href="/roster" label="전체 명단" />
