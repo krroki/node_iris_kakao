@@ -24,6 +24,8 @@
 - 외부 운영 URL: `https://go.yoorang.kr`
 - 인증: **이름 + 공용 비밀번호**
 - 자동 로그인: 세션 쿠키(예: 30일)
+- 주의: `*.vercel.app` 배포 URL은 Vercel “Deployment Protection(인증)” 설정에 따라 401이 날 수 있다.  
+  운영진 접속은 **항상 `go.yoorang.kr`로** 진행한다.
 
 ### 새 강의 등록(관리자 전용)
 
