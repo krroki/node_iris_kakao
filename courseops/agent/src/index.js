@@ -126,7 +126,8 @@ function upsertLocalCourseConfig(course) {
   const prev = typeof courses[courseKey] === "object" && courses[courseKey] ? courses[courseKey] : {};
   const next = { ...prev };
 
-  next.enabled = true;
+  const archived = Boolean(course?.archived ?? course?.archived_at ?? false);
+  next.enabled = !archived;
 
   const clubId =
     String(prev.clubId || prev.club_id || "").trim() ||
@@ -151,6 +152,38 @@ function upsertLocalCourseConfig(course) {
 
   const cafeUrl = String(course?.cafeUrl || course?.cafe_url || "").trim();
   if (cafeUrl) next.cafeUrl = cafeUrl;
+
+  const paymentSheetId = String(course?.paymentSheetId || course?.payment_sheet_id || "").trim();
+  const paymentSheetName = String(course?.paymentSheetName || course?.payment_sheet_name || "").trim();
+  const paymentHeaderRowRaw = course?.paymentHeaderRow ?? course?.payment_header_row ?? null;
+  const paymentHeaderRow = Math.max(1, Number(paymentHeaderRowRaw || 19) || 19);
+  const paymentGradeCol = String(course?.paymentGradeCol || course?.payment_grade_col || "").trim() || "카페 등급";
+  const paymentNicknameCol = String(course?.paymentNicknameCol || course?.payment_nickname_col || "").trim() || "닉네임";
+  const paymentNameCol = String(course?.paymentNameCol || course?.payment_name_col || "").trim() || "성함";
+  const paymentIdCol = String(course?.paymentIdCol || course?.payment_id_col || "").trim() || "아이디";
+  const paymentKindCol = String(course?.paymentKindCol || course?.payment_kind_col || "").trim() || "구분";
+  const paymentExcludeKindsRaw = String(course?.paymentExcludeKinds || course?.payment_exclude_kinds || "").trim() || "환불";
+  const paymentExcludeKinds = paymentExcludeKindsRaw
+    .split(/[,\n\r]+/g)
+    .map((x) => String(x || "").trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (paymentSheetId) {
+    next.paymentSsot = {
+      spreadsheetId: paymentSheetId,
+      sheetName: paymentSheetName || "종합",
+      headerRow: paymentHeaderRow,
+      gradeCol: paymentGradeCol,
+      nicknameCol: paymentNicknameCol,
+      nameCol: paymentNameCol,
+      idCol: paymentIdCol,
+      kindCol: paymentKindCol,
+      excludeKinds: paymentExcludeKinds.length > 0 ? paymentExcludeKinds : ["환불"],
+    };
+  } else {
+    delete next.paymentSsot;
+  }
 
   courses[courseKey] = next;
   cfg.courses = courses;

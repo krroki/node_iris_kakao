@@ -85,7 +85,7 @@
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
 | --- | --- | --- |
-| 2025-12-24 | CourseOps: 시트 입력 제거 + Supabase 스냅샷(JSON) 저장/업로드로 전환 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `courseops/agent/src/index.js`, `scripts/course_membership_audit/worker.py`, `courseops/console/app/api/agent/snapshot/route.ts` |
+| 2025-12-24 | CourseOps: 시트(산출) 입력 제거 + 결제 SSOT는 강의별 설정 + Supabase 스냅샷(JSON) 저장/업로드로 전환 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `docs/reference/payment-ssot-google-sheets.md`, `courseops/agent/src/index.js`, `scripts/course_membership_audit/worker.py`, `courseops/console/app/api/agent/snapshot/route.ts` |
 | 2025-12-23 | 강의 운영 v2: 운영 UI를 CourseOps 웹 콘솔(go.yoorang.kr)로 전환(동시접속) + 처리/검증 상태머신 + 빠른 재검증/전체 동기화 + 담당자·메모 기록 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md` |
 | 2025-12-22 | 강의 운영 v2 결제 SSOT 연동 + ACTIONS/시트 UX 개선 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md`, `docs/reference/payment-ssot-google-sheets.md`, `scripts/course_membership_audit/audit.py`, `scripts/course_membership_audit/sheets.py`, `scripts/course_membership_audit/worker.py` |
 | 2025-12-22 | Welcome: 기본닉+첫 이미지 닉변요청/확인(15m) + Reply raw 멘션 지원 | `docs/adr/ADR-0026-welcome-followup-first-image-reply.md`, `docs/adr/ADR-0045-welcome-open-profile-guide-first-image-no-reminders.md`, `docs/reference/kakao-mentions-and-reply.md`, `node-iris-app/src/workers/welcome_worker.ts`, `node-iris-app/src/utils/talkapi.ts`, `server/app.py` |

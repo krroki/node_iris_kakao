@@ -110,7 +110,7 @@ export default function AccountsView() {
           <br />
           2) 이름 + 공용 비밀번호로 로그인
           <br />
-          3) 계정을 1명이라도 등록하면, 등록된 이름만 로그인할 수 있어요(관리자 예외).
+          3) 계정을 등록하기 시작하면, 등록된 사람만 로그인할 수 있어요. (관리자는 항상 가능)
         </div>
       </div>
 
@@ -232,4 +232,3 @@ export default function AccountsView() {
     </div>
   );
 }
-

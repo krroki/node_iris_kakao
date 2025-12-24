@@ -30,6 +30,9 @@ export async function GET(_req: Request, { params }: { params: { courseId: strin
             status: st.status,
             handledBy: st.handledBy,
             handledAt: st.handledAt,
+            hidden: st.hidden,
+            hiddenBy: st.hiddenBy,
+            hiddenAt: st.hiddenAt,
             memo: st.memo,
           }
         : undefined,

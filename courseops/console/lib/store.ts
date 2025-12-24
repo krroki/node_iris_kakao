@@ -7,6 +7,9 @@ export type CourseRow = {
   id: string;
   courseKey: string;
   clubId: string | null;
+  archived: boolean;
+  archivedAt: string | null;
+  archivedBy: string | null;
   cafeUrl: string | null;
   openchatChatRoomId: string | null;
   openchatNoticeRoomId: string | null;
@@ -14,6 +17,15 @@ export type CourseRow = {
   openchatPremiumRoomId: string | null;
   vipEnabled: boolean;
   openchatVipRoomId: string | null;
+  paymentSheetId: string | null;
+  paymentSheetName: string | null;
+  paymentHeaderRow: number;
+  paymentGradeCol: string;
+  paymentNicknameCol: string;
+  paymentNameCol: string;
+  paymentIdCol: string;
+  paymentKindCol: string;
+  paymentExcludeKinds: string;
 };
 
 export type ActionStateRow = {
@@ -22,6 +34,9 @@ export type ActionStateRow = {
   status: "대기" | "확인 대기" | "완료(검증됨)" | "미해결(재확인)" | "확인 불가(데이터 미완전)";
   handledBy: string | null;
   handledAt: string | null;
+  hidden: boolean;
+  hiddenBy: string | null;
+  hiddenAt: string | null;
   memo: string | null;
 };
 
@@ -63,6 +78,15 @@ const CreateCourseBody = z
     openchatPremiumRoomId: z.string().trim().optional().default(""),
     vipEnabled: z.boolean().optional().default(false),
     openchatVipRoomId: z.string().trim().optional().default(""),
+    paymentSheetId: z.string().trim().optional().default(""),
+    paymentSheetName: z.string().trim().optional().default(""),
+    paymentHeaderRow: z.coerce.number().int().min(1).optional().default(19),
+    paymentGradeCol: z.string().trim().optional().default("카페 등급"),
+    paymentNicknameCol: z.string().trim().optional().default("닉네임"),
+    paymentNameCol: z.string().trim().optional().default("성함"),
+    paymentIdCol: z.string().trim().optional().default("아이디"),
+    paymentKindCol: z.string().trim().optional().default("구분"),
+    paymentExcludeKinds: z.string().trim().optional().default("환불"),
   })
   .superRefine((data, ctx) => {
     const cid = parseClubId(data.clubId || data.cafeUrl);
@@ -111,13 +135,17 @@ export async function coursesStore() {
   const sql = getSql();
   await sql`select 1`;
   return {
-    async listCourses(): Promise<CourseRow[]> {
+    async listCourses(opts: { includeArchived?: boolean } = {}): Promise<CourseRow[]> {
+      const includeArchived = Boolean(opts.includeArchived);
       try {
         const rows = await sql<
           {
             id: string;
             course_key: string;
             club_id: string | null;
+            archived: boolean | null;
+            archived_at: Date | null;
+            archived_by: string | null;
             cafe_url: string | null;
             openchat_chat_room_id: string | null;
             openchat_notice_room_id: string | null;
@@ -125,12 +153,24 @@ export async function coursesStore() {
             openchat_premium_room_id: string | null;
             vip_enabled: boolean | null;
             openchat_vip_room_id: string | null;
+            payment_sheet_id: string | null;
+            payment_sheet_name: string | null;
+            payment_header_row: number | null;
+            payment_grade_col: string | null;
+            payment_nickname_col: string | null;
+            payment_name_col: string | null;
+            payment_id_col: string | null;
+            payment_kind_col: string | null;
+            payment_exclude_kinds: string | null;
           }[]
-        >`select id, course_key, club_id, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses order by course_key asc`;
+        >`select id, course_key, club_id, archived, archived_at, archived_by, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id, payment_sheet_id, payment_sheet_name, payment_header_row, payment_grade_col, payment_nickname_col, payment_name_col, payment_id_col, payment_kind_col, payment_exclude_kinds from courseops_courses where (${includeArchived} or archived=false) order by course_key asc`;
         return rows.map((r) => ({
           id: r.id,
           courseKey: r.course_key,
           clubId: r.club_id,
+          archived: r.archived ?? false,
+          archivedAt: r.archived_at ? r.archived_at.toISOString() : null,
+          archivedBy: r.archived_by,
           cafeUrl: r.cafe_url,
           openchatChatRoomId: r.openchat_chat_room_id,
           openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -138,9 +178,18 @@ export async function coursesStore() {
           openchatPremiumRoomId: r.openchat_premium_room_id,
           vipEnabled: r.vip_enabled ?? false,
           openchatVipRoomId: r.openchat_vip_room_id,
+          paymentSheetId: r.payment_sheet_id,
+          paymentSheetName: r.payment_sheet_name,
+          paymentHeaderRow: Number(r.payment_header_row ?? 19),
+          paymentGradeCol: String(r.payment_grade_col ?? "카페 등급"),
+          paymentNicknameCol: String(r.payment_nickname_col ?? "닉네임"),
+          paymentNameCol: String(r.payment_name_col ?? "성함"),
+          paymentIdCol: String(r.payment_id_col ?? "아이디"),
+          paymentKindCol: String(r.payment_kind_col ?? "구분"),
+          paymentExcludeKinds: String(r.payment_exclude_kinds ?? "환불"),
         }));
       } catch {
-        // 구버전 스키마( club_id 컬럼이 없던 시점 ) 호환
+        // 구버전 스키마 호환
         const rows = await sql<
           {
             id: string;
@@ -158,6 +207,9 @@ export async function coursesStore() {
           id: r.id,
           courseKey: r.course_key,
           clubId: null,
+          archived: false,
+          archivedAt: null,
+          archivedBy: null,
           cafeUrl: r.cafe_url,
           openchatChatRoomId: r.openchat_chat_room_id,
           openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -165,16 +217,29 @@ export async function coursesStore() {
           openchatPremiumRoomId: r.openchat_premium_room_id,
           vipEnabled: r.vip_enabled ?? false,
           openchatVipRoomId: r.openchat_vip_room_id,
+          paymentSheetId: null,
+          paymentSheetName: null,
+          paymentHeaderRow: 19,
+          paymentGradeCol: "카페 등급",
+          paymentNicknameCol: "닉네임",
+          paymentNameCol: "성함",
+          paymentIdCol: "아이디",
+          paymentKindCol: "구분",
+          paymentExcludeKinds: "환불",
         }));
       }
     },
-    async getCourse(courseId: string): Promise<CourseRow | null> {
+    async getCourse(courseId: string, opts: { includeArchived?: boolean } = {}): Promise<CourseRow | null> {
+      const includeArchived = Boolean(opts.includeArchived);
       try {
         const rows = await sql<
           {
             id: string;
             course_key: string;
             club_id: string | null;
+            archived: boolean | null;
+            archived_at: Date | null;
+            archived_by: string | null;
             cafe_url: string | null;
             openchat_chat_room_id: string | null;
             openchat_notice_room_id: string | null;
@@ -182,14 +247,26 @@ export async function coursesStore() {
             openchat_premium_room_id: string | null;
             vip_enabled: boolean | null;
             openchat_vip_room_id: string | null;
+            payment_sheet_id: string | null;
+            payment_sheet_name: string | null;
+            payment_header_row: number | null;
+            payment_grade_col: string | null;
+            payment_nickname_col: string | null;
+            payment_name_col: string | null;
+            payment_id_col: string | null;
+            payment_kind_col: string | null;
+            payment_exclude_kinds: string | null;
           }[]
-        >`select id, course_key, club_id, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id from courseops_courses where id=${courseId} limit 1`;
+        >`select id, course_key, club_id, archived, archived_at, archived_by, cafe_url, openchat_chat_room_id, openchat_notice_room_id, premium_enabled, openchat_premium_room_id, vip_enabled, openchat_vip_room_id, payment_sheet_id, payment_sheet_name, payment_header_row, payment_grade_col, payment_nickname_col, payment_name_col, payment_id_col, payment_kind_col, payment_exclude_kinds from courseops_courses where id=${courseId} and (${includeArchived} or archived=false) limit 1`;
         const r = rows[0];
         return r
           ? {
               id: r.id,
               courseKey: r.course_key,
               clubId: r.club_id,
+              archived: r.archived ?? false,
+              archivedAt: r.archived_at ? r.archived_at.toISOString() : null,
+              archivedBy: r.archived_by,
               cafeUrl: r.cafe_url,
               openchatChatRoomId: r.openchat_chat_room_id,
               openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -197,6 +274,15 @@ export async function coursesStore() {
               openchatPremiumRoomId: r.openchat_premium_room_id,
               vipEnabled: r.vip_enabled ?? false,
               openchatVipRoomId: r.openchat_vip_room_id,
+              paymentSheetId: r.payment_sheet_id,
+              paymentSheetName: r.payment_sheet_name,
+              paymentHeaderRow: Number(r.payment_header_row ?? 19),
+              paymentGradeCol: String(r.payment_grade_col ?? "카페 등급"),
+              paymentNicknameCol: String(r.payment_nickname_col ?? "닉네임"),
+              paymentNameCol: String(r.payment_name_col ?? "성함"),
+              paymentIdCol: String(r.payment_id_col ?? "아이디"),
+              paymentKindCol: String(r.payment_kind_col ?? "구분"),
+              paymentExcludeKinds: String(r.payment_exclude_kinds ?? "환불"),
             }
           : null;
       } catch {
@@ -219,6 +305,9 @@ export async function coursesStore() {
               id: r.id,
               courseKey: r.course_key,
               clubId: null,
+              archived: false,
+              archivedAt: null,
+              archivedBy: null,
               cafeUrl: r.cafe_url,
               openchatChatRoomId: r.openchat_chat_room_id,
               openchatNoticeRoomId: r.openchat_notice_room_id,
@@ -226,6 +315,15 @@ export async function coursesStore() {
               openchatPremiumRoomId: r.openchat_premium_room_id,
               vipEnabled: r.vip_enabled ?? false,
               openchatVipRoomId: r.openchat_vip_room_id,
+              paymentSheetId: null,
+              paymentSheetName: null,
+              paymentHeaderRow: 19,
+              paymentGradeCol: "카페 등급",
+              paymentNicknameCol: "닉네임",
+              paymentNameCol: "성함",
+              paymentIdCol: "아이디",
+              paymentKindCol: "구분",
+              paymentExcludeKinds: "환불",
             }
           : null;
       }
@@ -234,6 +332,10 @@ export async function coursesStore() {
       const data = CreateCourseBody.parse(input);
       const courseId = id("course");
       const clubId = parseClubId(data.clubId || data.cafeUrl);
+      const paymentSheetId = String(data.paymentSheetId || "").trim();
+      const paymentSheetName = String(data.paymentSheetName || "").trim() || (paymentSheetId ? "종합" : "");
+      const paymentHeaderRow = Number(data.paymentHeaderRow || 19) || 19;
+      const paymentExcludeKinds = String(data.paymentExcludeKinds || "").trim() || "환불";
       try {
         await sql`
           insert into courseops_courses (
@@ -241,19 +343,28 @@ export async function coursesStore() {
             cafe_url,
             openchat_chat_room_id, openchat_notice_room_id,
             premium_enabled, openchat_premium_room_id,
-            vip_enabled, openchat_vip_room_id
+            vip_enabled, openchat_vip_room_id,
+            payment_sheet_id, payment_sheet_name, payment_header_row,
+            payment_grade_col, payment_nickname_col, payment_name_col,
+            payment_id_col, payment_kind_col, payment_exclude_kinds
           )
           values (
-            ${courseId}, ${data.courseKey}, ${clubId || null}, 'DISABLED',
+            ${courseId}, ${data.courseKey}, ${clubId || null}, 'DISABLED',      
             ${data.cafeUrl || null},
             ${data.openchatChatRoomId || null}, ${data.openchatNoticeRoomId || null},
             ${Boolean(data.premiumEnabled)}, ${data.openchatPremiumRoomId || null},
-            ${Boolean(data.vipEnabled)}, ${data.openchatVipRoomId || null}
+            ${Boolean(data.vipEnabled)}, ${data.openchatVipRoomId || null},
+            ${paymentSheetId || null}, ${paymentSheetName || null}, ${paymentHeaderRow},
+            ${String(data.paymentGradeCol || "카페 등급")}, ${String(data.paymentNicknameCol || "닉네임")}, ${String(data.paymentNameCol || "성함")},
+            ${String(data.paymentIdCol || "아이디")}, ${String(data.paymentKindCol || "구분")}, ${paymentExcludeKinds}
           )
         `;
       } catch (e: any) {
         const msg = String(e?.message || "");
-        if (msg.includes("club_id") && msg.includes("does not exist")) {
+        if (msg.includes("duplicate") && msg.includes("course_key")) {
+          throw new Error("이미 등록된 강의 이름이에요. 기존 강의를 수정해 주세요.");
+        }
+        if (msg.includes("does not exist") && (msg.includes("club_id") || msg.includes("payment_") || msg.includes("archived"))) {
           throw new Error("DB 스키마 업데이트가 필요해요. 관리자에게 `npm run db:init`을 요청해 주세요.");
         }
         throw e;
@@ -262,6 +373,9 @@ export async function coursesStore() {
         id: courseId,
         courseKey: data.courseKey,
         clubId: clubId || null,
+        archived: false,
+        archivedAt: null,
+        archivedBy: null,
         cafeUrl: data.cafeUrl || null,
         openchatChatRoomId: data.openchatChatRoomId || null,
         openchatNoticeRoomId: data.openchatNoticeRoomId || null,
@@ -269,7 +383,106 @@ export async function coursesStore() {
         openchatPremiumRoomId: data.openchatPremiumRoomId || null,
         vipEnabled: Boolean(data.vipEnabled),
         openchatVipRoomId: data.openchatVipRoomId || null,
+        paymentSheetId: paymentSheetId || null,
+        paymentSheetName: paymentSheetName || null,
+        paymentHeaderRow: paymentHeaderRow,
+        paymentGradeCol: String(data.paymentGradeCol || "카페 등급"),
+        paymentNicknameCol: String(data.paymentNicknameCol || "닉네임"),
+        paymentNameCol: String(data.paymentNameCol || "성함"),
+        paymentIdCol: String(data.paymentIdCol || "아이디"),
+        paymentKindCol: String(data.paymentKindCol || "구분"),
+        paymentExcludeKinds: paymentExcludeKinds,
       };
+    },
+    async updateCourse(courseId: string, patch: Partial<z.infer<typeof CreateCourseBody>>): Promise<CourseRow> {
+      const prev = await this.getCourse(courseId, { includeArchived: true });
+      if (!prev) throw new Error("강의를 찾지 못했어요.");
+
+      const merged = {
+        courseKey: patch.courseKey ?? prev.courseKey,
+        clubId: patch.clubId ?? prev.clubId ?? "",
+        cafeUrl: patch.cafeUrl ?? prev.cafeUrl ?? "",
+        openchatChatRoomId: patch.openchatChatRoomId ?? prev.openchatChatRoomId ?? "",
+        openchatNoticeRoomId: patch.openchatNoticeRoomId ?? prev.openchatNoticeRoomId ?? "",
+        premiumEnabled: patch.premiumEnabled ?? prev.premiumEnabled ?? true,
+        openchatPremiumRoomId: patch.openchatPremiumRoomId ?? prev.openchatPremiumRoomId ?? "",
+        vipEnabled: patch.vipEnabled ?? prev.vipEnabled ?? false,
+        openchatVipRoomId: patch.openchatVipRoomId ?? prev.openchatVipRoomId ?? "",
+        paymentSheetId: patch.paymentSheetId ?? prev.paymentSheetId ?? "",
+        paymentSheetName: patch.paymentSheetName ?? prev.paymentSheetName ?? "",
+        paymentHeaderRow: patch.paymentHeaderRow ?? prev.paymentHeaderRow ?? 19,
+        paymentGradeCol: patch.paymentGradeCol ?? prev.paymentGradeCol ?? "카페 등급",
+        paymentNicknameCol: patch.paymentNicknameCol ?? prev.paymentNicknameCol ?? "닉네임",
+        paymentNameCol: patch.paymentNameCol ?? prev.paymentNameCol ?? "성함",
+        paymentIdCol: patch.paymentIdCol ?? prev.paymentIdCol ?? "아이디",
+        paymentKindCol: patch.paymentKindCol ?? prev.paymentKindCol ?? "구분",
+        paymentExcludeKinds: patch.paymentExcludeKinds ?? prev.paymentExcludeKinds ?? "환불",
+      };
+
+      const data = CreateCourseBody.parse(merged);
+      const clubId = parseClubId(data.clubId || data.cafeUrl);
+      const paymentSheetId = String(data.paymentSheetId || "").trim();
+      const paymentSheetName = String(data.paymentSheetName || "").trim() || (paymentSheetId ? "종합" : "");
+      const paymentHeaderRow = Number(data.paymentHeaderRow || 19) || 19;
+      const paymentExcludeKinds = String(data.paymentExcludeKinds || "").trim() || "환불";
+
+      try {
+        await sql`
+          update courseops_courses
+          set course_key=${data.courseKey},
+              club_id=${clubId || null},
+              cafe_url=${data.cafeUrl || null},
+              openchat_chat_room_id=${data.openchatChatRoomId || null},
+              openchat_notice_room_id=${data.openchatNoticeRoomId || null},
+              premium_enabled=${Boolean(data.premiumEnabled)},
+              openchat_premium_room_id=${data.openchatPremiumRoomId || null},
+              vip_enabled=${Boolean(data.vipEnabled)},
+              openchat_vip_room_id=${data.openchatVipRoomId || null},
+              payment_sheet_id=${paymentSheetId || null},
+              payment_sheet_name=${paymentSheetName || null},
+              payment_header_row=${paymentHeaderRow},
+              payment_grade_col=${String(data.paymentGradeCol || "카페 등급")},
+              payment_nickname_col=${String(data.paymentNicknameCol || "닉네임")},
+              payment_name_col=${String(data.paymentNameCol || "성함")},
+              payment_id_col=${String(data.paymentIdCol || "아이디")},
+              payment_kind_col=${String(data.paymentKindCol || "구분")},
+              payment_exclude_kinds=${paymentExcludeKinds}
+          where id=${courseId}
+        `;
+      } catch (e: any) {
+        const msg = String(e?.message || "");
+        if (msg.includes("duplicate") && msg.includes("course_key")) {
+          throw new Error("이미 등록된 강의 이름이에요. 다른 이름으로 바꿔 주세요.");
+        }
+        throw e;
+      }
+
+      const updated = await this.getCourse(courseId, { includeArchived: true });
+      if (!updated) throw new Error("저장 후 강의를 다시 불러오지 못했어요.");
+      return updated;
+    },
+    async setCourseArchived(input: { courseId: string; archived: boolean; by: string }): Promise<CourseRow> {
+      const cid = String(input.courseId || "").trim();
+      if (!cid) throw new Error("courseId is required");
+      const by = String(input.by || "").trim();
+      if (!by) throw new Error("by is required");
+
+      if (input.archived) {
+        await sql`
+          update courseops_courses
+          set archived=true, archived_at=now(), archived_by=${by}
+          where id=${cid}
+        `;
+      } else {
+        await sql`
+          update courseops_courses
+          set archived=false, archived_at=null, archived_by=null
+          where id=${cid}
+        `;
+      }
+      const out = await this.getCourse(cid, { includeArchived: true });
+      if (!out) throw new Error("강의를 찾지 못했어요.");
+      return out;
     },
     async getCourseSnapshot(courseId: string): Promise<CourseSnapshotRow | null> {
       const cid = String(courseId || "").trim();
@@ -320,9 +533,12 @@ export async function coursesStore() {
           status: string;
           handled_by: string | null;
           handled_at: Date | null;
+          hidden: boolean | null;
+          hidden_by: string | null;
+          hidden_at: Date | null;
           memo: string | null;
         }[]
-      >`select action_key, course_id, status, handled_by, handled_at, memo from courseops_action_state where course_id=${courseId} and action_key = any(${actionKeys}::text[])`;
+      >`select action_key, course_id, status, handled_by, handled_at, hidden, hidden_by, hidden_at, memo from courseops_action_state where course_id=${courseId} and action_key = any(${actionKeys}::text[])`;
 
       return rows.map((r) => ({
         actionKey: r.action_key,
@@ -330,6 +546,9 @@ export async function coursesStore() {
         status: (r.status as ActionStateRow["status"]) || "대기",
         handledBy: r.handled_by,
         handledAt: r.handled_at ? r.handled_at.toISOString() : null,
+        hidden: r.hidden ?? false,
+        hiddenBy: r.hidden_by,
+        hiddenAt: r.hidden_at ? r.hidden_at.toISOString() : null,
         memo: r.memo,
       }));
     },
@@ -344,6 +563,34 @@ export async function coursesStore() {
           handled_by=excluded.handled_by,
           handled_at=excluded.handled_at,
           memo=excluded.memo
+      `;
+    },
+    async setActionHidden(input: { courseId: string; actionKey: string; hidden: boolean; by: string }) {
+      const courseId = String(input.courseId || "").trim();
+      const actionKey = String(input.actionKey || "").trim();
+      const by = String(input.by || "").trim();
+      if (!courseId) throw new Error("courseId is required");
+      if (!actionKey) throw new Error("actionKey is required");
+      if (!by) throw new Error("by is required");
+
+      if (input.hidden) {
+        const now = new Date();
+        await sql`
+          insert into courseops_action_state (action_key, course_id, status, hidden, hidden_by, hidden_at, created_at)
+          values (${actionKey}, ${courseId}, '대기', true, ${by}, ${now}, now())
+          on conflict (action_key) do update set
+            hidden=true,
+            hidden_by=excluded.hidden_by,
+            hidden_at=excluded.hidden_at
+          where courseops_action_state.course_id=excluded.course_id
+        `;
+        return;
+      }
+
+      await sql`
+        update courseops_action_state
+        set hidden=false, hidden_by=null, hidden_at=null
+        where action_key=${actionKey} and course_id=${courseId}
       `;
     },
     async enqueueJob(input: { courseId: string; kind: JobRow["kind"]; requestedBy: string; payload: unknown }) {

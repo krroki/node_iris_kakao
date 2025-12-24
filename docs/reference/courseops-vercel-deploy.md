@@ -36,7 +36,8 @@
 - `DATABASE_URL`
   - Postgres 접속 URL
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
-  - Google Sheets 읽기용 서비스 계정 JSON(문자열 1개)
+  - Google Sheets(결제 SSOT) 읽기용 서비스 계정 JSON(문자열 1개)
+  - 결제 시트 URL/탭/헤더/컬럼 설정은 **콘솔의 설정 페이지(강의별)**에서 입력한다.
 - `COURSEOPS_AGENT_TOKEN`  
   - 로컬 에이전트 인증 토큰(콘솔/에이전트 동일)
 

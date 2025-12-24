@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireAdminSession } from "@/lib/admin";
+import { isAdminName, requireAdminSession } from "@/lib/admin";
 import { requireSession } from "@/lib/session";
 import { coursesStore } from "@/lib/store";
 
@@ -16,6 +16,15 @@ const CreateBody = z
     openchatPremiumRoomId: z.string().trim().optional().default(""),
     vipEnabled: z.boolean().optional().default(false),
     openchatVipRoomId: z.string().trim().optional().default(""),
+    paymentSheetId: z.string().trim().optional().default(""),
+    paymentSheetName: z.string().trim().optional().default(""),
+    paymentHeaderRow: z.coerce.number().int().min(1).optional().default(19),
+    paymentGradeCol: z.string().trim().optional().default("카페 등급"),
+    paymentNicknameCol: z.string().trim().optional().default("닉네임"),
+    paymentNameCol: z.string().trim().optional().default("성함"),
+    paymentIdCol: z.string().trim().optional().default("아이디"),
+    paymentKindCol: z.string().trim().optional().default("구분"),
+    paymentExcludeKinds: z.string().trim().optional().default("환불"),
   })
   .superRefine((data, ctx) => {
     if (data.premiumEnabled && !String(data.openchatPremiumRoomId || "").trim()) {
@@ -26,14 +35,18 @@ const CreateBody = z
     }
   });
 
-export async function GET() {
+export async function GET(req: Request) {
+  let session;
   try {
-    await requireSession();
+    session = await requireSession();
   } catch {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+  const url = new URL(req.url);
+  const includeArchived = url.searchParams.get("includeArchived") === "1";
+  const canSeeArchived = includeArchived && isAdminName(session.name);
   const store = await coursesStore();
-  const courses = await store.listCourses();
+  const courses = await store.listCourses({ includeArchived: canSeeArchived });
   return NextResponse.json({ courses });
 }
 

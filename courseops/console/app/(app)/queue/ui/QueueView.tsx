@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useSelectedCourse } from "@/app/(app)/ui/useSelectedCourse";
 
+type ActionStatus = "대기" | "확인 대기" | "완료(검증됨)" | "미해결(재확인)" | "확인 불가(데이터 미완전)";
+
 type ActionItem = {
   key: string;
   priority: "지금" | "오늘" | "확인" | "정리";
@@ -14,7 +16,10 @@ type ActionItem = {
   recommendedNickname: string;
   currentNicknames: string;
   state?: {
-    status: "대기" | "확인 대기" | "완료(검증됨)" | "미해결(재확인)" | "확인 불가(데이터 미완전)";
+    status: ActionStatus;
+    hidden?: boolean;
+    hiddenBy?: string | null;
+    hiddenAt?: string | null;
     handledBy?: string | null;
     handledAt?: string | null;
     memo?: string | null;
@@ -40,15 +45,51 @@ function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
   return <span className={["rounded-full px-2 py-1 text-xs font-medium", cls].join(" ")}>{p}</span>;
 }
 
+function ActionTypeBadge({ action }: { action: string }) {
+  const a = String(action || "").trim();
+  if (!a) return null;
+  const norm = a.replace(/\s+/g, "");
+  const kind =
+    norm.includes("입장안내")
+      ? { label: "입장", cls: "bg-blue-50 text-blue-700" }
+      : norm.includes("닉네임")
+        ? { label: "닉네임", cls: "bg-purple-50 text-purple-700" }
+        : norm.includes("결제")
+          ? { label: "결제", cls: "bg-amber-50 text-amber-800" }
+          : norm.includes("권한") || norm.includes("정리")
+            ? { label: "정리", cls: "bg-rose-50 text-rose-700" }
+            : norm.includes("카페")
+              ? { label: "카페", cls: "bg-slate-100 text-slate-700" }
+              : { label: "확인", cls: "bg-slate-100 text-slate-700" };
+  return <span className={["rounded-full px-2 py-1 text-xs font-medium", kind.cls].join(" ")}>{kind.label}</span>;
+}
+
+function StatusBadge({ status }: { status: ActionStatus }) {
+  const s = String(status || "").trim();
+  const cls =
+    s === "완료(검증됨)"
+      ? "bg-emerald-50 text-emerald-700"
+      : s === "미해결(재확인)"
+        ? "bg-amber-50 text-amber-800"
+        : s === "확인 불가(데이터 미완전)"
+          ? "bg-rose-50 text-rose-700"
+          : s === "확인 대기"
+            ? "bg-blue-50 text-blue-700"
+            : "bg-slate-100 text-slate-700";
+  return <span className={["rounded-full px-3 py-1 text-xs font-medium", cls].join(" ")}>{s || "대기"}</span>;
+}
+
 export default function QueueView() {
   const { courses, courseId } = useSelectedCourse();
   const [items, setItems] = useState<ActionItem[]>([]);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
-  const [filterPriority, setFilterPriority] = useState<string>("전체");
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);   
+  const [filterPriority, setFilterPriority] = useState<string>("전체");      
   const [filterType, setFilterType] = useState<string>("전체");
+  const [hideHidden, setHideHidden] = useState(true);
+  const [hideIncomplete, setHideIncomplete] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [memoByKey, setMemoByKey] = useState<Record<string, string>>({});
+  const [memoByKey, setMemoByKey] = useState<Record<string, string>>({});    
 
   const loadActions = async (cid: string) => {
     if (!cid) return;
@@ -86,9 +127,11 @@ export default function QueueView() {
     return items.filter((it) => {
       if (filterPriority !== "전체" && it.priority !== filterPriority) return false;
       if (filterType !== "전체" && it.action !== filterType) return false;
+      if (hideHidden && it.state?.hidden) return false;
+      if (hideIncomplete && it.state?.status === "확인 불가(데이터 미완전)") return false;
       return true;
     });
-  }, [items, filterPriority, filterType]);
+  }, [items, filterPriority, filterType, hideHidden, hideIncomplete]);
 
   const markDone = async (actionKey: string) => {
     if (!courseId) return;
@@ -97,6 +140,17 @@ export default function QueueView() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ memo }),
+    });
+    await res.json().catch(() => ({}));
+    await loadActions(courseId);
+  };
+
+  const setHiddenForAction = async (actionKey: string, hidden: boolean) => {
+    if (!courseId) return;
+    const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/actions/${encodeURIComponent(actionKey)}/hide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
     });
     await res.json().catch(() => ({}));
     await loadActions(courseId);
@@ -127,6 +181,14 @@ export default function QueueView() {
               </option>
             ))}
           </select>
+          <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm text-slate-700">
+            <input type="checkbox" checked={hideHidden} onChange={(e) => setHideHidden(e.target.checked)} />
+            숨김 항목 숨기기
+          </label>
+          <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm text-slate-700">
+            <input type="checkbox" checked={hideIncomplete} onChange={(e) => setHideIncomplete(e.target.checked)} />
+            데이터 미완전 숨기기
+          </label>
           <button
             className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"
             onClick={() => loadActions(courseId)}
@@ -141,21 +203,32 @@ export default function QueueView() {
 
       <div className="space-y-3">
         {filtered.map((it) => {
-          const status = it.state?.status || "대기";
+          const status: ActionStatus = it.state?.status || "대기";
           return (
             <div key={it.key} className="rounded-2xl border bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="min-w-0 space-y-1">
                   <div className="flex items-center gap-2">
                     <PriorityBadge p={it.priority} />
+                    <ActionTypeBadge action={it.action} />
                     <div className="truncate text-base font-semibold">{it.action}</div>
                   </div>
                   <div className="text-sm text-slate-600">{it.reason}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">{status}</div>
-                  <button onClick={() => markDone(it.key)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700">
+                  <StatusBadge status={status} />
+                  {it.state?.hidden ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">숨김</span> : null}
+                  <button
+                    onClick={() => markDone(it.key)}
+                    className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+                  >
                     처리 완료
+                  </button>
+                  <button
+                    onClick={() => setHiddenForAction(it.key, !Boolean(it.state?.hidden))}
+                    className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"
+                  >
+                    {it.state?.hidden ? "숨김 해제" : "숨김"}
                   </button>
                 </div>
               </div>
@@ -208,4 +281,3 @@ export default function QueueView() {
     </div>
   );
 }
-

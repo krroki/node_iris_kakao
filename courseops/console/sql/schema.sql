@@ -4,6 +4,9 @@ create table if not exists courseops_courses (
   club_id text,
   sheet_id text,
   actions_tab text not null default 'ACTIONS',
+  archived boolean not null default false,
+  archived_at timestamptz,
+  archived_by text,
   cafe_url text,
   openchat_chat_room_id text,
   openchat_notice_room_id text,
@@ -11,10 +14,22 @@ create table if not exists courseops_courses (
   openchat_premium_room_id text,
   vip_enabled boolean not null default false,
   openchat_vip_room_id text,
+  payment_sheet_id text,
+  payment_sheet_name text,
+  payment_header_row int not null default 19,
+  payment_grade_col text not null default '카페 등급',
+  payment_nickname_col text not null default '닉네임',
+  payment_name_col text not null default '성함',
+  payment_id_col text not null default '아이디',
+  payment_kind_col text not null default '구분',
+  payment_exclude_kinds text not null default '환불',
   created_at timestamptz not null default now()
 );
 
 alter table courseops_courses add column if not exists club_id text;
+alter table courseops_courses add column if not exists archived boolean not null default false;
+alter table courseops_courses add column if not exists archived_at timestamptz;
+alter table courseops_courses add column if not exists archived_by text;
 alter table courseops_courses add column if not exists cafe_url text;
 alter table courseops_courses add column if not exists openchat_chat_room_id text;
 alter table courseops_courses add column if not exists openchat_notice_room_id text;
@@ -22,6 +37,15 @@ alter table courseops_courses add column if not exists premium_enabled boolean n
 alter table courseops_courses add column if not exists openchat_premium_room_id text;
 alter table courseops_courses add column if not exists vip_enabled boolean not null default false;
 alter table courseops_courses add column if not exists openchat_vip_room_id text;
+alter table courseops_courses add column if not exists payment_sheet_id text;
+alter table courseops_courses add column if not exists payment_sheet_name text;
+alter table courseops_courses add column if not exists payment_header_row int not null default 19;
+alter table courseops_courses add column if not exists payment_grade_col text not null default '카페 등급';
+alter table courseops_courses add column if not exists payment_nickname_col text not null default '닉네임';
+alter table courseops_courses add column if not exists payment_name_col text not null default '성함';
+alter table courseops_courses add column if not exists payment_id_col text not null default '아이디';
+alter table courseops_courses add column if not exists payment_kind_col text not null default '구분';
+alter table courseops_courses add column if not exists payment_exclude_kinds text not null default '환불';
 
 do $$
 begin
@@ -43,9 +67,16 @@ create table if not exists courseops_action_state (
   status text not null,
   handled_by text,
   handled_at timestamptz,
+  hidden boolean not null default false,
+  hidden_by text,
+  hidden_at timestamptz,
   memo text,
   created_at timestamptz not null default now()
 );
+
+alter table courseops_action_state add column if not exists hidden boolean not null default false;
+alter table courseops_action_state add column if not exists hidden_by text;
+alter table courseops_action_state add column if not exists hidden_at timestamptz;
 
 create table if not exists courseops_jobs (
   id text primary key,
