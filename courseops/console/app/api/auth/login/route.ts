@@ -19,11 +19,12 @@ export async function POST(req: Request) {
   const name = body.data.name;
   const admin = isAdminName(name);
 
-  const shared = String(process.env.COURSEOPS_SHARED_PASSWORD || "");
+  const shared = String(process.env.COURSEOPS_SHARED_PASSWORD || "").trim();
   if (!shared) {
     return NextResponse.json({ error: "서버 설정이 필요해요(비밀번호 미설정)." }, { status: 500 });
   }
-  if (body.data.password !== shared) {
+  const password = String(body.data.password || "").trim();
+  if (password !== shared) {
     return NextResponse.json({ error: "이름 또는 비밀번호가 올바르지 않아요." }, { status: 401 });
   }
 
