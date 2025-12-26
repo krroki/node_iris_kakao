@@ -52,6 +52,24 @@ function formatTs(ts: string | null) {
   return d.toLocaleString("ko-KR");
 }
 
+const PRIORITY_LABEL: Record<ActionItem["priority"], string> = {
+  지금: "긴급",
+  오늘: "오늘",
+  확인: "확인 필요",
+  정리: "낮음",
+};
+
+function formatPriority(p: ActionItem["priority"]) {
+  return PRIORITY_LABEL[p] || p;
+}
+
+function formatStatus(status: ActionStatus) {
+  if (status === "완료(검증됨)") return "확인 완료";
+  if (status === "미해결(재확인)") return "재확인 필요";
+  if (status === "확인 불가(데이터 미완전)") return "데이터 부족";
+  return status || "대기";
+}
+
 function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
   const cls =
     p === "지금"
@@ -60,8 +78,8 @@ function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
         ? "bg-amber-50 text-amber-800"
         : p === "확인"
           ? "bg-slate-100 text-slate-700"
-          : "bg-emerald-50 text-emerald-700";
-  return <span className={["rounded-full px-2 py-1 text-xs font-medium", cls].join(" ")}>{p}</span>;
+          : "bg-slate-50 text-slate-600";
+  return <span className={["rounded-full px-2 py-1 text-xs font-medium", cls].join(" ")}>{formatPriority(p)}</span>;
 }
 
 function ActionTypeBadge({ action }: { action: string }) {
@@ -84,7 +102,8 @@ function ActionTypeBadge({ action }: { action: string }) {
 }
 
 function StatusBadge({ status }: { status: ActionStatus }) {
-  const s = String(status || "").trim();
+  const s = String(status || "").trim() as ActionStatus;
+  const label = formatStatus(s);
   const cls =
     s === "완료(검증됨)"
       ? "bg-emerald-50 text-emerald-700"
@@ -95,7 +114,7 @@ function StatusBadge({ status }: { status: ActionStatus }) {
           : s === "확인 대기"
             ? "bg-blue-50 text-blue-700"
             : "bg-slate-100 text-slate-700";
-  return <span className={["rounded-full px-3 py-1 text-xs font-medium", cls].join(" ")}>{s || "대기"}</span>;
+  return <span className={["rounded-full px-3 py-1 text-xs font-medium", cls].join(" ")}>{label}</span>;
 }
 
 export default function QueueView() {
@@ -147,6 +166,12 @@ export default function QueueView() {
     return ["전체", ...Array.from(s).sort((a, b) => a.localeCompare(b, "ko"))];
   }, [items]);
 
+  const hiddenCount = useMemo(() => items.filter((it) => Boolean(it.state?.hidden)).length, [items]);
+  const incompleteCount = useMemo(
+    () => items.filter((it) => it.state?.status === "확인 불가(데이터 미완전)").length,
+    [items],
+  );
+
   const filtered = useMemo(() => {
     return items.filter((it) => {
       if (filterPriority !== "전체" && it.priority !== filterPriority) return false;
@@ -186,15 +211,36 @@ export default function QueueView() {
 
   return (
     <div className="space-y-4">
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <div className="text-sm font-semibold">사용 방법</div>
+        <div className="mt-2 space-y-1 text-sm text-slate-700">
+          <div>
+            1) 오른쪽 위 <span className="font-medium">전체 동기화</span>로 최신 데이터를 불러와요.
+          </div>
+          <div>
+            2) 카드에 적힌 대로 처리한 뒤 <span className="font-medium">처리 완료</span>를 눌러요.
+          </div>
+          <div>
+            3) <span className="font-medium">반영 확인</span>으로 실제 반영 여부를 확인해요.
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-col gap-3 rounded-2xl border bg-white p-4 md:flex-row md:items-center md:justify-between">
         <div className="text-sm text-slate-600">
           마지막 동기화: <span className="font-medium text-slate-900">{formatTs(lastUpdatedAt)}</span>
         </div>
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
           <select className="rounded-lg border px-3 py-2 text-sm" value={filterPriority} onChange={(e) => setFilterPriority(e.target.value)}>
-            {["전체", "지금", "오늘", "확인", "정리"].map((x) => (
-              <option key={x} value={x}>
-                {x === "전체" ? "모든 우선순위" : x}
+            {[
+              { value: "전체", label: "모든 우선순위" },
+              { value: "지금", label: formatPriority("지금") },
+              { value: "오늘", label: formatPriority("오늘") },
+              { value: "확인", label: formatPriority("확인") },
+              { value: "정리", label: formatPriority("정리") },
+            ].map((x) => (
+              <option key={x.value} value={x.value}>
+                {x.label}
               </option>
             ))}
           </select>
@@ -227,7 +273,7 @@ export default function QueueView() {
                 writeBool(LS_HIDE_INCOMPLETE, v);
               }}
             />
-            데이터 미완전 숨기기
+            데이터 부족 숨기기
           </label>
           <button
             className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"
@@ -237,6 +283,12 @@ export default function QueueView() {
             {loading ? "불러오는 중..." : "새로고침"}
           </button>
         </div>
+      </div>
+
+      <div className="text-xs text-slate-600">
+        현재 표시 {filtered.length}건 · 전체 {items.length}건
+        {hiddenCount ? ` · 숨김 ${hiddenCount}건` : ""}
+        {incompleteCount ? ` · 데이터 부족 ${incompleteCount}건` : ""}
       </div>
 
       {error ? <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
@@ -253,7 +305,7 @@ export default function QueueView() {
                     <ActionTypeBadge action={it.action} />
                     <div className="truncate text-base font-semibold">{it.action}</div>
                   </div>
-                  <div className="text-sm text-slate-600">{it.reason}</div>
+                  <div className="text-sm text-slate-600">사유: {it.reason || "-"}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <StatusBadge status={status} />

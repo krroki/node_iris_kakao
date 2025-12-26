@@ -81,10 +81,11 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
 
   const badge = useMemo(() => {
     if (!job) return null;
-    if (job.status === "RUNNING") return { text: "동기화 진행 중", cls: "bg-brand-50 text-brand-700" };
-    if (job.status === "QUEUED") return { text: "대기 중", cls: "bg-slate-100 text-slate-700" };
-    if (job.status === "FAILED") return { text: "실패", cls: "bg-red-50 text-red-700" };
-    if (job.status === "DONE") return { text: "완료", cls: "bg-emerald-50 text-emerald-700" };
+    const kind = job.kind === "REVERIFY_PENDING" ? "반영 확인" : "동기화";
+    if (job.status === "RUNNING") return { text: `${kind} 진행 중`, cls: "bg-brand-50 text-brand-700" };
+    if (job.status === "QUEUED") return { text: `${kind} 대기 중`, cls: "bg-slate-100 text-slate-700" };
+    if (job.status === "FAILED") return { text: `${kind} 실패`, cls: "bg-red-50 text-red-700" };
+    if (job.status === "DONE") return { text: `${kind} 완료`, cls: "bg-emerald-50 text-emerald-700" };
     return null;
   }, [job]);
 
@@ -181,14 +182,14 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
             disabled={syncing || reverifying || !courseId || !canSync}
             className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60"
           >
-            {syncing ? "요청 중..." : "데이터 동기화"}
+            {syncing ? "요청 중..." : "전체 동기화"}
           </button>
           <button
             onClick={runReverify}
             disabled={syncing || reverifying || !courseId || !canSync}
             className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
           >
-            {reverifying ? "확인 중..." : "빠른 재검증"}
+            {reverifying ? "확인 중..." : "반영 확인"}
           </button>
         </div>
       </div>

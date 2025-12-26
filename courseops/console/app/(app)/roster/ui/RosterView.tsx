@@ -129,7 +129,14 @@ export default function RosterView() {
   }, [courseId]);
 
   const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase();
+    const normalize = (s: string) =>
+      String(s || "")
+        .normalize("NFKC")
+        .replace(/[\s\u200b\u200c\u200d\ufeff\u2060]+/gu, "")
+        .trim()
+        .toLowerCase();
+
+    const term = normalize(q);
     const hasIssue = (m: Member) => {
       if (m.trackLabel === "운영진") return false;
       const missingRequired = (r: MemberRoom) => r.required && !r.present;
@@ -148,7 +155,7 @@ export default function RosterView() {
         ...m.rooms.notice.nicknames,
         ...m.rooms.premium.nicknames,
       ];
-      return fields.some((x) => String(x || "").toLowerCase().includes(term));
+      return fields.some((x) => normalize(String(x || "")).includes(term));
     };
     return (data?.members || [])
       .filter((m) => (trackFilter === "전체" ? true : m.trackLabel === trackFilter))
@@ -181,7 +188,7 @@ export default function RosterView() {
               className="w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-200 md:w-96"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="이름/카페닉/아이디/톡방닉 검색"
+              placeholder="이름/카페닉/아이디/톡방닉 검색 (띄어쓰기 무시)"
             />
             <select
               className="rounded-lg border px-3 py-2 text-sm"
@@ -235,6 +242,9 @@ export default function RosterView() {
         </div>
         <div className="mt-3 text-xs text-slate-600">
           총 {data?.stats?.ssot ?? 0}명(결제 기준) · 일반 {data?.stats?.normal ?? 0} · 프리미엄 {data?.stats?.premium ?? 0} · 운영진 {data?.stats?.staff ?? 0}
+        </div>
+        <div className="mt-2 text-xs text-slate-600">
+          ✓ 참여 · ✕ 미참여(조치 필요) · — 대상 아님
         </div>
       </div>
 
@@ -300,4 +310,3 @@ export default function RosterView() {
     </div>
   );
 }
-

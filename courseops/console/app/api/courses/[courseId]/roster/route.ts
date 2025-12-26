@@ -20,8 +20,25 @@ function extractCafeNickFromOpenchatNickname(nick: string) {
   if (!s) return "";
   const m1 = s.match(/[（(]([^（）()\n\r]{1,100})[）)]\s*$/);
   if (m1 && m1[1]) return String(m1[1]).trim();
+  // 괄호가 끝이 아니거나(뒤에 이모지/추가 텍스트), 괄호가 여러 번 들어가는 변형 케이스
+  try {
+    let last = "";
+    for (const m of s.matchAll(/[（(]([^（）()\n\r]{1,100})[）)]/g)) {
+      if (m && m[1]) last = String(m[1]).trim();
+    }
+    if (last) return last;
+  } catch {}
   const m2 = s.match(/[/／]\s*([^/／\s]{1,100})\s*$/);
   if (m2 && m2[1]) return String(m2[1]).trim();
+  // 슬래시도 끝에 이모지/추가 텍스트가 붙을 수 있어 마지막 토큰을 보조로 사용
+  const parts = s
+    .split(/[/／]/g)
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1];
+    if (last) return last;
+  }
   return "";
 }
 

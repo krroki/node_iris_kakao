@@ -105,12 +105,12 @@ export default function AccountsView() {
     <div className="space-y-4">
       <div className="rounded-2xl border bg-white p-4 shadow-sm">
         <div className="text-sm font-semibold">접속 방법</div>
-        <div className="mt-2 text-sm text-slate-600">
-          1) `go.yoorang.kr` 접속
-          <br />
-          2) 이름 + 비밀번호로 로그인
-          <br />
-          3) 계정을 등록하기 시작하면, 등록된 사람만 로그인할 수 있어요. (관리자는 항상 가능)
+        <div className="mt-2 space-y-1 text-sm text-slate-600">
+          <div>1) `go.yoorang.kr` 접속</div>
+          <div>2) 이름 + 비밀번호 입력</div>
+          <div>3) 계정이 아직 0명일 때: 이름 아무거나 접속 가능</div>
+          <div>4) 계정이 1명이라도 등록되면: 등록된 이름만 접속 가능</div>
+          <div className="text-xs text-slate-500">관리자는 항상 접속 가능</div>
         </div>
       </div>
 

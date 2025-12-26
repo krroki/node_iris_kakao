@@ -155,11 +155,10 @@ export default function DashboardView() {
             ))}
           </div>
           <div className="mt-4 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            팁: 작업 대기열에서 “처리 완료” 후, 상단의 “빠른 재검증”으로 실제 반영 여부를 확인할 수 있어요.
+            팁: 작업 대기열에서 “처리 완료” 후, 상단의 “반영 확인”으로 실제 반영 여부를 확인할 수 있어요.
           </div>
         </div>
       </div>
     </div>
   );
 }
-

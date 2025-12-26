@@ -47,7 +47,7 @@ export default function SettingsView() {
         <div className="mt-2 text-sm text-slate-700">
           이름: <span className="font-medium">{String(me?.session?.name || "-")}</span>
         </div>
-        <div className="mt-1 text-xs text-slate-500">{me?.canSync ? "데이터 동기화 가능" : "조회만 가능"}</div>
+        <div className="mt-1 text-xs text-slate-500">{me?.canSync ? "동기화 가능" : "조회만 가능"}</div>
       </div>
 
       {me?.isCourseManager ? (
@@ -86,7 +86,7 @@ export default function SettingsView() {
 
           <label className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 p-3">
             <div>
-              <div className="text-sm font-medium text-slate-700">데이터 미완전 숨기기</div>
+              <div className="text-sm font-medium text-slate-700">데이터 부족 숨기기</div>
               <div className="mt-1 text-xs text-slate-500">데이터가 부족해 확정 판단이 어려운 항목을 기본으로 감춥니다.</div>
             </div>
             <input
