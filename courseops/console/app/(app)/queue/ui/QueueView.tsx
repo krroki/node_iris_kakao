@@ -55,8 +55,8 @@ function formatTs(ts: string | null) {
 const PRIORITY_LABEL: Record<ActionItem["priority"], string> = {
   지금: "긴급",
   오늘: "오늘",
-  확인: "확인 필요",
-  정리: "낮음",
+  확인: "확인",
+  정리: "나중에",
 };
 
 function formatPriority(p: ActionItem["priority"]) {
@@ -68,6 +68,45 @@ function formatStatus(status: ActionStatus) {
   if (status === "미해결(재확인)") return "재확인 필요";
   if (status === "확인 불가(데이터 미완전)") return "데이터 부족";
   return status || "대기";
+}
+
+function splitActionLabel(action: string): { label: string; hint: string } {
+  const canonical = (label: string) => {
+    const x = String(label || "").trim();
+    const norm = x.replace(/\s+/g, "");
+    if (!x) return "";
+    if (norm.includes("바꿀닉네임으로변경요청")) return "닉네임 변경 요청";
+    if (norm.includes("닉네임변경요청")) return "닉네임 변경 요청";
+    if (norm.includes("입장안내")) return "필수 방 입장 안내";
+    if (norm.includes("결제") && norm.includes("확인")) return "결제 기록 확인";
+    if (norm.includes("카페") && norm.includes("닉네임") && norm.includes("확인")) return "카페 닉네임 확인";
+    if (norm.includes("권한") && norm.includes("확인")) return "권한 확인";
+    return x;
+  };
+
+  const a = String(action || "").trim();
+  if (!a) return { label: "", hint: "" };
+  const mParen = a.match(/^(.*?)(?:\s*[\(\[]([^)\]]{1,40})[\)\]]\s*)$/);
+  if (mParen) return { label: canonical(String(mParen[1] || "")), hint: String(mParen[2] || "").trim() };
+  const mDash = a.match(/^(.*?)(?:\s*-\s*(.{1,40})\s*)$/);
+  if (mDash) return { label: canonical(String(mDash[1] || "")), hint: String(mDash[2] || "").trim() };
+  return { label: canonical(a), hint: "" };
+}
+
+function cardAccentCls(priority: ActionItem["priority"]) {
+  if (priority === "지금") return "border-l-4 border-l-red-500 bg-red-50/20";
+  if (priority === "오늘") return "border-l-4 border-l-amber-500 bg-amber-50/20";
+  if (priority === "확인") return "border-l-4 border-l-slate-300";
+  return "border-l-4 border-l-transparent";
+}
+
+function parseRooms(rooms: string) {
+  const raw = String(rooms || "").trim();
+  if (!raw) return [] as string[];
+  return raw
+    .split(",")
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
 }
 
 function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
@@ -94,7 +133,7 @@ function ActionTypeBadge({ action }: { action: string }) {
         : norm.includes("결제")
           ? { label: "결제", cls: "bg-amber-50 text-amber-800" }
           : norm.includes("권한") || norm.includes("정리")
-            ? { label: "정리", cls: "bg-rose-50 text-rose-700" }
+            ? { label: "권한", cls: "bg-rose-50 text-rose-700" }
             : norm.includes("카페")
               ? { label: "카페", cls: "bg-slate-100 text-slate-700" }
               : { label: "확인", cls: "bg-slate-100 text-slate-700" };
@@ -296,20 +335,64 @@ export default function QueueView() {
       <div className="space-y-3">
         {filtered.map((it) => {
           const status: ActionStatus = it.state?.status || "대기";
+          const actionInfo = splitActionLabel(it.action);
+          const actionLabel = actionInfo.label || it.action || "";
+          const actionHint = actionInfo.hint;
+          const rooms = parseRooms(it.rooms);
           return (
-            <div key={it.key} className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex items-center gap-2">
+            <div
+              key={it.key}
+              className={["rounded-2xl border border-slate-200 p-4 shadow-sm", cardAccentCls(it.priority)].join(" ")}
+            >
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
                     <PriorityBadge p={it.priority} />
                     <ActionTypeBadge action={it.action} />
-                    <div className="truncate text-base font-semibold">{it.action}</div>
+                    {actionHint ? (
+                      <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">{actionHint}</span>
+                    ) : null}
+                    {it.state?.hidden ? (
+                      <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">숨김</span>
+                    ) : null}
                   </div>
-                  <div className="text-sm text-slate-600">사유: {it.reason || "-"}</div>
+
+                  <div className="mt-2 space-y-1">
+                    <div className="truncate text-lg font-semibold text-slate-900">{it.target || "대상 없음"}</div>
+                    <div className="text-sm font-medium text-slate-800">{actionLabel || "조치"}</div>
+                    <div className="text-sm text-slate-600">사유: {it.reason || "-"}</div>
+                  </div>
+
+                  {rooms.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {rooms.map((r) => (
+                        <span key={r} className="rounded-full bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700">
+                          {r}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl bg-slate-50 p-3">
+                      <div className="text-xs font-medium text-slate-500">현재 톡방 닉네임</div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm text-slate-900">{it.currentNicknames || "-"}</div>
+                    </div>
+                    <div className={["rounded-xl p-3", it.recommendedNickname ? "bg-brand-50" : "bg-slate-50"].join(" ")}>
+                      <div className={["text-xs font-medium", it.recommendedNickname ? "text-brand-700" : "text-slate-500"].join(" ")}>
+                        요청 닉네임
+                      </div>
+                      {it.recommendedNickname ? (
+                        <div className="mt-1 text-sm font-semibold text-brand-700">{it.recommendedNickname}</div>
+                      ) : (
+                        <div className="mt-1 text-sm text-slate-400">-</div>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+
+                <div className="flex shrink-0 items-center gap-2 md:flex-col md:items-end">
                   <StatusBadge status={status} />
-                  {it.state?.hidden ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">숨김</span> : null}
                   <button
                     onClick={() => markDone(it.key)}
                     className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
@@ -324,28 +407,6 @@ export default function QueueView() {
                   </button>
                 </div>
               </div>
-
-              <div className="mt-4 grid gap-3 md:grid-cols-3">
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs font-medium text-slate-500">대상</div>
-                  <div className="mt-1 text-sm font-medium text-slate-900">{it.target || "-"}</div>
-                </div>
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs font-medium text-slate-500">필요한 방</div>
-                  <div className="mt-1 whitespace-pre-wrap text-sm font-medium text-slate-900">{it.rooms || "-"}</div>
-                </div>
-                <div className="rounded-xl bg-slate-50 p-3">
-                  <div className="text-xs font-medium text-slate-500">현재 닉네임</div>
-                  <div className="mt-1 whitespace-pre-wrap text-sm text-slate-900">{it.currentNicknames || "-"}</div>
-                </div>
-              </div>
-
-              {it.recommendedNickname ? (
-                <div className="mt-3 rounded-xl bg-brand-50 p-3">
-                  <div className="text-xs font-medium text-brand-700">요청 닉네임</div>
-                  <div className="mt-1 text-sm font-semibold text-brand-700">{it.recommendedNickname}</div>
-                </div>
-              ) : null}
 
               <div className="mt-3">
                 <label className="block text-xs font-medium text-slate-500">메모(선택)</label>
