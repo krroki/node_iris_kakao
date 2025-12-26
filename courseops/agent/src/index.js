@@ -192,14 +192,28 @@ function upsertLocalCourseConfig(course) {
   return { ok: true, path: p, courseKey, clubId: okClubId ? String(next.clubId || "") : "" };
 }
 
-async function postJson(url, body) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-courseops-agent-token": agentToken },
-    body: JSON.stringify(body),
-  });
-  const j = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, json: j };
+async function postJson(url, body, timeoutMs = 45000) {
+  const ms = Math.max(1000, Number(timeoutMs || 0) || 45000);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-courseops-agent-token": agentToken },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const text = await res.text().catch(() => "");
+    let j = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      j = {};
+    }
+    return { ok: res.ok, status: res.status, json: j };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 function safeFilename(s) {
@@ -351,7 +365,11 @@ function getCourseState(courseKey) {
 }
 
 async function report(jobId, payload) {
-  await postJson(`${consoleBase}/api/agent/report`, { jobId, ...payload });
+  const r = await postJson(`${consoleBase}/api/agent/report`, { jobId, ...payload }, 45000);
+  if (!r.ok) {
+    const msg = String(r?.json?.error || "").trim();
+    throw new Error(msg ? `작업 상태 전송에 실패했어요(${msg}).` : `작업 상태 전송에 실패했어요(HTTP ${r.status}).`);
+  }
 }
 
 async function runSyncFull(job) {
@@ -433,7 +451,7 @@ async function runSyncFull(job) {
           const payload = readJsonFileStrict(snapshotPath);
           const fetchedAt = String(payload?.fetchedAt || cs?.lastSnapshotFetchedAt || cs?.lastOkTs || "").trim() || null;
 
-          const up = await postJson(`${consoleBase}/api/agent/snapshot`, { courseId, fetchedAt, payload });
+          const up = await postJson(`${consoleBase}/api/agent/snapshot`, { courseId, fetchedAt, payload }, 180000);
           if (!up.ok) throw new Error(`스냅샷 업로드에 실패했어요(HTTP ${up.status}).`);
 
           await report(job.id, {
@@ -703,15 +721,34 @@ async function main() {
   while (true) {
     try {
       heartbeat({ state: "POLLING" });
-      const r = await postJson(`${consoleBase}/api/agent/poll`, { agentName, version: "0.1" });
-      if (r.ok && r.json?.job) {
+      const r = await postJson(`${consoleBase}/api/agent/poll`, { agentName, version: "0.1" }, 30000);
+      if (!r.ok) {
+        const msg = String(r?.json?.error || "").trim();
+        throw new Error(msg ? `작업 확인에 실패했어요(${msg}).` : `작업 확인에 실패했어요(HTTP ${r.status}).`);
+      }
+
+      if (r.json?.job) {
         heartbeat({ state: "WORKING" });
-        await handleJob(r.json.job);
+        try {
+          await handleJob(r.json.job);
+        } catch (e) {
+          const msg = String(e?.message || "작업 중 문제가 생겼어요.");
+          try {
+            await report(r.json.job.id, {
+              status: "FAILED",
+              progressPct: 100,
+              progressMessage: msg,
+              resultMessage: msg,
+              events: [{ level: "ERROR", message: msg }],
+            });
+          } catch {}
+        }
       } else {
         await sleep(pollSec * 1000);
       }
-    } catch {
-      heartbeat({ state: "ERROR" });
+    } catch (e) {
+      const msg = String(e?.message || "ERROR").trim();
+      heartbeat({ state: "ERROR", lastError: msg.slice(0, 200) });
       await sleep(Math.max(2, pollSec) * 1000);
     }
   }

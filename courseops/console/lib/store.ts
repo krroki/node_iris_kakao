@@ -647,6 +647,27 @@ export async function coursesStore() {
         .reverse();
     },
     async claimNextJob(agentName: string): Promise<(JobRow & { payload: any }) | null> {
+      // 에이전트가 멈춰서 heartbeat가 오래 갱신되지 않은 RUNNING 작업은,
+      // 자동으로 다시 QUEUED로 되돌려서 다음 폴링에서 재시도되게 한다.
+      // (웹/운영에서 “멈춘 작업”을 사람이 수동으로 정리하지 않게 하는 목적)
+      const staleSec = 7 * 60;
+      await sql`
+        update courseops_jobs
+        set status='QUEUED',
+            requested_at=now(),
+            started_at=null,
+            finished_at=null,
+            updated_at=now(),
+            agent_name=null,
+            last_heartbeat_at=null,
+            progress_pct=null,
+            progress_message=null,
+            result_message=null
+        where status='RUNNING'
+          and last_heartbeat_at is not null
+          and last_heartbeat_at < now() - (${staleSec} * interval '1 second')
+      `;
+
       const rows = await sql<
         {
           id: string;
