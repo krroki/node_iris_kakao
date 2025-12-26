@@ -969,6 +969,18 @@ class CourseMembershipAuditWorker:
             prev = [p for p in parts[:-1] if p]
             return cur, prev
 
+        def _coerce_openchat_style_nick(raw: str) -> str:
+            """
+            결제/수기 SSOT의 닉네임 칸에 오픈채팅 닉네임 형태가 그대로 들어오는 실수를 방어한다.
+            - 예) "정@록(나물쓰)" -> "나물쓰"
+            - 예) "유@비/냥댕" -> "냥댕"
+            """
+            s = str(raw or "").strip()
+            if not s:
+                return ""
+            parsed, _src = audit_mod.parse_cafe_nickname_from_openchat(s)
+            return parsed or s
+
         def _should_exclude(kind_raw: str) -> bool:
             k = _norm(kind_raw)
             if not k:
@@ -1005,6 +1017,8 @@ class CourseMembershipAuditWorker:
 
             ssot_nick_raw = _cell(row, idx_nick)
             ssot_nick, ssot_aliases = _split_nickname_change(ssot_nick_raw)
+            ssot_nick = _coerce_openchat_style_nick(ssot_nick)
+            ssot_aliases = [x for x in [_coerce_openchat_style_nick(a) for a in (ssot_aliases or [])] if x]
             if not ssot_nick:
                 stats["missingNickname"] += 1
 

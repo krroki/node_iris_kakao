@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Tuple
 
 from .config import GradeRules
@@ -19,14 +20,22 @@ ROOM_LABEL: dict[str, str] = {
 # 예) "정@@록(나물쓰)" -> "나물쓰"
 # NOTE: 일부 사용자는 전각 괄호(（ ）)를 쓰기도 해서 함께 허용한다.
 _CAFE_NICK_RE = re.compile(r"[（(]([^（）()\n\r]{1,100})[）)]\s*$")
+_CAFE_NICK_ANY_RE = re.compile(r"[（(]([^（）()\n\r]{1,100})[）)]")
 _CAFE_NICK_SLASH_RE = re.compile(r"[/／]\s*([^/／\s]{1,100})\s*$")
-_WS_RE = re.compile(r"\s+")
+_WS_RE = re.compile(r"[\s\u200b\u200c\u200d\ufeff\u2060]+")
 
 
 def normalize_cafe_nickname(s: str) -> str:
     # NOTE: 카페/오픈채팅 닉네임은 공백 유무가 흔히 흔들리므로(예: "오남매워킹맘" vs "오남매 워킹맘")
     # 안전하게 "공백 제거" 정규화 키를 추가로 사용한다(단, 정규화 매칭은 유니크할 때만 적용).
-    return _WS_RE.sub("", str(s or "").strip()).lower()
+    x = str(s or "").strip()
+    if not x:
+        return ""
+    # NOTE: NFKC로 호환 문자/전각 등을 먼저 정리한다.
+    x = unicodedata.normalize("NFKC", x)
+    # NOTE: 일반 공백 + 제로폭 공백류까지 제거해 비교 키를 안정화한다.
+    x = _WS_RE.sub("", x)
+    return x.casefold()
 
 
 def classify_track_from_payment(ssot_grade: str, ssot_kind: str) -> str:
@@ -221,6 +230,21 @@ def resolve_cafe_nickname_from_openchat(
     if (not s) or (not cafe_nick_set):
         return "", "none"
 
+    # "(...)" 가 끝에 없거나, 뒤에 이모지/추가 텍스트가 붙는 변형 케이스:
+    # 전체 문자열에서 괄호 그룹을 훑되, 후보가 cafe_nick_set에 존재(또는 공백 정규화 유일 매칭)할 때만 사용한다.
+    any_matches = list(_CAFE_NICK_ANY_RE.finditer(s))
+    if any_matches:
+        for m in reversed(any_matches):
+            inner = str(m.group(1) or "").strip()
+            if not inner:
+                continue
+            if inner in cafe_nick_set:
+                return inner, "paren_any"
+            nu = _norm_unique(inner)
+            if nu:
+                nick, label = nu
+                return nick, f"paren_any_{label}"
+
     # "(카페닉)" 패턴이 맞지만, 괄호 안이 카페닉이 아닌 경우(역전):
     # - 예: "카페닉(이름마스킹)" 형태로 들어오는 케이스가 있어 prefix를 카페닉 후보로 본다.
     # - 단, 후보가 cafe_nick_set에 존재(또는 공백 정규화로 유일 매칭)할 때만 사용한다.
@@ -251,8 +275,13 @@ def resolve_cafe_nickname_from_openchat(
             return nick, f"after_paren_{label}"
 
     # "박@희(카페닉" 처럼 닫는 괄호가 누락된 케이스: '(' 이후 텍스트가 cafeNickname이면 사용
-    if "(" in s and ")" not in s:
-        tail = s.rsplit("(", 1)[-1].strip()
+    if ("(" in s or "（" in s) and (")" not in s and "）" not in s):
+        # 끝에 "("가 중복으로 붙은 케이스(예: "조@선(워럭(")를 먼저 정리한다.
+        s2 = s
+        while s2.rstrip().endswith(("(", "（")):
+            s2 = s2.rstrip()[:-1]
+        last_open = max(s2.rfind("("), s2.rfind("（"))
+        tail = s2[last_open + 1 :].strip() if last_open >= 0 else ""
         if tail and tail in cafe_nick_set:
             return tail, "broken_paren"
         nu = _norm_unique(tail)
@@ -571,9 +600,13 @@ def build_actions_rows(
             return False
         if "STAFF" in x.upper():
             return True
+        if "BOT" in x.upper():
+            return True
         for kw in ("스태프", "스탭", "운영진", "운영자", "부운영", "매니저", "조교", "카페스탭"):
             if kw in x:
                 return True
+        if "봇" in x:
+            return True
         return False
 
     def _recommend_nickname(openchat_nick: str, parsed_src: str, resolved_cafe_nick: str, name_mask_prefix: str) -> str:
@@ -1703,6 +1736,8 @@ def build_overview_rows(
             return False
         if "STAFF" in x.upper():
             return True
+        if "BOT" in x.upper():
+            return True
         if ("스태프" in x) or ("스탭" in x):
             return True
         if ("운영진" in x) or ("운영자" in x) or ("부운영" in x):
@@ -1710,6 +1745,8 @@ def build_overview_rows(
         if "매니저" in x:
             return True
         if x.startswith("조교"):
+            return True
+        if "봇" in x:
             return True
         return False
 
@@ -2383,6 +2420,8 @@ def build_actions_rows_legacy(
             return False
         if "STAFF" in x.upper():
             return True
+        if "BOT" in x.upper():
+            return True
         if ("스태프" in x) or ("스탭" in x):
             return True
         if ("운영진" in x) or ("운영자" in x) or ("부운영" in x):
@@ -2390,6 +2429,8 @@ def build_actions_rows_legacy(
         if "매니저" in x:
             return True
         if x.startswith("조교"):
+            return True
+        if "봇" in x:
             return True
         return False
 
