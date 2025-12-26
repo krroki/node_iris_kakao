@@ -865,7 +865,7 @@ async function runReverifyPending(job) {
 
     const py = resolvePythonExe();
     const script = path.join(repoRoot, "scripts", "crawl_naver_cafe_members.py");
-    const timeoutMs = envInt("COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC", 30 * 60, 60, 60 * 60) * 1000;
+    const timeoutMs = envInt("COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC", 60 * 60, 60, 4 * 60 * 60) * 1000;
 
     const args = [
       script,
@@ -991,6 +991,8 @@ async function runReverifyPending(job) {
         },
       });
     } finally {
+      // 다음 시도 간격은 "시작"이 아니라 "끝" 기준으로 계산한다(장시간 크롤링 실패 시 즉시 재시도 루프 방지).
+      lastMainCafeAttemptMs = Date.now();
       mainCafeInFlight = false;
     }
   }

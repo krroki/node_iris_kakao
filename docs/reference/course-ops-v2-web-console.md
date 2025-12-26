@@ -191,7 +191,7 @@
     - `COURSEOPS_MAIN_CAFE_ENABLED=true`
     - `COURSEOPS_MAIN_CAFE_SYNC_INTERVAL_SEC=21600` (기본 6시간)
     - `COURSEOPS_MAIN_CAFE_RETRY_INTERVAL_SEC=600` (기본 10분, 실패 시 재시도 간격)
-    - `COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC=1800` (기본 1800초)
+    - `COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC=3600` (기본 3600초)
     - `COURSEOPS_PYTHON_EXE=<python.exe>` (비우면 `.venv_cafe` 우선)
     - 로컬 raw 스냅샷: `node-iris-app/data/courseops_global_snapshots/main_cafe.json`
     - 콘솔 업로드: members 원문은 올리지 않고, 요약(summary)만 전송(요청 크기/DB 부하 방지)
