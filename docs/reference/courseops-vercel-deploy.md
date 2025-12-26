@@ -24,6 +24,7 @@
 
 - `COURSEOPS_SHARED_PASSWORD`
   - 공용 비밀번호(로그인에 사용)
+  - 운영 기본값(요청): `0000` (필요 시 수시 교체)
 - `COURSEOPS_COURSE_MANAGER_NAMES`
   - 강의 관리(`/courses`)·계정 관리(`/accounts`) 권한 이름 목록(콤마로 구분)
   - 예: `glemfkcl`
@@ -106,6 +107,11 @@ DB 제공자 콘솔(Supabase/Neon/Vercel Postgres 등)에서 `schema.sql` 내용
    - `/accounts`(계정 관리)가 사이드바에 보이고, 페이지 접근이 되는지
    - `/courses`에서 강의 목록이 보이는지(강의 관리자만 신규 강의 등록 가능)
 3. 계정 1명이라도 등록하면(enabled=true), 이후 로그인은 **등록된 이름만** 허용된다(관리자는 예외).
+
+로그인이 안 될 때(자주 하는 실수):
+
+- `glemfkcl / 0000`이 안 되면, Vercel 환경 변수 `COURSEOPS_SHARED_PASSWORD`가 `0000`으로 설정돼 있는지 먼저 확인한다.
+- 관리자/일반 모두 비밀번호는 동일하며, 관리자 권한은 “이름 목록”으로만 결정된다.
 
 주의:
 
