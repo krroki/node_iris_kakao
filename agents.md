@@ -301,6 +301,8 @@
       - 스냅샷: `scripts/snapshot_talkapi_auth.ps1` → `data/talkapi_auth_snapshots/`
       - 런타임 반영: `scripts/ensure_talkapi_auth_applied.ps1` (상태 파일: `node-iris-app/data/talkapi_auth_apply_status.json`)
       - 자동 실행: `windows/start_all.ps1`(부팅 시 1회) + `windows/watchdog.ps1`(기본 30분 주기)
+      - (2025-12-26) 공개 Talk-API 파서 이슈: `accessToken-deviceUUID`를 단순 `split("-")`로 파싱해 accessToken 자체에 `-`가 포함되면 `talkStatus=-500`이 반복될 수 있다.
+        - 해결: 대시 없는 accessToken 재캡처 또는 TalkApi 포크/자가 호스팅(마지막 `-` 기준 분리) 필요(ADR-0024 참고).
     - UI(3100)에는 `auth: 적용됨/실패` 태그도 함께 노출된다(`node-iris-app/data/talkapi_auth_apply_status.json`).
       - `Talk-API: 실패`가 보여도 `auth: 적용됨`이 더 최신이면, “실패로 확정”이 아니라 **테스트 방에서 1회 재검증**이 필요한 상태일 수 있다. (런북: `docs/reference/kakao-mentions-and-reply.md`의 “빠른 복구 절차”)
   - Welcome 오픈프로필 닫기 안내/확인(ADR-0045):

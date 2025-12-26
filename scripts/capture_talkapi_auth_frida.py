@@ -672,9 +672,45 @@ def main(argv: list[str]) -> int:
     duuid_candidates: Dict[str, Dict[str, str]] = {}
     done = threading.Event()
     min_auth_len = 20
+    best_auth: Optional[str] = None
+    best_duuid: Optional[str] = None
+
+    def _finish_capture(auth: str, duuid: str, where: str, url: str) -> None:
+        nonlocal found, best_auth, best_duuid
+
+        if done.is_set():
+            return
+
+        auth = str(auth or "").strip()
+        duuid = str(duuid or "").strip()
+        if not auth or not duuid:
+            return
+
+        auth_header = f"{auth}-{duuid}"
+        out_path = Path(args.out_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(auth_header + "\n", encoding="utf-8")
+        _snapshot_auth_file(out_path, auth_header)
+
+        print(
+            "[OK] authHeader 캡처 완료: "
+            f"{out_path} (Authorization={_redact(auth)}, Duuid={_redact(duuid)}, where={where}, url={url[:80]})"
+        )
+
+        if args.apply_runtime:
+            try:
+                _apply_runtime(args.realtime_api_base, auth_header)
+                print("[OK] Realtime API(/runtime) authHeader 반영 완료")
+            except Exception as e:
+                print(f"[WARN] Realtime API(/runtime) 반영 실패: {e}")
+
+        found = {"auth": auth, "duuid": duuid, "authHeader": auth_header}
+        best_auth = auth
+        best_duuid = duuid
+        done.set()
 
     def on_message(message: Dict[str, Any], data: Any) -> None:
-        nonlocal found
+        nonlocal found, best_auth, best_duuid
         try:
             if message.get("type") != "send":
                 # script error 등
@@ -714,10 +750,19 @@ def main(argv: list[str]) -> int:
                     auth_candidates.setdefault(value, {"value": value, "where": where, "url": url})
                     if args.debug:
                         print(f"[DEBUG] Authorization 발견: {_redact(value)} (where={where}, url={url[:80]})")
+                    # talkapi_auth 이벤트가 늦게 오거나 일부 훅 포인트가 깨진 경우에도
+                    # Authorization/Duuid를 각각 관찰해서 authHeader를 구성할 수 있다.
+                    if len(value) >= min_auth_len and "-" not in value:
+                        best_auth = value
                 elif name == "duuid":
                     duuid_candidates.setdefault(value, {"value": value, "where": where, "url": url})
                     if args.debug:
                         print(f"[DEBUG] Duuid 발견: {_redact(value)} (where={where}, url={url[:80]})")
+                    if len(value) >= 8 and "-" not in value:
+                        best_duuid = value
+
+                if best_auth and best_duuid:
+                    _finish_capture(best_auth, best_duuid, where=where, url=url)
                 return
             if payload.get("type") == "param_key":
                 if args.debug:

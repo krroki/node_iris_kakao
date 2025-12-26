@@ -47,10 +47,24 @@ function Redact([string]$s) {
 function Redact-AuthHeader([string]$authHeader) {
   $raw = [string]$authHeader
   $raw = $raw.Trim()
-  $parts = $raw.Split("-", 2)
-  $authorization = if ($parts.Length -ge 1) { $parts[0] } else { "" }
-  $duuid = if ($parts.Length -ge 2) { $parts[1] } else { "" }
-  return @{ authorization = (Redact $authorization); duuid = (Redact $duuid) }
+  $idx = $raw.LastIndexOf("-")
+  if ($idx -lt 1 -or $idx -ge ($raw.Length - 1)) {
+    return @{
+      authorization = (Redact $raw)
+      duuid = ""
+      dashCount = ([regex]::Matches($raw, "-").Count)
+      accessTokenHasDash = $false
+    }
+  }
+  $authorization = $raw.Substring(0, $idx)
+  $duuid = $raw.Substring($idx + 1)
+  $dashCount = ([regex]::Matches($raw, "-").Count)
+  return @{
+    authorization = (Redact $authorization)
+    duuid = (Redact $duuid)
+    dashCount = $dashCount
+    accessTokenHasDash = ($authorization -like "*-*")
+  }
 }
 
 function Sha256Hex([string]$s) {
@@ -141,6 +155,10 @@ try {
     authFile = $AuthFile
     hash = $hash
     redacted = $red
+    meta = @{
+      dashCount = $red.dashCount
+      accessTokenHasDash = $red.accessTokenHasDash
+    }
     realtimeApiBase = $rt
   }
   Save-Json -path $statusPath -obj $out
@@ -155,6 +173,10 @@ try {
     authFile = $AuthFile
     hash = $hash
     redacted = $red
+    meta = @{
+      dashCount = $red.dashCount
+      accessTokenHasDash = $red.accessTokenHasDash
+    }
     realtimeApiBase = $rt
     error = $err
   }

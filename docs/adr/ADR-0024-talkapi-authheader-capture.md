@@ -17,9 +17,12 @@
 
 문제는 운영 환경(루팅 단말/Redroid, IRIS 기반)에서 다음이 반복적으로 발생했다.
 
-- Talk-API 문서/레퍼런스만으로는 authHeader를 안정적으로 확보하기 어렵다.
+- Talk-API 문서/레퍼런스만으로는 authHeader를 안정적으로 확보하기 어렵다.   
 - 로컬 저장소에서 토큰/UUID를 “추측”하거나 “대충 스캔”하는 방식은 암호화/난독화/저장 위치 변경으로 자주 깨진다.
 - 프로젝트 불변식(특히 `docs/agents.md`의 “FALLBACK 절대 금지”) 때문에, authHeader가 없는데도 조용히 진행하거나 임의 값으로 대체하는 방식은 허용되지 않는다.
+- (2025-12-26) Talk-API 공개 서버 구현은 `accessToken-deviceUUID`를 단순 `split("-")`로 파싱한다.
+  - accessToken 자체에 `-`가 포함되면 deviceUUID가 깨져 `status=-500`으로 실패할 수 있다.
+  - 이 경우 “대시가 없는 accessToken”을 재캡처하거나, TalkApi 서버를 포크/자가 호스팅해 **마지막 `-` 기준 분리**로 보강해야 한다.
 
 따라서 “KakaoTalk이 실제로 보내는 Authorization/Duuid 값”을 런타임에서 **결정적으로** 캡처해 authHeader를 재구성하는 방법이 필요하다.
 
@@ -90,6 +93,9 @@ Talk-API는 입력으로 authHeader(`accessToken-deviceUUID`)를 받지만,
     - LOCO 컨텍스트: `LocoJob.i()` 반환 객체 및 `Fp.U0.<init>` 등 (oauthToken/duuid 보유 객체)
     - 내부 네트워크 빌더: `duuid`/`oauthtoken` 파라미터 주입 지점(난독화 클래스)
   - 초기화 과정에서 너무 짧은 토큰이 먼저 잡히는 케이스를 피하기 위해 최소 길이 검증(min_len)을 적용한다.
+  - (2025-12-26) 공개 Talk-API 파서 이슈 대응
+    - `Authorization` 값에 `-`가 포함된 후보는 저장하지 않고 “대시가 없는 후보”를 계속 대기한다.
+    - `talkapi_auth` 이벤트가 늦거나 일부 훅 포인트가 깨져도, `header_seen` 기반으로 `Authorization`/`Duuid`를 각각 관찰해 authHeader를 구성할 수 있게 보강했다.
   - 캡처 결과는 `data/talkapi_auth.txt`에 저장하며, 콘솔에는 레드랙트만 출력한다.
 
 ### 2) 보조: 로컬 스캔/수동 주입
