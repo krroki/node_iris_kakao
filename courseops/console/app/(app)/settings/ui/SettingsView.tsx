@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
-type Me = { session?: { name?: string } | null; canSync?: boolean };
+type Me = { session?: { name?: string } | null; canSync?: boolean; isCourseManager?: boolean };
 
 const LS_HIDE_HIDDEN = "courseops_pref_hide_hidden_actions";
 const LS_HIDE_INCOMPLETE = "courseops_pref_hide_incomplete_actions";
@@ -49,6 +50,21 @@ export default function SettingsView() {
         <div className="mt-1 text-xs text-slate-500">{me?.canSync ? "데이터 동기화 가능" : "조회만 가능"}</div>
       </div>
 
+      {me?.isCourseManager ? (
+        <div className="rounded-2xl border bg-white p-4 shadow-sm">
+          <div className="text-sm font-semibold">강의 설정</div>
+          <div className="mt-1 text-sm text-slate-600">결제 SSOT 시트/톡방 ID 등 강의 설정은 “강의 관리”에서 입력해요.</div>
+          <div className="mt-3">
+            <Link
+              href="/courses"
+              className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+            >
+              강의 관리로 이동
+            </Link>
+          </div>
+        </div>
+      ) : null}
+
       <div className="rounded-2xl border bg-white p-4 shadow-sm">
         <div className="text-sm font-semibold">대기열 표시</div>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -89,4 +105,3 @@ export default function SettingsView() {
     </div>
   );
 }
-

@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "cross-env NEXT_TELEMETRY_DISABLED=1 next dev -p 3200",
-    "build": "next build",
+    "build": "node scripts/init-db.mjs && next build",
     "start": "cross-env NEXT_TELEMETRY_DISABLED=1 next start -p 3200",
     "vercel-build": "node scripts/init-db.mjs && cross-env NEXT_TELEMETRY_DISABLED=1 next build",
     "db:init": "node scripts/init-db.mjs"
