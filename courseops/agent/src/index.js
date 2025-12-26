@@ -62,7 +62,17 @@ try {
 
 function writeAgentStatus(extra = {}) {
   const now = new Date().toISOString();
+  let prev = {};
+  try {
+    if (fs.existsSync(agentStatusPath)) {
+      const raw = fs.readFileSync(agentStatusPath, "utf8").replace(/^\uFEFF/, "").trim();
+      const parsed = raw ? JSON.parse(raw) : {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prev = parsed;
+    }
+  } catch {}
+
   const j = {
+    ...prev,
     pid: process.pid,
     agentName,
     consoleBase,
