@@ -240,6 +240,7 @@ if (result === null) {
   - 폴링: `confirmWindowMs`(최대 대기), `confirmCheckIntervalMs`(체크 주기)
 - 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+  - (2025-12-26 기준) bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`
 
 ### Welcome 후속 Reply(감사합니다)
 

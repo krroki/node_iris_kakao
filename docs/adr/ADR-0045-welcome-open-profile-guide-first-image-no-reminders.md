@@ -139,6 +139,14 @@
     - 닉네임이 바뀌지 않았으면 pending을 종료하고 **확인 멘트는 스킵**한다.
   - 파일: `node-iris-app/src/workers/welcome_worker.ts`
 
+### 운영 보강 (2025-12-26)
+
+- 오픈프로필 닫기 안내 가이드 이미지 교체(파일명 유지, 내용 교체):
+  - 파일(SSOT): `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+  - 기대값: bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`
+- 원인: 운영 워킹트리에서 해당 PNG가 구버전으로 남아 서버가 구버전 자산을 서빙했고, welcome-worker가 이를 그대로 전송함.
+- 재발 방지: 가이드 이미지 교체 시 (1) bytes/sha 확인 (2) welcome-worker 재기동 (3) git 커밋으로 HEAD 고정.
+
 ---
 
 ## Consequences (결과)

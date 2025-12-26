@@ -369,3 +369,12 @@
 - 구현(초안) 착수:
   - `courseops/console/`: 작업 대기열/설정/로그인 + 동기화(전체)/빠른 재검증 트리거 + 에이전트 폴링 API 초안
   - `courseops/agent/`: 로컬에서 `SYNC_FULL`/`REVERIFY_PENDING` 작업을 받아 수행 후 진행도/검증 결과를 보고하는 루프 초안
+
+---
+
+## 2025-12-26
+
+- Welcome 오픈프로필 닫기 안내 “구버전 이미지 발송” 이슈 조치:
+  - 원인: 서버가 서빙하는 가이드 PNG가 운영 워킹트리에서 구버전으로 남아있어 그대로 발송됨
+  - 조치: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`를 신버전(bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`)으로 교체
+  - 검증: `http://127.0.0.1:8650/templates/assets/welcome/profile_close_guide/KakaoTalk_20251219_021112774.png` 응답 bytes=425477 확인 후 welcome-worker 재기동
