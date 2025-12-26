@@ -109,6 +109,52 @@ function parseRooms(rooms: string) {
     .filter(Boolean);
 }
 
+function formatReasonText(reason: string) {
+  const raw = String(reason || "").trim();
+  if (!raw) return "-";
+
+  const mapOne = (token: string) => {
+    const t = String(token || "").trim();
+    const n = t.replace(/\s+/g, "");
+    if (!n) return "";
+    if (n.includes("멤버목록이덜불러와짐")) return "멤버 목록이 비어 있어요";
+    if (n.includes("닉네임이???로표시됨")) return "닉네임이 깨져 보여요";
+    if (n.includes("카페미가입")) return "카페 미가입";
+    if (n.includes("톡방미입장")) return "필수 방에 아직 없어요";
+    if (n.includes("동명이인의심")) return "동명이인 가능성이 있어요";
+    if (n.includes("일반반인데프리미엄방참여중")) return "일반반인데 프리미엄방에 있어요";
+    if (n.includes("결제기록없음")) return "결제 기록이 없어요";
+    if (n.includes("카페명단에없음")) return "카페 명단에서 찾지 못했어요";
+    if (n.includes("괄호(카페닉)없음")) return "카페 닉네임(괄호)이 없어요";
+    if (n.includes("슬래시포함")) return "닉네임에 '/'가 있어요";
+    if (n.includes("이름마스킹규칙불일치")) return "이름(@) 규칙이 달라요";
+    if (n.includes("형식불일치")) return "닉네임 형식이 달라요";
+    return t;
+  };
+
+  // "A / B" 형태(카페/톡방 등)는 + 로 합쳐서 짧게 표현
+  if (raw.includes("/")) {
+    const parts = raw
+      .split("/")
+      .map((x) => mapOne(x))
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    return parts.length ? parts.join(" + ") : "-";
+  }
+
+  // 이슈 목록은 "·"로 묶어 표시
+  if (raw.includes(",")) {
+    const parts = raw
+      .split(",")
+      .map((x) => mapOne(x))
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    return parts.length ? parts.join(" · ") : "-";
+  }
+
+  return mapOne(raw) || "-";
+}
+
 function PriorityBadge({ p }: { p: ActionItem["priority"] }) {
   const cls =
     p === "지금"
@@ -360,7 +406,7 @@ export default function QueueView() {
                   <div className="mt-2 space-y-1">
                     <div className="truncate text-lg font-semibold text-slate-900">{it.target || "대상 없음"}</div>
                     <div className="text-sm font-medium text-slate-800">{actionLabel || "조치"}</div>
-                    <div className="text-sm text-slate-600">사유: {it.reason || "-"}</div>
+                    <div className="text-sm text-slate-600">사유: {formatReasonText(it.reason)}</div>
                   </div>
 
                   {rooms.length ? (
