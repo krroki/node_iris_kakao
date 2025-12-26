@@ -55,6 +55,7 @@
   - 기존 `POST /send/iris/reply_media` 유지(ADR-0030)
 - Node 워커/명령
   - Talk-API 실패 시 텍스트는 `/send/iris/reply_text`로 폴백
+  - Talk-API가 연속 실패할 때는 일정 시간 Talk-API 호출을 스킵하고 IRIS 폴백으로 즉시 전환한다(기본 30초, env: `TALKAPI_FAILURE_COOLDOWN_MS`)
   - 이미지 URL만 있는 경우 URL→base64로 변환 후 `/send/iris/reply_media`로 폴백
   - 멘션 API가 없을 때는 예외로 종료하지 않고 “일반 텍스트”로 degrade
 

@@ -7,6 +7,9 @@
 - 2025-12-26: image-worker(Gemini 웹) 브라우저 세션 재사용 기본값 변경 — `GEMINI_WEB_REUSE_CONTEXT` 기본값을 `false`로 바꿔 작업 완료 후 Chrome 창이 남지 않게 정렬. 속도 최적화가 필요하면 env로 `true`를 명시해 재사용(창 유지) 가능.
 - 2025-12-26: Welcome 오픈프로필 닫기 안내 가이드 이미지 교체 — `runtime.json.welcome.openProfileCloseGuide.images` SSOT를 `assets/welcome/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`로 고정하고, 레거시 가이드 이미지는 운영 워킹트리에서 제거(재발 방지).
 - 2025-12-26: CourseOps 대시보드에 메인 카페(장기 운영) 지표 추가 — 로컬 에이전트가 메인 카페 멤버 스냅샷을 수집해 글로벌 스냅샷으로 업로드하고, 웹은 결과 지표만 노출. (ADR-0047)
+- 2025-12-27: Talk-API 연속 실패(예: `talkStatus=-500`) 완화 — 워커가 일정 시간 Talk-API 호출을 스킵하고 IRIS 폴백으로 즉시 전환(기본 30초, env: `TALKAPI_FAILURE_COOLDOWN_MS`).
+- 2025-12-27: Welcome “확인 멘트” 중복 발신 재발 방지 — `feedType=2` fast-track 확인 폴링과 주기 tick이 동시에 돌며 동일 멘트가 2회 나가던 레이스를 in-flight 가드로 차단.
+- 2025-12-27: Welcome 이미지 미발신 감지 보강 — Welcome 템플릿 이미지/오픈프로필 안내 이미지 발신 결과를 `welcome_worker_status.json`에 별도 기록(`lastWelcomeImage*`, `lastOpenProfileCloseGuideImage*`)하고, 실패 시 테스트방에만 1시간 dedup 운영 알림 발신.
 
 - 2025-12-24: openchat_load_members 안정화 — adb shell에서 open.kakao join scheme(`kakaoopen://join?...&r=...`) 실행 시 `&` 이스케이프 누락으로 단말이 런처로 떨어져 IRIS 이미지 발신(reply_media)이 실패(Welcome 템플릿 이미지 미발송)하는 케이스를 수정(스크립트에서 자동 escape + 실패 시 KakaoTalk foreground 복귀). 또한 기본닉 판별 regex에 “캐릭터명 단독” 패턴을 추가(예: `춘식이`, `팬더주니어`).
 - 2025-12-23: 강의 운영 v2 “운영 UI”를 스프레드시트(ACTIONS)에서 **CourseOps 웹 콘솔(go.yoorang.kr)**로 전환 — 이름+공용 비번 로그인(자동 로그인) + `처리 완료→확인 대기→빠른 재검증/전체 동기화`로 완료를 검증 확정 + 담당자/시간/메모(선택) 기록(동시접속 충돌 방지). (ADR-0046, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md`)

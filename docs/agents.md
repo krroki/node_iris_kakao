@@ -242,6 +242,14 @@ if (result === null) {
   - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
   - (2025-12-26 기준) bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`
 
+- 상태/알림:
+  - 이미지 발신 결과는 `node-iris-app/data/welcome_worker_status.json`의 아래 필드에 기록된다.
+    - `lastWelcomeImage*`
+    - `lastOpenProfileCloseGuideImage*`
+  - 이미지 발신이 실패하면 테스트방에만(1시간 dedup) 운영 알림(IRIS 텍스트)이 남는다.
+- Talk-API 연속 실패 완화:
+  - 워커는 일정 시간 Talk-API 호출을 스킵하고 IRIS 폴백으로 즉시 전환한다(기본 30초, env: `TALKAPI_FAILURE_COOLDOWN_MS`).
+
 ### Welcome 후속 Reply(감사합니다)
 
 - 오픈프로필인 경우: 감사 Reply는 스킵(가이드 + 닫힘 확인 멘트만)

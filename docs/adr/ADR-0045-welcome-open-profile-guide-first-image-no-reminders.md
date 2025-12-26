@@ -148,6 +148,18 @@
 - 재발 방지: 가이드 이미지 교체 시 (1) bytes/sha 확인 (2) welcome-worker 재기동 (3) git 커밋으로 HEAD 고정.
 - 재발 방지(정리): 미사용 레거시 가이드 이미지 폴더(`node-iris-app/config/templates/welcome/assets/{1,2,a}`)의 PNG를 삭제해 운영 워킹트리에 구버전 자산이 남아 재전송되는 케이스를 차단.
 
+### 운영 보강 (2025-12-27)
+
+- 닫힘 확인/닉변 확인 멘트 중복 발신 방지:
+  - `feedType=2` 이벤트로 “즉시 확인(빠른 폴링)”을 수행하면서, 동시에 주기 tick이 돌면 같은 확인 멘트가 2회 나갈 수 있다.
+  - 해결: confirmation processor에 **in-flight + rerun 요청 가드**를 추가해 동시 실행을 직렬화한다.
+- 이미지 미발신 감지/알림:
+  - Welcome 템플릿 이미지/오픈프로필 안내 이미지 발신 결과를 `welcome_worker_status.json`에 별도 기록한다.
+    - `lastWelcomeImage*`
+    - `lastOpenProfileCloseGuideImage*`
+  - 이미지 발신이 실패하면 **테스트용 오픈채팅방에만**(1시간 dedup) 운영 알림을 남긴다. (멘션/Reply 없이 IRIS 텍스트로만)
+  - 파일: `node-iris-app/src/workers/welcome_worker.ts`
+
 ---
 
 ## Consequences (결과)

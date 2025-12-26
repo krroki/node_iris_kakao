@@ -391,3 +391,24 @@
   - tests: `cd node-iris-app && npx vitest run --pool=forks --no-file-parallelism --maxWorkers=1`
   - restart: `windows/start_api.ps1`, `windows/start_welcome_worker.ps1 -Restart`, `windows/start_broadcast_worker.ps1 -Restart`, `windows/start_image_worker.ps1 -Restart`
   - smoke: `POST /send/iris/reply_media`로 오픈프로필 가이드 이미지(1080x1920) 테스트 방 발신 OK
+
+---
+
+## 2025-12-27
+
+- Welcome “확인 멘트” 중복 발신 재발 방지:
+  - 원인: `feedType=2` fast-track 확인 폴링과 주기 tick이 동시에 돌며 동일 멘트가 2회 나가는 레이스
+  - 조치: confirmation processor에 in-flight + rerun 요청 가드를 추가해 동시 실행을 직렬화
+  - 파일: `node-iris-app/src/workers/welcome_worker.ts`
+- Welcome 이미지 미발신 감지/운영 알림 보강:
+  - Welcome 템플릿 이미지/오픈프로필 안내 이미지 발신 결과를 `welcome_worker_status.json`에 별도 기록
+  - 실패 시 테스트방에만 1시간 dedup 운영 알림(IRIS 텍스트) 발신
+  - 파일: `node-iris-app/src/workers/welcome_worker.ts`
+- Talk-API 연속 실패 완화:
+  - 실패 후 일정 쿨다운 동안 Talk-API 호출을 스킵하고 IRIS 폴백으로 즉시 전환(기본 30초)
+  - env: `TALKAPI_FAILURE_COOLDOWN_MS`
+  - 파일: `node-iris-app/src/utils/talkapi.ts`
+- 적용:
+  - build: `cd node-iris-app && npm run build`
+  - restart: `windows/start_welcome_worker.ps1 -Restart`, `windows/start_broadcast_worker.ps1 -Restart`
+  - smoke: 테스트방에 IRIS 이미지 1장 발신(/send/iris/reply_media) OK

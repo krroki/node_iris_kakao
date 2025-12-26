@@ -117,6 +117,9 @@ const LOCK_PATH = path.join(APP_ROOT, "data", "locks", "welcome_worker.lock");
 
 const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const PHOTO_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
+// 운영 알림은 테스트용 오픈채팅방에만 발신한다(스팸 방지: dedup 적용).
+const OPS_LOG_ROOM_ID = "18462226881291012";
+const OPS_ALERT_DEDUP = new DedupCache(60 * 60 * 1000); // 1시간
 // join 이벤트 중복 방지:
 // - 일부 방에서는 member_joined(payloadType) 이벤트가 누락되고, feedType=4가 "message(messageType=0)"로만 들어오는 경우가 있다.
 // - 반대로 둘 다 들어오는 경우도 있으므로, roomId+messageId 기반으로 1회만 처리한다.
@@ -137,11 +140,15 @@ const joinBatches = new Map<string, JoinBatch>();
 
 // roomId:userId -> pending follow-up
 const pendingByUser = new Map<string, PendingFollowUp>();
-// roomId:userId -> pending "open profile close" confirmation polling
+// roomId:userId -> pending "open profile close" confirmation polling     
 const pendingOpenProfileCloseByUser = new Map<string, PendingOpenProfileCloseConfirmation>();
 // roomId:userId -> pending "nickname change request after image" confirmation polling
 const pendingNicknameChangeAfterImageByUser = new Map<string, PendingNicknameChangeAfterImageConfirmation>();
-// roomId:userId -> last known nickname from feedType=2(profile update)
+let openProfileCloseConfirmationsInFlight = false;
+let openProfileCloseConfirmationsRerunRequested = false;
+let nicknameChangeAfterImageConfirmationsInFlight = false;
+let nicknameChangeAfterImageConfirmationsRerunRequested = false;
+// roomId:userId -> last known nickname from feedType=2(profile update)   
 const profileNickByUser = new Map<string, { nickName: string; at: number }>();
 const PROFILE_NICK_CACHE_MS = 20 * 60 * 1000;
 
@@ -588,6 +595,19 @@ async function updateStatus(partial: Record<string, unknown>): Promise<void> {
   } catch (e) {
     logger.warn("[status] update failed", { err: String(e) });
   }
+}
+
+async function sendOpsAlertOnce(keyRaw: string, lines: string[]): Promise<void> {
+  const key = safeString(keyRaw);
+  if (!key) return;
+  if (OPS_ALERT_DEDUP.has(key)) return;
+  OPS_ALERT_DEDUP.mark(key);
+
+  const text = Array.isArray(lines) ? lines.map((s) => safeString(s)).filter(Boolean).join("\n") : "";
+  if (!text) return;
+
+  // 운영 알림은 Reply/멘션이 필요 없으므로 IRIS 텍스트로만 보낸다.
+  await tryServerIrisReplyText(logger, OPS_LOG_ROOM_ID, text, 12000);
 }
 
 async function readJsonSafe(p: string): Promise<Record<string, unknown>> {
@@ -1231,9 +1251,32 @@ async function sendOpenProfileCloseGuideForEntrant(
       const okImg = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 90_000);
       if (!okImg) {
         logger.warn("[welcome-open-profile] image send failed", { roomId, count: imagesBase64.length });
+        await updateStatus({
+          lastOpenProfileCloseGuideImageAttemptTs: new Date().toISOString(),
+          lastOpenProfileCloseGuideImageRoomId: roomId,
+          lastOpenProfileCloseGuideImageOk: false,
+          lastOpenProfileCloseGuideImageCount: imagesBase64.length,
+        });
+        await sendOpsAlertOnce(`welcome:open_profile:image_failed:${roomId}`, [
+          `[운영 알림] "${roomName}" 오픈프로필 닫기 안내 이미지 발신이 실패했어요`,
+          `- 확인: IRIS 상태/카카오톡 이미지 전송 설정(원본)`,
+        ]);
+      } else {
+        await updateStatus({
+          lastOpenProfileCloseGuideImageAttemptTs: new Date().toISOString(),
+          lastOpenProfileCloseGuideImageRoomId: roomId,
+          lastOpenProfileCloseGuideImageOk: true,
+          lastOpenProfileCloseGuideImageCount: imagesBase64.length,
+        });
       }
     } else {
       logger.warn("[welcome-open-profile] no images downloaded; skip send", { roomId, count: imageUrls.length });
+      await updateStatus({
+        lastOpenProfileCloseGuideImageAttemptTs: new Date().toISOString(),
+        lastOpenProfileCloseGuideImageRoomId: roomId,
+        lastOpenProfileCloseGuideImageOk: false,
+        lastOpenProfileCloseGuideImageCount: 0,
+      });
     }
   }
 
@@ -1282,6 +1325,15 @@ function enqueueOpenProfileCloseConfirmation(
 }
 
 async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Promise<void> {
+  if (openProfileCloseConfirmationsInFlight) {
+    openProfileCloseConfirmationsRerunRequested = true;
+    return;
+  }
+  openProfileCloseConfirmationsInFlight = true;
+  try {
+    do {
+      openProfileCloseConfirmationsRerunRequested = false;
+
   if (pendingOpenProfileCloseByUser.size === 0) return;
 
   const cfgRes = parseOpenProfileCloseGuideConfig(runtime);
@@ -1398,9 +1450,22 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
       pendingOpenProfileCloseByUser.set(key, p);
     }
   }
+    } while (openProfileCloseConfirmationsRerunRequested);
+  } finally {
+    openProfileCloseConfirmationsInFlight = false;
+  }
 }
 
 async function processNicknameChangeAfterImageConfirmations(runtime: RuntimeConfig): Promise<void> {
+  if (nicknameChangeAfterImageConfirmationsInFlight) {
+    nicknameChangeAfterImageConfirmationsRerunRequested = true;
+    return;
+  }
+  nicknameChangeAfterImageConfirmationsInFlight = true;
+  try {
+    do {
+      nicknameChangeAfterImageConfirmationsRerunRequested = false;
+
   if (pendingNicknameChangeAfterImageByUser.size === 0) return;
 
   const cfgRes = parseNicknameChangeAfterImageConfig(runtime);
@@ -1535,6 +1600,10 @@ async function processNicknameChangeAfterImageConfirmations(runtime: RuntimeConf
       pendingNicknameChangeAfterImageByUser.set(key, p);
     }
   }
+    } while (nicknameChangeAfterImageConfirmationsRerunRequested);
+  } finally {
+    nicknameChangeAfterImageConfirmationsInFlight = false;
+  }
 }
 
 async function maybeSendOpenProfileCloseGuide(
@@ -1604,9 +1673,32 @@ async function maybeSendOpenProfileCloseGuide(
       const okImg = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 90_000);
       if (!okImg) {
         logger.warn("[welcome-open-profile] image send failed", { roomId, count: imagesBase64.length });
+        await updateStatus({
+          lastOpenProfileCloseGuideImageAttemptTs: new Date().toISOString(),
+          lastOpenProfileCloseGuideImageRoomId: roomId,
+          lastOpenProfileCloseGuideImageOk: false,
+          lastOpenProfileCloseGuideImageCount: imagesBase64.length,
+        });
+        await sendOpsAlertOnce(`welcome:open_profile:image_failed:${roomId}`, [
+          `[운영 알림] "${roomName}" 오픈프로필 닫기 안내 이미지 발신이 실패했어요`,
+          `- 확인: IRIS 상태/카카오톡 이미지 전송 설정(원본)`,
+        ]);
+      } else {
+        await updateStatus({
+          lastOpenProfileCloseGuideImageAttemptTs: new Date().toISOString(),
+          lastOpenProfileCloseGuideImageRoomId: roomId,
+          lastOpenProfileCloseGuideImageOk: true,
+          lastOpenProfileCloseGuideImageCount: imagesBase64.length,
+        });
       }
     } else {
       logger.warn("[welcome-open-profile] no images downloaded; skip send", { roomId, count: imageUrls.length });
+      await updateStatus({
+        lastOpenProfileCloseGuideImageAttemptTs: new Date().toISOString(),
+        lastOpenProfileCloseGuideImageRoomId: roomId,
+        lastOpenProfileCloseGuideImageOk: false,
+        lastOpenProfileCloseGuideImageCount: 0,
+      });
     }
   }
 
@@ -1869,8 +1961,20 @@ async function flushWelcome(roomId: string): Promise<void> {
     }
     if (imagesBase64.length > 0) {
       const okImg = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 90_000);
+      await updateStatus({
+        lastWelcomeImageAttemptTs: new Date().toISOString(),
+        lastWelcomeImageRoomId: roomId,
+        lastWelcomeImageOk: okImg,
+        lastWelcomeImageTemplate: selection.templateName,
+        lastWelcomeImageCount: imagesBase64.length,
+      });
       if (!okImg) {
         logger.warn("[welcome] image send failed", { roomId, template: selection.templateName, count: imagesBase64.length });
+        await sendOpsAlertOnce(`welcome:image_failed:${roomId}`, [
+          `[운영 알림] "${batch.roomName}" welcome 이미지 발신이 실패했어요`,
+          `- 템플릿: ${selection.templateName}`,
+          `- 확인: IRIS 상태/카카오톡 이미지 전송 설정(원본)`,
+        ]);
       }
     } else {
       logger.warn("[welcome] no images downloaded; skip send", { roomId, template: selection.templateName, count: imageUrls.length });

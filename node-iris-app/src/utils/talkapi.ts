@@ -20,6 +20,34 @@ type TalkApiStatusFile = {
 const TALKAPI_STATUS_PATH = path.join(APP_ROOT, "data", "talkapi_status.json");
 const TALKAPI_STATUS_BAK_PATH = path.join(APP_ROOT, "data", "talkapi_status.json.bak");
 
+// Talk-API가 장애 상태일 때(예: status=-500 지속), 모든 워커가 매번 원격 호출→타임아웃을
+// 반복하면 체감 지연이 커진다. 따라서 실패 후 짧은 쿨다운 동안은 Talk-API 호출을 스킵하고
+// 즉시 IRIS 폴백으로 넘어가도록 한다.
+const TALKAPI_FAILURE_COOLDOWN_MS = Math.max(0, Number(process.env.TALKAPI_FAILURE_COOLDOWN_MS || 30_000));
+let talkApiCooldownUntil = 0;
+let lastCooldownLogAt = 0;
+
+function shouldSkipTalkApiDueToCooldown(logger: Logger): boolean {
+  if (!TALKAPI_FAILURE_COOLDOWN_MS) return false;
+  const now = Date.now();
+  if (talkApiCooldownUntil <= now) return false;
+  if (!lastCooldownLogAt || now - lastCooldownLogAt > 60_000) {
+    lastCooldownLogAt = now;
+    logger.info("[talkapi] skip due to failure cooldown", { msLeft: talkApiCooldownUntil - now });
+  }
+  return true;
+}
+
+function updateTalkApiCooldown(ok: boolean): void {
+  if (!TALKAPI_FAILURE_COOLDOWN_MS) return;
+  const now = Date.now();
+  if (ok) {
+    talkApiCooldownUntil = 0;
+    return;
+  }
+  talkApiCooldownUntil = Math.max(talkApiCooldownUntil, now + TALKAPI_FAILURE_COOLDOWN_MS);
+}
+
 let writeChain: Promise<void> = Promise.resolve();
 let lastWriteErrorAt = 0;
 
@@ -124,6 +152,7 @@ export async function tryServerTalkApiDispatch(
   timeoutMs = 10000,
 ): Promise<boolean> {
   try {
+    if (shouldSkipTalkApiDueToCooldown(logger)) return false;
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");
     const url = `${base}/send/talkapi/dispatch`;
     const ctrl = new AbortController();
@@ -147,6 +176,7 @@ export async function tryServerTalkApiDispatch(
         talkStatus: data?.talkApi?.status,
         errMsg: data?.talkApi?.errMsg,
       });
+      updateTalkApiCooldown(false);
       recordStatusFireAndForget({
         ok: false,
         kind: "dispatch",
@@ -165,6 +195,7 @@ export async function tryServerTalkApiDispatch(
         talkStatus: data?.talkApi?.status,
         errMsg: data?.talkApi?.errMsg,
       });
+      updateTalkApiCooldown(false);
       recordStatusFireAndForget({
         ok: false,
         kind: "dispatch",
@@ -177,6 +208,7 @@ export async function tryServerTalkApiDispatch(
       return false;
     }
     logger.info("[talkapi] dispatch ok", { roomId, talkStatus: data?.talkApi?.status });
+    updateTalkApiCooldown(true);
     recordStatusFireAndForget({
       ok: true,
       kind: "dispatch",
@@ -189,6 +221,7 @@ export async function tryServerTalkApiDispatch(
     return true;
   } catch (e) {
     logger.warn("[talkapi] dispatch error", { roomId, err: String(e) });
+    updateTalkApiCooldown(false);
     recordStatusFireAndForget({ ok: false, kind: "dispatch", roomId, errMsg: String(e) });
     return false;
   }
@@ -225,6 +258,7 @@ export async function tryServerTalkApiDispatchRawResult(
   mentionees: Array<{ name?: string; userId?: string }> = [],
 ): Promise<TalkApiDispatchRawResult> {
   try {
+    if (shouldSkipTalkApiDueToCooldown(logger)) return { ok: false, errMsg: "cooldown" };
     const base = (process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/$/, "");
     const url = `${base}/send/talkapi/dispatch_raw`;
     const payload: Record<string, unknown> = { roomId, message, type, attachment };
@@ -253,6 +287,7 @@ export async function tryServerTalkApiDispatchRawResult(
         talkStatus: data?.talkApi?.status,
         errMsg,
       });
+      updateTalkApiCooldown(false);
       recordStatusFireAndForget({
         ok: false,
         kind: "dispatch_raw",
@@ -277,6 +312,7 @@ export async function tryServerTalkApiDispatchRawResult(
         talkStatus: data?.talkApi?.status,
         errMsg,
       });
+      updateTalkApiCooldown(false);
       recordStatusFireAndForget({
         ok: false,
         kind: "dispatch_raw",
@@ -295,6 +331,7 @@ export async function tryServerTalkApiDispatchRawResult(
       };
     }
     logger.info("[talkapi] dispatch_raw ok", { roomId, talkStatus: data?.talkApi?.status });
+    updateTalkApiCooldown(true);
     recordStatusFireAndForget({
       ok: true,
       kind: "dispatch_raw",
@@ -313,6 +350,7 @@ export async function tryServerTalkApiDispatchRawResult(
     };
   } catch (e) {
     logger.warn("[talkapi] dispatch_raw error", { roomId, err: String(e) });
+    updateTalkApiCooldown(false);
     recordStatusFireAndForget({ ok: false, kind: "dispatch_raw", roomId, errMsg: String(e) });
     return { ok: false, errMsg: String(e) };
   }
