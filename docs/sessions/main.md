@@ -272,7 +272,7 @@
     - 트리거: 입장 후 15분 내 “첫 이미지 업로드”에서만 실행(입장 직후 발신 금지)
     - 판별: `db2.open_chat_member.profile_link_id == 0` (닫기 안내 대상)
     - 설정: `runtime.json.welcome.openProfileCloseGuide` (멘션 텍스트 + 이미지 1장 + confirmText + 폴링)
-    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+    - 이미지: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
   - 닫힘 확인 멘트:
     - 가이드 발신 후 `confirmWindowMs` 내에서 폴링으로 닫힘을 감지하면 즉시 1회 멘션 발신
   - 제거:
@@ -376,5 +376,5 @@
 
 - Welcome 오픈프로필 닫기 안내 “구버전 이미지 발송” 이슈 조치:
   - 원인: 서버가 서빙하는 가이드 PNG가 운영 워킹트리에서 구버전으로 남아있어 그대로 발송됨
-  - 조치: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`를 신버전(bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`)으로 교체
-  - 검증: `http://127.0.0.1:8650/templates/assets/welcome/profile_close_guide/KakaoTalk_20251219_021112774.png` 응답 bytes=425477 확인 후 welcome-worker 재기동
+  - 조치: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`를 신버전(bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`)으로 교체
+  - 검증: `http://127.0.0.1:8650/templates/assets/welcome/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png` 응답 bytes=425477 확인 후 welcome-worker 재기동

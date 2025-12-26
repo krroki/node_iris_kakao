@@ -108,7 +108,7 @@
         - `enabled`, `requestText`, `confirmText`, `confirmWindowMs`, `confirmCheckIntervalMs`
         - `confirmWindowMs`는 “닉변 요청 발신 시점부터”의 대기 시간이다.
 - 가이드 이미지(1장):
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
   - (오픈프로필 관련 이미지는 위 1장만 유지한다)
 - 하트스샷 가이드 이미지(1장):
   - `node-iris-app/config/templates/welcome/assets/common/KakaoTalk_20251213_123012048.png`
@@ -142,7 +142,7 @@
 ### 운영 보강 (2025-12-26)
 
 - 오픈프로필 닫기 안내 가이드 이미지 교체(파일명 유지, 내용 교체):
-  - 파일(SSOT): `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+  - 파일(SSOT): `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
   - 기대값: bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`
 - 원인: 운영 워킹트리에서 해당 PNG가 구버전으로 남아 서버가 구버전 자산을 서빙했고, welcome-worker가 이를 그대로 전송함.
 - 재발 방지: 가이드 이미지 교체 시 (1) bytes/sha 확인 (2) welcome-worker 재기동 (3) git 커밋으로 HEAD 고정.

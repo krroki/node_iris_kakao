@@ -308,7 +308,7 @@
     - 분기 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영해 확인 멘트를 선택한다(레이스 대비: 최근 닉네임 캐시 + pending 즉시 갱신).
     - 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지).
     - 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 **멘션 누락을 방지**한다.
-    - 오픈프로필 닫기 안내 가이드 이미지(SSOT): `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png` (bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`)
+    - 오픈프로필 닫기 안내 가이드 이미지(SSOT): `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png` (bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`)
     - (추가) 첫 이미지(하트스샷) 후속에서 오픈프로필이 아니라면:
       - 비기본닉: 기존대로 “감사합니다…” Reply(type=26) 1회 발신
       - 기본닉: “감사합니다…” Reply 대신 “닉네임 변경 요청” Reply(type=26) 발신 → 요청 시점부터 15분 내 프로필 변경이 확인되면 **Reply가 아닌 일반 멘션**으로 마무리 발신

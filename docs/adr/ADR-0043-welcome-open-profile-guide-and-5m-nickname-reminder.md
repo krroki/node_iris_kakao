@@ -78,7 +78,7 @@ Runtime 설정(SSOT):
 - 런타임 설정:
   - `node-iris-app/config/runtime.json`
 - 가이드 이미지(1장):
-  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251219_021112774.png`
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
 - 상태/진단:
   - `node-iris-app/data/welcome_worker_state.json`
   - `node-iris-app/data/welcome_worker_status.json`
