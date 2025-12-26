@@ -16,6 +16,7 @@ const agentStatusPath = path.join(repoRoot, "node-iris-app", "data", "courseops_
 const agentStartedTs = new Date().toISOString();
 let lastHeartbeatMs = 0;
 let lastMainCafeSyncMs = 0;
+let lastMainCafeAttemptMs = 0;
 let mainCafeInFlight = false;
 
 function envBool(name, fallback = false) {
@@ -45,6 +46,8 @@ const MAIN_CAFE_NAME = String(process.env.COURSEOPS_MAIN_CAFE_NAME || "메인 �
 const MAIN_CAFE_ENABLED = envBool("COURSEOPS_MAIN_CAFE_ENABLED", true) && Boolean(MAIN_CAFE_CLUB_ID);
 const MAIN_CAFE_SYNC_INTERVAL_MS =
   envInt("COURSEOPS_MAIN_CAFE_SYNC_INTERVAL_SEC", 6 * 3600, 60, 7 * 24 * 3600) * 1000;
+const MAIN_CAFE_RETRY_INTERVAL_MS =
+  envInt("COURSEOPS_MAIN_CAFE_RETRY_INTERVAL_SEC", 10 * 60, 30, 24 * 3600) * 1000;
 const MAIN_CAFE_SNAPSHOT_PATH = path.join(
   repoRoot,
   "node-iris-app",
@@ -845,8 +848,12 @@ async function runReverifyPending(job) {
 
     const now = Date.now();
     if (lastMainCafeSyncMs && now - lastMainCafeSyncMs < MAIN_CAFE_SYNC_INTERVAL_MS) return;
+    // 실패/배포 지연 등으로 업로드가 안 될 때 너무 자주 재시도하면
+    // 로그인 반복/브라우저 다중 실행 같은 운영 사고로 이어질 수 있어 백오프를 둔다.
+    if (lastMainCafeAttemptMs && now - lastMainCafeAttemptMs < MAIN_CAFE_RETRY_INTERVAL_MS) return;
 
     mainCafeInFlight = true;
+    lastMainCafeAttemptMs = now;
     try {
       heartbeat({ state: "MAIN_CAFE_SYNC" });
       const r = await syncMainCafeOnce();
