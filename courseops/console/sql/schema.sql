@@ -123,3 +123,13 @@ create table if not exists courseops_course_snapshots (
 );
 
 create index if not exists courseops_course_snapshots_updated_at_idx on courseops_course_snapshots(updated_at desc);
+
+create table if not exists courseops_global_snapshots (
+  key text primary key,
+  fetched_at timestamptz,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists courseops_global_snapshots_updated_at_idx on courseops_global_snapshots(updated_at desc);

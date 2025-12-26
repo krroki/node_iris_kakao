@@ -15,6 +15,47 @@ const statePath = path.join(repoRoot, "node-iris-app", "data", "course_membershi
 const agentStatusPath = path.join(repoRoot, "node-iris-app", "data", "courseops_agent_status.json");
 const agentStartedTs = new Date().toISOString();
 let lastHeartbeatMs = 0;
+let lastMainCafeSyncMs = 0;
+let mainCafeInFlight = false;
+
+function envBool(name, fallback = false) {
+  const raw = String(process.env[name] ?? "").trim();
+  if (!raw) return fallback;
+  const v = raw.toLowerCase();
+  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return fallback;
+}
+
+function envInt(name, fallback, min, max) {
+  const raw = String(process.env[name] ?? "").trim();
+  let n = raw ? Number(raw) : fallback;
+  if (!Number.isFinite(n)) n = fallback;
+  n = Math.floor(n);
+  if (typeof min === "number") n = Math.max(min, n);
+  if (typeof max === "number") n = Math.min(max, n);
+  return n;
+}
+
+const MAIN_CAFE_SNAPSHOT_KEY = "main_cafe";
+const MAIN_CAFE_CLUB_ID = parseClubId(
+  String(process.env.COURSEOPS_MAIN_CAFE_CLUB_ID || process.env.COURSEOPS_MAIN_CAFE_URL || "30819883"),
+);
+const MAIN_CAFE_NAME = String(process.env.COURSEOPS_MAIN_CAFE_NAME || "메인 카페").trim() || "메인 카페";
+const MAIN_CAFE_ENABLED = envBool("COURSEOPS_MAIN_CAFE_ENABLED", true) && Boolean(MAIN_CAFE_CLUB_ID);
+const MAIN_CAFE_SYNC_INTERVAL_MS =
+  envInt("COURSEOPS_MAIN_CAFE_SYNC_INTERVAL_SEC", 6 * 3600, 60, 7 * 24 * 3600) * 1000;
+const MAIN_CAFE_SNAPSHOT_PATH = path.join(
+  repoRoot,
+  "node-iris-app",
+  "data",
+  "courseops_global_snapshots",
+  "main_cafe.json",
+);
+
+try {
+  lastMainCafeSyncMs = fs.statSync(MAIN_CAFE_SNAPSHOT_PATH).mtimeMs || 0;
+} catch {}
 
 function writeAgentStatus(extra = {}) {
   const now = new Date().toISOString();
@@ -237,6 +278,45 @@ function runPowershell(scriptPath, args = []) {
     const psArgs = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, ...args];
     const child = spawn("powershell.exe", psArgs, { cwd: repoRoot, windowsHide: true });
     child.on("exit", (code) => resolve({ code: code ?? 0 }));
+  });
+}
+
+function resolvePythonExe() {
+  const fromEnv = String(process.env.COURSEOPS_PYTHON_EXE || "").trim();
+  if (fromEnv) return fromEnv;
+  const venv = path.join(repoRoot, ".venv_cafe", "Scripts", "python.exe");
+  if (fs.existsSync(venv)) return venv;
+  return "python";
+}
+
+function runCommand(exe, args = [], timeoutMs = 30_000) {
+  return new Promise((resolve) => {
+    const child = spawn(exe, args, { cwd: repoRoot, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+
+    const t = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try {
+        child.kill();
+      } catch {}
+      resolve({ code: 124, stdout, stderr, timeout: true });
+    }, Math.max(1000, Number(timeoutMs || 0) || 30_000));
+
+    child.stdout?.on("data", (d) => {
+      stdout += String(d || "");
+    });
+    child.stderr?.on("data", (d) => {
+      stderr += String(d || "");
+    });
+    child.on("exit", (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      resolve({ code: code ?? 0, stdout, stderr, timeout: false });
+    });
   });
 }
 
@@ -719,11 +799,86 @@ async function runReverifyPending(job) {
   });
 }
 
-async function handleJob(job) {
-  if (!job) return;
-  heartbeat({ lastJobId: String(job.id || ""), lastJobKind: String(job.kind || "") });
-  if (job.kind === "SYNC_FULL") {
-    await runSyncFull(job);
+  async function syncMainCafeOnce() {
+    if (!MAIN_CAFE_ENABLED) return;
+    if (!MAIN_CAFE_CLUB_ID) return;
+
+    const py = resolvePythonExe();
+    const script = path.join(repoRoot, "scripts", "crawl_naver_cafe_members.py");
+    const timeoutMs = envInt("COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC", 15 * 60, 60, 60 * 60) * 1000;
+
+    const args = [
+      script,
+      "--club-id",
+      MAIN_CAFE_CLUB_ID,
+      "--cafe-name",
+      MAIN_CAFE_NAME,
+      "--output",
+      MAIN_CAFE_SNAPSHOT_PATH,
+      "--headless",
+    ];
+
+    const r = await runCommand(py, args, timeoutMs);
+    if (r.timeout) {
+      throw new Error("메인 카페 동기화가 오래 걸려 중단했어요.");
+    }
+
+    const payload = readJsonFileStrict(MAIN_CAFE_SNAPSHOT_PATH);
+    const fetchedAt = String(payload?.fetchedAt || "").trim() || null;
+
+    const up = await postJson(
+      `${consoleBase}/api/agent/global-snapshot`,
+      { key: MAIN_CAFE_SNAPSHOT_KEY, fetchedAt, payload },
+      180000,
+    );
+    if (!up.ok) {
+      const msg = String(up?.json?.error || "").trim();
+      throw new Error(msg || `메인 카페 업로드에 실패했어요(HTTP ${up.status}).`);
+    }
+
+    return { fetchedAt, ok: Boolean(payload?.ok), exitCode: r.code };
+  }
+
+  async function maybeSyncMainCafe() {
+    if (!MAIN_CAFE_ENABLED) return;
+    if (mainCafeInFlight) return;
+
+    const now = Date.now();
+    if (lastMainCafeSyncMs && now - lastMainCafeSyncMs < MAIN_CAFE_SYNC_INTERVAL_MS) return;
+
+    mainCafeInFlight = true;
+    try {
+      heartbeat({ state: "MAIN_CAFE_SYNC" });
+      const r = await syncMainCafeOnce();
+      lastMainCafeSyncMs = Date.now();
+      heartbeat({
+        state: "POLLING",
+        mainCafe: {
+          ok: Boolean(r?.ok),
+          fetchedAt: String(r?.fetchedAt || "").trim() || null,
+          lastSyncTs: new Date().toISOString(),
+        },
+      });
+    } catch (e) {
+      const msg = String(e?.message || "메인 카페 동기화에 실패했어요.").trim();
+      heartbeat({
+        state: "POLLING",
+        mainCafe: {
+          ok: false,
+          lastError: msg.slice(0, 200),
+          lastSyncTs: new Date().toISOString(),
+        },
+      });
+    } finally {
+      mainCafeInFlight = false;
+    }
+  }
+
+  async function handleJob(job) {
+    if (!job) return;
+    heartbeat({ lastJobId: String(job.id || ""), lastJobKind: String(job.kind || "") });
+    if (job.kind === "SYNC_FULL") {
+      await runSyncFull(job);
     return;
   }
   if (job.kind === "REVERIFY_PENDING") {
@@ -761,10 +916,13 @@ async function main() {
             });
           } catch {}
         }
-      } else {
-        await sleep(pollSec * 1000);
-      }
-    } catch (e) {
+        } else {
+          try {
+            await maybeSyncMainCafe();
+          } catch {}
+          await sleep(pollSec * 1000);
+        }
+      } catch (e) {
       const msg = String(e?.message || "ERROR").trim();
       heartbeat({ state: "ERROR", lastError: msg.slice(0, 200) });
       await sleep(Math.max(2, pollSec) * 1000);

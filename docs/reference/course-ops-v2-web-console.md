@@ -2,7 +2,7 @@
 
 이 문서는 **강의 운영 v2의 “현업 운영 UI”**(ACTIONS 중심)를 웹으로 제공하는 방법과 운영 흐름을 정리한다.
 
-- 관련 ADR: `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`
+- 관련 ADR: `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/adr/ADR-0047-courseops-main-cafe-dashboard-and-global-snapshot.md`
 - 기존 v2(시트 산출/레거시): `docs/reference/course-roster-v2-membership-audit.md`
 
 ---
@@ -57,7 +57,7 @@
 ## 3) 화면 구성(캡처 기준)
 
 - **작업 대기열**: ACTIONS 카드 목록(필터/정렬 + 처리/검증 상태)
-- **대시보드**: 대기 작업/트랙 분포/준수율 등 요약 지표
+- **대시보드**: 대기 작업/트랙 분포/준수율 + 메인 카페(장기 운영) 요약 지표
 - **전체 명단**: 통합 테이블(방 참여 현황 + 닉네임/트랙 + 예외 표시)
 - **강의 관리**: 새 강의 등록(강의 관리자) + 강의별 카페/톡방/결제 SSOT 연결
 - **설정**: 내 화면 설정(대기열 표시 등)
@@ -185,6 +185,13 @@
   - `COURSEOPS_AGENT_NAME=<표시 이름>`
   - `COURSEOPS_POLL_SEC=2`
   - `COURSEOPS_REPO_ROOT=C:\dev\12.kakao`
+  - 메인 카페(장기 운영) 자동 갱신(옵션):
+    - `COURSEOPS_MAIN_CAFE_CLUB_ID=30819883` (또는 `COURSEOPS_MAIN_CAFE_URL=https://cafe.naver.com/ManageWholeMember.nhn?clubid=...`)
+    - `COURSEOPS_MAIN_CAFE_NAME=메인 카페`
+    - `COURSEOPS_MAIN_CAFE_ENABLED=true`
+    - `COURSEOPS_MAIN_CAFE_SYNC_INTERVAL_SEC=21600` (기본 6시간)
+    - `COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC=900` (기본 900초)
+    - `COURSEOPS_PYTHON_EXE=<python.exe>` (비우면 `.venv_cafe` 우선)
 
 - 참고(로컬 파일로 주입):
   - 시스템 환경 변수 설정이 어렵다면, 로컬(12.kakao PC)에 `node-iris-app/data/courseops_agent_env.json`을 두고 아래 형태로 저장해도 된다.

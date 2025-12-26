@@ -64,6 +64,7 @@
 - `docs/reference/course-roster-worker.md` – 강의 운영: 오픈채팅 입장자 카페 가입/닉네임 검증 워커(15분/24시간 안내 + Sheets 업서트)
 - `docs/adr/ADR-0039-course-roster-v2-membership-audit.md` – 강의 운영 v2(카페 자동 갱신 + 등급 기반 참여 점검 + 통합 시트) 결정
 - `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md` – 강의 운영 v2: 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) 결정(ACTIONS 중심, 처리/재검증)
+- docs/adr/ADR-0047-courseops-main-cafe-dashboard-and-global-snapshot.md – CourseOps 메인 카페 홈 지표(글로벌 스냅샷, 장기 운영) 결정
 - `docs/reference/course-roster-v2-membership-audit.md` – 강의 운영 v2(레거시/백업): 코스 단위 RAW→VIEW(AUDIT_VIEW) + 변경 이력(AUDIT_LOG), key 기반 upsert(no clear)
 - `docs/reference/course-ops-v2-web-console.md` – 강의 운영 v2(운영 UI): go.yoorang.kr 작업 대기열(ACTIONS) + 처리 완료/확인 대기/빠른 재검증/전체 동기화 + 담당자·메모
 - `docs/reference/shared-workingtree-multi-session.md` – 공유 워킹트리 멀티세션 운영 규칙(4.pint 준용): 전역 원복/포맷/스테이징 금지
@@ -176,6 +177,9 @@
   - 목표: 내부 운영진이 **동시접속**으로 “작업 대기열(ACTIONS)”을 보고 조치/확인까지 끝낼 수 있게 한다.
   - 불변식: 카카오/Redroid 연동(수집/판정)은 **12.kakao 1대**만 수행한다(외부 웹에서 카카오에 직접 붙지 않음).
   - 데이터 저장: **Supabase 스냅샷(JSON)** 기반으로 화면을 구성한다. (스프레드시트는 레거시 옵션)
+  - 메인 카페(장기 운영):
+    - 대시보드에서 메인 카페 멤버/등급/활동 지표를 함께 본다.
+    - 수집/로그인은 로컬 에이전트가 수행하고, 웹 콘솔은 결과 스냅샷만 읽는다(ADR-0047).
   - 인증: **이름 + 공용 비번** + 자동 로그인(쿠키).
   - 접속은 네트워크(IP) 제한을 전제로 하지 않는다(어디서든 접속). 따라서 보안 가드는 필수다:
     - 로그인 실패 레이트리밋/지연(브루트포스 억제) + 실패 기록(감사)

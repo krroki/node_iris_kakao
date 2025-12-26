@@ -67,6 +67,13 @@ export type CourseSnapshotRow = {
   updatedAt: string;
 };
 
+export type GlobalSnapshotRow = {
+  key: string;
+  fetchedAt: string | null;
+  payload: any;
+  updatedAt: string;
+};
+
 const CreateCourseBody = z
   .object({
     courseKey: z.string().trim().min(1),
@@ -515,14 +522,54 @@ export async function coursesStore() {
       const fetchedAt = input.fetchedAt ? String(input.fetchedAt) : null;
       const payload = input.payload ?? {};
       await sql`
-        insert into courseops_course_snapshots (course_id, fetched_at, payload, updated_at)
-        values (${cid}, ${fetchedAt}, ${JSON.stringify(payload)}, now())
-        on conflict (course_id) do update set
-          fetched_at=excluded.fetched_at,
-          payload=excluded.payload,
-          updated_at=now()
-      `;
+          insert into courseops_course_snapshots (course_id, fetched_at, payload, updated_at)
+          values (${cid}, ${fetchedAt}, ${JSON.stringify(payload)}, now())
+          on conflict (course_id) do update set
+            fetched_at=excluded.fetched_at,
+            payload=excluded.payload,
+            updated_at=now()
+        `;
       return this.getCourseSnapshot(cid);
+    },
+    async getGlobalSnapshot(key: string): Promise<GlobalSnapshotRow | null> {
+      const k = String(key || "").trim();
+      if (!k) return null;
+      try {
+        const rows = await sql<
+          {
+            key: string;
+            fetched_at: Date | null;
+            payload: any;
+            updated_at: Date;
+          }[]
+        >`select key, fetched_at, payload, updated_at from courseops_global_snapshots where key=${k} limit 1`;
+        const r = rows[0];
+        if (!r) return null;
+        const payload = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
+        return {
+          key: r.key,
+          fetchedAt: r.fetched_at ? r.fetched_at.toISOString() : null,
+          payload,
+          updatedAt: r.updated_at ? r.updated_at.toISOString() : new Date().toISOString(),
+        };
+      } catch {
+        return null;
+      }
+    },
+    async upsertGlobalSnapshot(input: { key: string; fetchedAt?: string | null; payload: any }) {
+      const k = String(input.key || "").trim();
+      if (!k) throw new Error("key is required");
+      const fetchedAt = input.fetchedAt ? String(input.fetchedAt) : null;
+      const payload = input.payload ?? {};
+      await sql`
+          insert into courseops_global_snapshots (key, fetched_at, payload, updated_at)
+          values (${k}, ${fetchedAt}, ${JSON.stringify(payload)}, now())
+          on conflict (key) do update set
+            fetched_at=excluded.fetched_at,
+            payload=excluded.payload,
+            updated_at=now()
+        `;
+      return this.getGlobalSnapshot(k);
     },
     async getActionStates(courseId: string, actionKeys: string[]): Promise<ActionStateRow[]> {
       if (!actionKeys || actionKeys.length === 0) return [];
