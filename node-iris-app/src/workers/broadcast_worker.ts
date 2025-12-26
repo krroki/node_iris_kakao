@@ -110,6 +110,7 @@ const IRIS_MEDIA_VERIFY_BASE: IrisReplyVerifyOptions = {
 // Prefer downloading a resized variant from Kakao CDN to reduce upload time per room (IRIS /reply).
 const ANNOUNCE_IMAGE_MAX_EDGE = envInt("ANNOUNCE_IMAGE_MAX_EDGE", 1024);
 const ANNOUNCE_IMAGE_DOWNLOAD_TIMEOUT_MS = envInt("ANNOUNCE_IMAGE_DOWNLOAD_TIMEOUT_MS", 15_000);
+const ANNOUNCE_TEXT_MIN_LEN = Math.max(0, envInt("ANNOUNCE_TEXT_MIN_LEN", 0));
 
 const IRIS_MEDIA_HEALTH_PATH = path.join(APP_ROOT, "data", "iris_media_health.json");
 const IRIS_MEDIA_RECENT_FAIL_TTL_MS = 10 * 60 * 1000;
@@ -616,6 +617,18 @@ async function handleAnnouncement(entry: StreamEntry): Promise<void> {
     if (t === "사진" || t.toLowerCase() === "photo") {
       text = "";
     }
+  }
+
+  // 공지 텍스트는 너무 짧으면(예: 잡담/확인 응답) 전파하지 않는다.
+  // 이미지 전파는 별도이므로, 텍스트만 스킵하더라도 images가 있으면 계속 진행한다.
+  if (text && ANNOUNCE_TEXT_MIN_LEN > 0 && text.length < ANNOUNCE_TEXT_MIN_LEN) {
+    logger.info("[announce] skip short text", {
+      source: roomId,
+      len: text.length,
+      minLen: ANNOUNCE_TEXT_MIN_LEN,
+      hasImages: images.length > 0,
+    });
+    text = "";
   }
   if (!text && images.length === 0) return;
 

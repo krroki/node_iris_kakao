@@ -378,3 +378,16 @@
   - 원인: 서버가 서빙하는 가이드 PNG가 운영 워킹트리에서 구버전으로 남아있어 그대로 발송됨
   - 조치: `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`를 신버전(bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`)으로 교체
   - 검증: `http://127.0.0.1:8650/templates/assets/welcome/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png` 응답 bytes=425477 확인 후 welcome-worker 재기동
+
+---
+
+## 2025-12-26 (추가)
+
+- Image-worker(Gemini 웹) 브라우저 자동 종료 기본값 정렬:
+  - `node-iris-app/src/services/geminiWebImage.ts`의 `GEMINI_WEB_REUSE_CONTEXT` 기본값을 `false`로 변경(작업 후 Chrome 창이 남지 않게)
+  - 문서: `docs/reference/image-worker.md` 기본값 갱신
+- 검증/재기동:
+  - build: `cd node-iris-app && npm run build`
+  - tests: `cd node-iris-app && npx vitest run --pool=forks --no-file-parallelism --maxWorkers=1`
+  - restart: `windows/start_api.ps1`, `windows/start_welcome_worker.ps1 -Restart`, `windows/start_broadcast_worker.ps1 -Restart`, `windows/start_image_worker.ps1 -Restart`
+  - smoke: `POST /send/iris/reply_media`로 오픈프로필 가이드 이미지(1080x1920) 테스트 방 발신 OK

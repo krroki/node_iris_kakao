@@ -184,7 +184,7 @@ async function getOrCreatePersistentCtx(opts: {
   headless: boolean;
   channel: string | null;
 }): Promise<PersistentCtx> {
-  const reuse = envBool("GEMINI_WEB_REUSE_CONTEXT", true);
+  const reuse = envBool("GEMINI_WEB_REUSE_CONTEXT", false);
   const key = computeCtxKey(opts.sessionId ?? null, opts.headless, opts.channel);
   const now = Date.now();
 
@@ -863,7 +863,7 @@ export async function generateGeminiWebImage(opts: GenerateOpts): Promise<string
     const maxImages = envInt("GEMINI_WEB_MAX_IMAGES", 1, 1, 6);
     const evalTimeout = envInt("GEMINI_WEB_EVAL_TIMEOUT_MS", 10_000, 1_000, 60_000);
 
-    const reuse = envBool("GEMINI_WEB_REUSE_CONTEXT", true);
+    const reuse = envBool("GEMINI_WEB_REUSE_CONTEXT", false);
     const persistent = await getOrCreatePersistentCtx({
       sessionId: opts?.sessionId ?? null,
       userDataDir,

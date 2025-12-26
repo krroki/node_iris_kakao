@@ -146,6 +146,7 @@
   - 기대값: bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`
 - 원인: 운영 워킹트리에서 해당 PNG가 구버전으로 남아 서버가 구버전 자산을 서빙했고, welcome-worker가 이를 그대로 전송함.
 - 재발 방지: 가이드 이미지 교체 시 (1) bytes/sha 확인 (2) welcome-worker 재기동 (3) git 커밋으로 HEAD 고정.
+- 재발 방지(정리): 미사용 레거시 가이드 이미지 폴더(`node-iris-app/config/templates/welcome/assets/{1,2,a}`)의 PNG를 삭제해 운영 워킹트리에 구버전 자산이 남아 재전송되는 케이스를 차단.
 
 ---
 

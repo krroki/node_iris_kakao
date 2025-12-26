@@ -116,9 +116,10 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
   - `windows/logs/broadcast_worker.out.log`에 `[announce] triggered` / `[announce] completed` 로그가 찍히는지 확인
   - 실패 시 같은 로그에 `[talkapi] dispatch non-OK`가 찍히며, `roomId`/`talkStatus`로 어떤 타겟이 실패하는지 확인 가능
   - 워커 상태 파일: `node-iris-app/data/broadcast_worker_status.json`의 `lastAnnouncement*` 필드 확인
+  - (텍스트) 옵션: `ANNOUNCE_TEXT_MIN_LEN`(기본 0). 0보다 크면 해당 길이 미만 텍스트는 공지 전파에서 스킵된다(이미지 전파는 별도).
   - (이미지) 소스 방에서 사진(이미지)만 올렸을 때 타겟 방에도 **실제 이미지가 전송되는지** 확인
     - 타겟에 텍스트 `사진`만 가고 이미지가 안 가면: Realtime API 로그 변환에서 이미지 URL이 `imageUrls`로 노출되지 않은 상태일 수 있다. (`server/log_utils.py`의 `attachment.url` → `imageUrls` 추출 경로)
-  - 소스 방에 `[공지 전파 결과]` 요약 메시지가 1회 남고, **이 메시지가 타겟 방으로는 복제되지 않는지** 확인
+  - 소스 방에 `📣 공지 전송 결과` 요약 메시지가 1회 남고, **이 메시지가 타겟 방으로는 복제되지 않는지** 확인
 
 ---
 
