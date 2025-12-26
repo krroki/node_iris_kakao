@@ -26,7 +26,7 @@ _WS_RE = re.compile(r"\s+")
 def normalize_cafe_nickname(s: str) -> str:
     # NOTE: 카페/오픈채팅 닉네임은 공백 유무가 흔히 흔들리므로(예: "오남매워킹맘" vs "오남매 워킹맘")
     # 안전하게 "공백 제거" 정규화 키를 추가로 사용한다(단, 정규화 매칭은 유니크할 때만 적용).
-    return _WS_RE.sub("", str(s or "").strip())
+    return _WS_RE.sub("", str(s or "").strip()).lower()
 
 
 def classify_track_from_payment(ssot_grade: str, ssot_kind: str) -> str:

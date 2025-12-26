@@ -290,7 +290,7 @@ function extractCafeNickFromOpenchatNickname(nick) {
 }
 
 function normalizeCafeNick(s) {
-  return String(s || "").replace(/\s+/gu, "").trim();
+  return String(s || "").replace(/\s+/gu, "").trim().toLowerCase();
 }
 
 async function fetchOpenchatMembers(roomId) {
