@@ -181,8 +181,6 @@ function upsertLocalCourseConfig(course) {
       kindCol: paymentKindCol,
       excludeKinds: paymentExcludeKinds.length > 0 ? paymentExcludeKinds : ["환불"],
     };
-  } else {
-    delete next.paymentSsot;
   }
 
   courses[courseKey] = next;
