@@ -153,6 +153,63 @@ function parseClubId(raw) {
   return "";
 }
 
+function parseYmdDate(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const m = s.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || !mo || !d) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+function buildCafeSummary(payload) {
+  const members = Array.isArray(payload?.members) ? payload.members : [];
+  const totalCount = Math.max(0, Number(payload?.totalCount || payload?.total_count || members.length || 0) || 0);
+
+  const fetchedAt = String(payload?.fetchedAt || "").trim() || "";
+  const ref = fetchedAt ? new Date(fetchedAt) : new Date();
+  const refMs = Number.isNaN(ref.getTime()) ? Date.now() : ref.getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const withinDays = (dt, days) => (dt ? refMs - dt.getTime() <= days * dayMs : false);
+
+  const gradeCounts = {};
+  let joined7d = 0;
+  let visited7d = 0;
+  let visited30d = 0;
+
+  for (const m of members) {
+    const grade = String(m?.grade || "").trim() || "기타";
+    gradeCounts[grade] = (gradeCounts[grade] || 0) + 1;
+
+    const joinDate = parseYmdDate(String(m?.joinDate || m?.join_date || ""));
+    const lastVisit = parseYmdDate(String(m?.lastVisit || m?.last_visit || ""));
+    if (withinDays(joinDate, 7)) joined7d += 1;
+    if (withinDays(lastVisit, 7)) visited7d += 1;
+    if (withinDays(lastVisit, 30)) visited30d += 1;
+  }
+
+  const gradesTop = Object.entries(gradeCounts)
+    .map(([grade, count]) => ({ grade, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
+  const activeRate7d = totalCount > 0 ? Math.round((visited7d / totalCount) * 100) : 0;
+
+  return {
+    total: totalCount,
+    gradesTop,
+    joined7d,
+    visited7d,
+    visited30d,
+    activeRate7d,
+  };
+}
+
 function upsertLocalCourseConfig(course) {
   const p = resolveAuditConfigPath();
   const courseKey = String(course?.courseKey || course?.course_key || "").trim();
@@ -808,7 +865,7 @@ async function runReverifyPending(job) {
 
     const py = resolvePythonExe();
     const script = path.join(repoRoot, "scripts", "crawl_naver_cafe_members.py");
-    const timeoutMs = envInt("COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC", 15 * 60, 60, 60 * 60) * 1000;
+    const timeoutMs = envInt("COURSEOPS_MAIN_CAFE_CRAWL_TIMEOUT_SEC", 30 * 60, 60, 60 * 60) * 1000;
 
     const args = [
       script,
@@ -823,15 +880,71 @@ async function runReverifyPending(job) {
 
     const r = await runCommand(py, args, timeoutMs);
     if (r.timeout) {
-      throw new Error("메인 카페 동기화가 오래 걸려 중단했어요.");
+      const fetchedAt = new Date().toISOString();
+      const uploadPayload = {
+        ok: false,
+        clubId: MAIN_CAFE_CLUB_ID,
+        cafeName: MAIN_CAFE_NAME,
+        fetchedAt,
+        totalCount: 0,
+        error: "메인 카페 동기화가 너무 오래 걸려 중단했어요.",
+        summary: null,
+      };
+      const up = await postJson(
+        `${consoleBase}/api/agent/global-snapshot`,
+        { key: MAIN_CAFE_SNAPSHOT_KEY, fetchedAt, payload: uploadPayload },
+        180000,
+      );
+      if (!up.ok) {
+        const msg = String(up?.json?.error || "").trim();
+        throw new Error(msg || `메인 카페 업로드에 실패했어요(HTTP ${up.status}).`);
+      }
+      return { fetchedAt, ok: false, exitCode: r.code, summary: null };
     }
 
-    const payload = readJsonFileStrict(MAIN_CAFE_SNAPSHOT_PATH);
+    let payload = null;
+    try {
+      payload = readJsonFileStrict(MAIN_CAFE_SNAPSHOT_PATH);
+    } catch {}
+    if (!payload) {
+      const fetchedAt = new Date().toISOString();
+      const uploadPayload = {
+        ok: false,
+        clubId: MAIN_CAFE_CLUB_ID,
+        cafeName: MAIN_CAFE_NAME,
+        fetchedAt,
+        totalCount: 0,
+        error: "메인 카페 결과 파일을 읽지 못했어요.",
+        summary: null,
+      };
+      const up = await postJson(
+        `${consoleBase}/api/agent/global-snapshot`,
+        { key: MAIN_CAFE_SNAPSHOT_KEY, fetchedAt, payload: uploadPayload },
+        180000,
+      );
+      if (!up.ok) {
+        const msg = String(up?.json?.error || "").trim();
+        throw new Error(msg || `메인 카페 업로드에 실패했어요(HTTP ${up.status}).`);
+      }
+      return { fetchedAt, ok: false, exitCode: r.code, summary: null };
+    }
+
     const fetchedAt = String(payload?.fetchedAt || "").trim() || null;
+
+    const summary = buildCafeSummary(payload);
+    const uploadPayload = {
+      ok: Boolean(payload?.ok),
+      clubId: String(payload?.clubId || payload?.club_id || MAIN_CAFE_CLUB_ID).trim() || MAIN_CAFE_CLUB_ID,
+      cafeName: String(payload?.cafeName || payload?.cafe_name || MAIN_CAFE_NAME).trim() || MAIN_CAFE_NAME,
+      fetchedAt: String(payload?.fetchedAt || "").trim() || null,
+      totalCount: summary.total,
+      error: String(payload?.error || "").trim() || "",
+      summary,
+    };
 
     const up = await postJson(
       `${consoleBase}/api/agent/global-snapshot`,
-      { key: MAIN_CAFE_SNAPSHOT_KEY, fetchedAt, payload },
+      { key: MAIN_CAFE_SNAPSHOT_KEY, fetchedAt, payload: uploadPayload },
       180000,
     );
     if (!up.ok) {
@@ -839,7 +952,7 @@ async function runReverifyPending(job) {
       throw new Error(msg || `메인 카페 업로드에 실패했어요(HTTP ${up.status}).`);
     }
 
-    return { fetchedAt, ok: Boolean(payload?.ok), exitCode: r.code };
+    return { fetchedAt, ok: Boolean(payload?.ok), exitCode: r.code, summary };
   }
 
   async function maybeSyncMainCafe() {
@@ -855,20 +968,21 @@ async function runReverifyPending(job) {
     mainCafeInFlight = true;
     lastMainCafeAttemptMs = now;
     try {
-      heartbeat({ state: "MAIN_CAFE_SYNC" });
+      writeAgentStatus({ state: "MAIN_CAFE_SYNC" });
       const r = await syncMainCafeOnce();
       lastMainCafeSyncMs = Date.now();
-      heartbeat({
+      writeAgentStatus({
         state: "POLLING",
         mainCafe: {
           ok: Boolean(r?.ok),
           fetchedAt: String(r?.fetchedAt || "").trim() || null,
           lastSyncTs: new Date().toISOString(),
+          summary: r?.summary || null,
         },
       });
     } catch (e) {
       const msg = String(e?.message || "메인 카페 동기화에 실패했어요.").trim();
-      heartbeat({
+      writeAgentStatus({
         state: "POLLING",
         mainCafe: {
           ok: false,

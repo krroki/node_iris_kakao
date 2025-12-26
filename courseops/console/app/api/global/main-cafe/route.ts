@@ -52,35 +52,55 @@ export async function GET() {
   const cafeName = String(payload?.cafeName || payload?.cafe_name || "메인 카페").trim() || "메인 카페";
 
   const members = Array.isArray(payload?.members) ? payload.members : [];
-  const totalCount = Math.max(0, Number(payload?.totalCount || payload?.total_count || members.length || 0) || 0);
+  const summary = payload?.summary && typeof payload.summary === "object" ? payload.summary : null;
+  const totalCount = Math.max(
+    0,
+    Number(payload?.totalCount || payload?.total_count || summary?.total || summary?.totalCount || members.length || 0) || 0,
+  );
 
   const ref = fetchedAt ? new Date(fetchedAt) : new Date();
   const refMs = Number.isNaN(ref.getTime()) ? Date.now() : ref.getTime();
   const dayMs = 24 * 60 * 60 * 1000;
   const withinDays = (dt: Date | null, days: number) => (dt ? refMs - dt.getTime() <= days * dayMs : false);
 
-  const gradeCounts: Record<string, number> = {};
-  let joined7d = 0;
-  let visited7d = 0;
-  let visited30d = 0;
+  let gradesTop: Array<{ grade: string; count: number }> = [];
+  let joined7d = Math.max(0, Number(summary?.joined7d || 0) || 0);
+  let visited7d = Math.max(0, Number(summary?.visited7d || 0) || 0);
+  let visited30d = Math.max(0, Number(summary?.visited30d || 0) || 0);
+  let activeRate7d = Math.max(0, Number(summary?.activeRate7d || 0) || 0);
 
-  for (const m of members) {
-    const grade = String(m?.grade || "").trim() || "기타";
-    gradeCounts[grade] = (gradeCounts[grade] || 0) + 1;
+  if (Array.isArray(summary?.gradesTop) && summary.gradesTop.length > 0) {
+    gradesTop = summary.gradesTop
+      .map((x: any) => ({
+        grade: String(x?.grade || "").trim() || "기타",
+        count: Math.max(0, Number(x?.count || 0) || 0),
+      }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count)
+      .slice(0, 8);
+  } else {
+    const gradeCounts: Record<string, number> = {};
+    joined7d = 0;
+    visited7d = 0;
+    visited30d = 0;
 
-    const joinDate = parseYmdDate(String(m?.joinDate || m?.join_date || ""));
-    const lastVisit = parseYmdDate(String(m?.lastVisit || m?.last_visit || ""));
-    if (withinDays(joinDate, 7)) joined7d += 1;
-    if (withinDays(lastVisit, 7)) visited7d += 1;
-    if (withinDays(lastVisit, 30)) visited30d += 1;
+    for (const m of members) {
+      const grade = String(m?.grade || "").trim() || "기타";
+      gradeCounts[grade] = (gradeCounts[grade] || 0) + 1;
+
+      const joinDate = parseYmdDate(String(m?.joinDate || m?.join_date || ""));
+      const lastVisit = parseYmdDate(String(m?.lastVisit || m?.last_visit || ""));
+      if (withinDays(joinDate, 7)) joined7d += 1;
+      if (withinDays(lastVisit, 7)) visited7d += 1;
+      if (withinDays(lastVisit, 30)) visited30d += 1;
+    }
+
+    gradesTop = Object.entries(gradeCounts)
+      .map(([grade, count]) => ({ grade, count }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count)
+      .slice(0, 8);
+
+    activeRate7d = totalCount > 0 ? Math.round((visited7d / totalCount) * 100) : 0;
   }
-
-  const gradesTop = Object.entries(gradeCounts)
-    .map(([grade, count]) => ({ grade, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8);
-
-  const activeRate7d = totalCount > 0 ? Math.round((visited7d / totalCount) * 100) : 0;
 
   return NextResponse.json({
     ok: true,
@@ -102,4 +122,3 @@ export async function GET() {
     },
   });
 }
-
