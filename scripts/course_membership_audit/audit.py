@@ -318,6 +318,10 @@ def is_valid_name_mask_prefix(prefix: str) -> bool:
     s = str(prefix or "").strip()
     if not s:
         return False
+    # NOTE: 전각(@/괄호) 같은 호환문자나 보이지 않는 공백/제로폭 공백 차이는
+    # 실사용에서 의미가 없으므로, NFKC + 공백 제거 기준으로 판정한다.
+    s = unicodedata.normalize("NFKC", s)
+    s = _WS_RE.sub("", s)
     return bool(_NAME_MASK_RE.match(s))
 
 
