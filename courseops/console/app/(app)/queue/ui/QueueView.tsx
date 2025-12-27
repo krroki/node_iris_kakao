@@ -6,6 +6,7 @@ import { useSelectedCourse } from "@/app/(app)/ui/useSelectedCourse";
 
 const LS_HIDE_HIDDEN = "courseops_pref_hide_hidden_actions";
 const LS_HIDE_INCOMPLETE = "courseops_pref_hide_incomplete_actions";
+const LS_TYPE_FILTERS = "courseops_pref_action_type_filters";
 
 function readBool(key: string, fallback: boolean) {
   try {
@@ -20,6 +21,24 @@ function readBool(key: string, fallback: boolean) {
 function writeBool(key: string, v: boolean) {
   try {
     window.localStorage.setItem(key, v ? "1" : "0");
+  } catch {}
+}
+
+function readStringArray(key: string) {
+  try {
+    const v = window.localStorage.getItem(key);
+    if (!v) return [] as string[];
+    const parsed = JSON.parse(v);
+    if (!Array.isArray(parsed)) return [] as string[];
+    return parsed.map((x) => String(x || "").trim()).filter(Boolean);
+  } catch {
+    return [] as string[];
+  }
+}
+
+function writeStringArray(key: string, v: string[]) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(v || []));
   } catch {}
 }
 
@@ -43,6 +62,10 @@ type ActionItem = {
     handledAt?: string | null;
     memo?: string | null;
   };
+};
+
+type ActionItemWithType = ActionItem & {
+  typeLabel: string;
 };
 
 function formatTs(ts: string | null) {
@@ -205,9 +228,9 @@ function StatusBadge({ status }: { status: ActionStatus }) {
 export default function QueueView() {
   const { courses, courseId } = useSelectedCourse();
   const [items, setItems] = useState<ActionItem[]>([]);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);   
-  const [filterPriority, setFilterPriority] = useState<string>("전체");      
-  const [filterType, setFilterType] = useState<string>("전체");
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [filterPriority, setFilterPriority] = useState<string>("전체");
+  const [typeFilters, setTypeFilters] = useState<string[]>([]);
   const [hideHidden, setHideHidden] = useState(true);
   const [hideIncomplete, setHideIncomplete] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -235,6 +258,7 @@ export default function QueueView() {
   useEffect(() => {
     setHideHidden(readBool(LS_HIDE_HIDDEN, true));
     setHideIncomplete(readBool(LS_HIDE_INCOMPLETE, true));
+    setTypeFilters(readStringArray(LS_TYPE_FILTERS));
   }, []);
 
   useEffect(() => {
@@ -245,11 +269,19 @@ export default function QueueView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId]);
 
-  const types = useMemo(() => {
-    const s = new Set<string>();
-    for (const it of items) if (it.action) s.add(it.action);
-    return ["전체", ...Array.from(s).sort((a, b) => a.localeCompare(b, "ko"))];
+  const itemsWithType = useMemo<ActionItemWithType[]>(() => {
+    return items.map((it) => {
+      const info = splitActionLabel(it.action);
+      const label = info.label || String(it.action || "").trim() || "기타";
+      return { ...it, typeLabel: label };
+    });
   }, [items]);
+
+  const typeLabels = useMemo(() => {
+    const s = new Set<string>();
+    for (const it of itemsWithType) s.add(it.typeLabel);
+    return Array.from(s).sort((a, b) => a.localeCompare(b, "ko"));
+  }, [itemsWithType]);
 
   const hiddenCount = useMemo(() => items.filter((it) => Boolean(it.state?.hidden)).length, [items]);
   const incompleteCount = useMemo(
@@ -257,15 +289,52 @@ export default function QueueView() {
     [items],
   );
 
-  const filtered = useMemo(() => {
-    return items.filter((it) => {
+  const baseFiltered = useMemo(() => {
+    return itemsWithType.filter((it) => {
       if (filterPriority !== "전체" && it.priority !== filterPriority) return false;
-      if (filterType !== "전체" && it.action !== filterType) return false;
       if (hideHidden && it.state?.hidden) return false;
       if (hideIncomplete && it.state?.status === "확인 불가(데이터 미완전)") return false;
       return true;
     });
-  }, [items, filterPriority, filterType, hideHidden, hideIncomplete]);
+  }, [itemsWithType, filterPriority, hideHidden, hideIncomplete]);
+
+  const typeCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of baseFiltered) m.set(it.typeLabel, (m.get(it.typeLabel) || 0) + 1);
+    return m;
+  }, [baseFiltered]);
+
+  const selectedTypeSet = useMemo(() => new Set(typeFilters), [typeFilters]);
+
+  useEffect(() => {
+    if (typeFilters.length === 0) return;
+    const next = typeFilters.filter((x) => typeLabels.includes(x));
+    if (next.length === typeFilters.length) return;
+    setTypeFilters(next);
+    writeStringArray(LS_TYPE_FILTERS, next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeLabels.join("|")]);
+
+  const filtered = useMemo(() => {
+    if (selectedTypeSet.size === 0) return baseFiltered;
+    return baseFiltered.filter((it) => selectedTypeSet.has(it.typeLabel));
+  }, [baseFiltered, selectedTypeSet]);
+
+  const toggleType = (label: string) => {
+    setTypeFilters((prev) => {
+      const s = new Set(prev);
+      if (s.has(label)) s.delete(label);
+      else s.add(label);
+      const next = Array.from(s);
+      writeStringArray(LS_TYPE_FILTERS, next);
+      return next;
+    });
+  };
+
+  const clearTypes = () => {
+    setTypeFilters([]);
+    writeStringArray(LS_TYPE_FILTERS, []);
+  };
 
   const markDone = async (actionKey: string) => {
     if (!courseId) return;
@@ -329,13 +398,6 @@ export default function QueueView() {
               </option>
             ))}
           </select>
-          <select className="rounded-lg border px-3 py-2 text-sm" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-            {types.map((x) => (
-              <option key={x} value={x}>
-                {x === "전체" ? "모든 유형" : x}
-              </option>
-            ))}
-          </select>
           <label className="flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm text-slate-700">
             <input
               type="checkbox"
@@ -367,6 +429,67 @@ export default function QueueView() {
           >
             {loading ? "불러오는 중..." : "새로고침"}
           </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div className="text-sm font-semibold">작업 유형</div>
+          <div className="text-xs text-slate-600">클릭해서 필터를 켜고/끌 수 있어요.</div>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            aria-pressed={typeFilters.length === 0}
+            onClick={clearTypes}
+            className={[
+              "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium",
+              typeFilters.length === 0
+                ? "border-brand-600 bg-brand-600 text-white"
+                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+            ].join(" ")}
+          >
+            전체
+            <span
+              className={[
+                "rounded-full px-2 py-0.5 text-xs font-semibold",
+                typeFilters.length === 0 ? "bg-white/20 text-white" : "bg-slate-100 text-slate-700",
+              ].join(" ")}
+            >
+              {baseFiltered.length}
+            </span>
+          </button>
+          {typeLabels.map((label) => {
+            const count = typeCounts.get(label) || 0;
+            const active = selectedTypeSet.has(label);
+            const disabled = count === 0 && !active;
+            return (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={active}
+                disabled={disabled}
+                onClick={() => toggleType(label)}
+                className={[
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium",
+                  active
+                    ? "border-brand-600 bg-brand-600 text-white"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+                  disabled ? "cursor-not-allowed opacity-40 hover:bg-white" : "",
+                ].join(" ")}
+              >
+                {label}
+                <span
+                  className={[
+                    "rounded-full px-2 py-0.5 text-xs font-semibold",
+                    active ? "bg-white/20 text-white" : "bg-slate-100 text-slate-700",
+                  ].join(" ")}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
