@@ -671,7 +671,7 @@ def build_actions_rows(
                 needs_change = True
             elif name_mask_ok != "TRUE":
                 needs_change = True
-            elif parsed and str(parsed).strip() != resolved:
+            elif parsed and normalize_cafe_nickname(str(parsed).strip()) != normalize_cafe_nickname(resolved):
                 needs_change = True
 
         if resolved and needs_change:
@@ -686,7 +686,7 @@ def build_actions_rows(
             src = str(parsed_src or "").strip().lower()
             if src == "slash":
                 issue = "슬래시(/)"
-            elif src == "paren" and parsed and str(parsed).strip() != resolved:
+            elif src == "paren" and parsed and normalize_cafe_nickname(str(parsed).strip()) != normalize_cafe_nickname(resolved):
                 issue = "카페닉 변경"
             elif src == "paren" and name_mask_ok != "TRUE":
                 issue = "이름 마스킹"
@@ -1855,7 +1855,7 @@ def build_overview_rows(
                 needs_change_eff = True
             else:
                 # 괄호는 있으나, 괄호 속 카페닉이 "현재 카페닉"과 다르면 변경 요청
-                if parsed and str(parsed).strip() != resolved:
+                if parsed and normalize_cafe_nickname(str(parsed).strip()) != normalize_cafe_nickname(resolved):
                     needs_change_eff = True
 
         if rt in by_room:
@@ -1884,7 +1884,7 @@ def build_overview_rows(
             issue = ""
             if ps == "slash":
                 issue = "슬래시(/) 사용"
-            elif ps == "paren" and parsed and str(parsed).strip() != resolved:
+            elif ps == "paren" and parsed and normalize_cafe_nickname(str(parsed).strip()) != normalize_cafe_nickname(resolved):
                 issue = "카페닉 변경됨"
             elif ps == "paren" and name_mask_ok != "TRUE":
                 issue = "이름 마스킹(@) 불일치"
@@ -2518,7 +2518,7 @@ def build_actions_rows_legacy(
             elif name_mask_ok != "TRUE":
                 needs_change_eff = True
             else:
-                if parsed and str(parsed).strip() != resolved:
+                if parsed and normalize_cafe_nickname(str(parsed).strip()) != normalize_cafe_nickname(resolved):
                     needs_change_eff = True
 
         if resolved and needs_change_eff:
@@ -2529,7 +2529,7 @@ def build_actions_rows_legacy(
             src = str(parsed_src or "").strip().lower()
             if src == "slash":
                 issue = "슬래시(/) 사용"
-            elif src == "paren" and parsed and str(parsed).strip() != resolved:
+            elif src == "paren" and parsed and normalize_cafe_nickname(str(parsed).strip()) != normalize_cafe_nickname(resolved):
                 issue = "카페닉 변경됨"
             elif src == "paren" and name_mask_ok != "TRUE":
                 issue = "이름 마스킹(@) 불일치"
