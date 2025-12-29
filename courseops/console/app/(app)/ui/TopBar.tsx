@@ -15,6 +15,20 @@ type Job = {
 
 type JobEvent = { level: "INFO" | "WARN" | "ERROR"; message: string; ts: string };
 
+function formatEventTs(ts: string) {
+  const s = String(ts || "").trim();
+  if (!s) return "-";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
 export default function TopBar({ userName, canSync }: { userName: string; canSync: boolean }) {
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseId, setCourseId] = useState<string>("");
@@ -220,7 +234,10 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
                     ev.level === "ERROR" ? "bg-red-500" : ev.level === "WARN" ? "bg-amber-500" : "bg-emerald-500",
                   ].join(" ")}
                 />
-                <div className="min-w-0 whitespace-pre-wrap text-slate-700">{ev.message}</div>
+                <div className="min-w-0 whitespace-pre-wrap">
+                  <div className="font-mono text-xs text-slate-500">{formatEventTs(ev.ts)}</div>
+                  <div className="text-slate-700">{ev.message}</div>
+                </div>
               </div>
             ))}
             {!eventsLoading && events.length === 0 ? <div className="text-sm text-slate-600">표시할 로그가 없어요.</div> : null}

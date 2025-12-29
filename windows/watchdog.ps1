@@ -1280,12 +1280,12 @@ function Test-CourseOpsAgentOk {
     } catch {}
 
     $statusPath = Join-Path $root "node-iris-app\data\courseops_agent_status.json"
-    $pid = $null
+    $agentPid = $null
     $hbTs = $null
     if (Test-Path $statusPath) {
       try {
         $j = Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($j.pid) { $pid = [int]$j.pid }
+        if ($j.pid) { $agentPid = [int]$j.pid }
         if ($j.heartbeatTs) { $hbTs = [string]$j.heartbeatTs }
       } catch {}
     }
@@ -1299,9 +1299,9 @@ function Test-CourseOpsAgentOk {
       } catch {}
     }
 
-    if ($pid) {
+    if ($agentPid) {
       try {
-        $p = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        $p = Get-Process -Id $agentPid -ErrorAction SilentlyContinue
         return $null -ne $p
       } catch { return $false }
     }
@@ -1714,4 +1714,3 @@ try
 catch {}
 Write-Log -Level 'INFO' -Message "watchdog exit"
 if ($fatal) { throw $fatal }
-

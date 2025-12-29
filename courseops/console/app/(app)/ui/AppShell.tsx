@@ -7,7 +7,7 @@ import TopBar from "./TopBar";
 
 function NavItem({ href, label }: { href: string; label: string }) {
   const pathname = usePathname();
-  const active = pathname === href;
+  const active = pathname === href || pathname.startsWith(`${href}/`);
   return (
     <Link
       href={href}
@@ -46,6 +46,7 @@ export default function AppShell({
             {isCourseManager ? <NavItem href="/courses" label="강의 관리" /> : null}
             <NavItem href="/queue" label="작업 대기열" />
             <NavItem href="/dashboard" label="대시보드" />
+            <NavItem href="/main-cafe" label="메인 카페" />
             <NavItem href="/roster" label="전체 명단" />
             <NavItem href="/settings" label="설정" />
             {isAdmin ? <NavItem href="/accounts" label="계정 관리" /> : null}

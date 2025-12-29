@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 import { useSelectedCourse } from "@/app/(app)/ui/useSelectedCourse";
 
@@ -201,23 +202,32 @@ export default function DashboardView() {
         </div>
       </div>
 
-      <div className="rounded-2xl border bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="text-sm font-semibold">메인 카페</div>
-            <div className="mt-1 text-sm text-slate-600">
-              강의 카페 활동이 줄어들어도, 메인 카페는 계속 관리가 필요해요.
+        <div className="rounded-2xl border bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-sm font-semibold">메인 카페</div>
+              <div className="mt-1 text-sm text-slate-600">
+                강의 카페 활동이 줄어들어도, 메인 카페는 계속 관리가 필요해요.
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+              <Link
+                href="/main-cafe"
+                className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
+              >
+                자세히 보기
+                <span className="text-slate-400">↗</span>
+              </Link>
+              <div>
+                마지막 갱신:{" "}
+                <span className="font-medium text-slate-900">
+                  {formatTs(mainCafe?.snapshot?.fetchedAt ?? null)}
+                </span>
+              </div>
             </div>
           </div>
-          <div className="text-sm text-slate-600">
-            마지막 갱신:{" "}
-            <span className="font-medium text-slate-900">
-              {formatTs(mainCafe?.snapshot?.fetchedAt ?? null)}
-            </span>
-          </div>
-        </div>
 
-        {mainCafeError ? (
+          {mainCafeError ? (
           <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
             메인 카페를 불러오지 못했어요.
           </div>

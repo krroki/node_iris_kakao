@@ -557,7 +557,13 @@ async function runSyncFull(job) {
       await report(job.id, {
         status: "FAILED",
         resultMessage: "카페 clubId가 필요해요. 설정에서 clubId를 입력해 주세요.",
-        events: [{ level: "ERROR", message: "코스 설정에 clubId가 없어요. (카페 URL에 clubid=가 포함된 주소면 clubId 입력을 생략할 수 있어요.)" }],
+        events: [
+          {
+            level: "ERROR",
+            message: "코스 설정에 clubId가 없어요. (카페 URL에 clubid=가 포함된 주소면 clubId 입력을 생략할 수 있어요.)",
+            ts: new Date().toISOString(),
+          },
+        ],
       });
       return;
     }
@@ -573,25 +579,30 @@ async function runSyncFull(job) {
     status: "RUNNING",
     progressPct: 1,
     progressMessage: "동기화를 시작했어요.",
-    events: [{ level: "INFO", message: `${courseKey} 동기화를 시작했어요.` }],
+    events: [{ level: "INFO", message: `${courseKey} 동기화를 시작했어요.`, ts: new Date().toISOString() }],
   });
 
   const deadline = Date.now() + 25 * 60 * 1000;
   let lastMsg = "";
+  let lastLogMs = 0;
 
   while (Date.now() < deadline) {
     const cs = getCourseState(courseKey);
     const progress = cs?.progress || {};
     const msg = String(progress?.message || "").trim();
     const pct = typeof progress?.pct === "number" ? progress.pct : null;
+    const progressTs = typeof progress?.ts === "string" ? String(progress.ts).trim() : "";
+    const evTs = progressTs || new Date().toISOString();
+    const nowMs = Date.now();
 
-    if (msg && msg !== lastMsg) {
+    if (msg && (msg !== lastMsg || nowMs - lastLogMs >= 60 * 1000)) {
       lastMsg = msg;
+      lastLogMs = nowMs;
       await report(job.id, {
         status: "RUNNING",
         progressPct: pct,
         progressMessage: msg,
-        events: [{ level: "INFO", message: msg }],
+        events: [{ level: "INFO", message: msg, ts: evTs }],
       });
     } else {
       await report(job.id, { status: "RUNNING", progressPct: pct, progressMessage: msg || null, events: [] });
@@ -607,7 +618,7 @@ async function runSyncFull(job) {
             status: "RUNNING",
             progressPct: 99,
             progressMessage: "웹 콘솔로 결과를 전송하는 중...",
-            events: [{ level: "INFO", message: "웹 콘솔로 결과를 전송하는 중..." }],
+            events: [{ level: "INFO", message: "웹 콘솔로 결과를 전송하는 중...", ts: new Date().toISOString() }],
           });
 
           const courseId = String(job?.course?.id || job?.courseId || "").trim();
@@ -627,7 +638,7 @@ async function runSyncFull(job) {
             progressPct: 100,
             progressMessage: "완료됐어요.",
             resultMessage: "완료됐어요.",
-            events: [{ level: "INFO", message: "완료됐어요." }],
+            events: [{ level: "INFO", message: "완료됐어요.", ts: new Date().toISOString() }],
           });
         } catch (e) {
           const msg = String(e?.message || "스냅샷 업로드에 실패했어요.");
@@ -636,7 +647,7 @@ async function runSyncFull(job) {
             progressPct: 100,
             progressMessage: msg,
             resultMessage: msg,
-            events: [{ level: "ERROR", message: msg }],
+            events: [{ level: "ERROR", message: msg, ts: new Date().toISOString() }],
           });
         }
       } else {
@@ -646,7 +657,7 @@ async function runSyncFull(job) {
           progressPct: 100,
           progressMessage: errUser,
           resultMessage: errUser,
-          events: [{ level: "ERROR", message: errUser }],
+          events: [{ level: "ERROR", message: errUser, ts: new Date().toISOString() }],
         });
       }
       return;
@@ -660,7 +671,7 @@ async function runSyncFull(job) {
     progressPct: 100,
     progressMessage: "시간이 오래 걸려서 중단됐어요.",
     resultMessage: "시간이 오래 걸려서 중단됐어요.",
-    events: [{ level: "ERROR", message: "시간이 오래 걸려서 중단됐어요." }],
+    events: [{ level: "ERROR", message: "시간이 오래 걸려서 중단됐어요.", ts: new Date().toISOString() }],
   });
 }
 
@@ -704,7 +715,7 @@ async function refreshRoomMembers(roomId, label, jobId) {
   await report(jobId, {
     status: "RUNNING",
     progressMessage: `${label} 멤버를 새로 불러오는 중...`,
-    events: [{ level: "INFO", message: `${label} 멤버 DB 갱신을 시작했어요.` }],
+    events: [{ level: "INFO", message: `${label} 멤버 DB 갱신을 시작했어요.`, ts: new Date().toISOString() }],
   });
 
   const args = [
@@ -723,7 +734,13 @@ async function refreshRoomMembers(roomId, label, jobId) {
   await report(jobId, {
     status: "RUNNING",
     progressMessage: ok ? `${label} 멤버 갱신 완료` : `${label} 멤버 갱신이 미완료예요`,
-    events: [{ level: ok ? "INFO" : "WARN", message: ok ? `${label} 멤버 DB 갱신이 끝났어요.` : `${label} 멤버 DB 갱신이 미완료예요. (데이터 미완전으로 처리될 수 있어요.)` }],
+    events: [
+      {
+        level: ok ? "INFO" : "WARN",
+        message: ok ? `${label} 멤버 DB 갱신이 끝났어요.` : `${label} 멤버 DB 갱신이 미완료예요. (데이터 미완전으로 처리될 수 있어요.)`,
+        ts: new Date().toISOString(),
+      },
+    ],
   });
   return { ok, code: r.code };
 }
@@ -737,7 +754,7 @@ async function runReverifyPending(job) {
       progressPct: 100,
       progressMessage: "확인할 항목이 없어요.",
       resultMessage: "확인할 항목이 없어요.",
-      events: [{ level: "INFO", message: "확인할 항목이 없어요." }],
+      events: [{ level: "INFO", message: "확인할 항목이 없어요.", ts: new Date().toISOString() }],
       actionUpdates: [],
     });
     return;
@@ -755,7 +772,13 @@ async function runReverifyPending(job) {
       status: "RUNNING",
       progressPct: 1,
       progressMessage: "방 정보가 없어 코스 설정의 roomId로 재검증해요.",
-      events: [{ level: "WARN", message: "최근 동기화 정보가 없어서 코스 설정(roomId) 기준으로 재검증을 진행해요." }],
+      events: [
+        {
+          level: "WARN",
+          message: "최근 동기화 정보가 없어서 코스 설정(roomId) 기준으로 재검증을 진행해요.",
+          ts: new Date().toISOString(),
+        },
+      ],
     });
   }
 
@@ -864,7 +887,7 @@ async function runReverifyPending(job) {
     progressPct: 100,
     progressMessage: "확인이 끝났어요.",
     resultMessage: "확인이 끝났어요.",
-    events: [{ level: "INFO", message: "확인이 끝났어요." }],
+    events: [{ level: "INFO", message: "확인이 끝났어요.", ts: new Date().toISOString() }],
     actionUpdates: updates,
   });
 }
@@ -1045,7 +1068,7 @@ async function main() {
               progressPct: 100,
               progressMessage: msg,
               resultMessage: msg,
-              events: [{ level: "ERROR", message: msg }],
+              events: [{ level: "ERROR", message: msg, ts: new Date().toISOString() }],
             });
           } catch {}
         }

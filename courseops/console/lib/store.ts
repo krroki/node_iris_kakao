@@ -783,9 +783,15 @@ export async function coursesStore() {
       const evs = Array.isArray(input.events) ? input.events : [];
       for (const ev of evs.slice(0, 30)) {
         const eid = id("ev");
+        let ts = new Date();
+        const rawTs = typeof ev.ts === "string" ? ev.ts.trim() : "";
+        if (rawTs) {
+          const parsed = new Date(rawTs);
+          if (!Number.isNaN(parsed.getTime())) ts = parsed;
+        }
         await sql`
           insert into courseops_job_events (id, job_id, level, message, ts)
-          values (${eid}, ${input.jobId}, ${ev.level}, ${ev.message}, now())
+          values (${eid}, ${input.jobId}, ${ev.level}, ${ev.message}, ${ts})
         `;
       }
 
