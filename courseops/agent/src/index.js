@@ -13,11 +13,17 @@ if (!agentToken) throw new Error("COURSEOPS_AGENT_TOKEN is required");
 
 const statePath = path.join(repoRoot, "node-iris-app", "data", "course_membership_audit_worker_state.json");
 const agentStatusPath = path.join(repoRoot, "node-iris-app", "data", "courseops_agent_status.json");
+const uploaderStatePath = path.join(repoRoot, "node-iris-app", "data", "courseops_agent_uploader_state.json");
 const agentStartedTs = new Date().toISOString();
 let lastHeartbeatMs = 0;
 let lastMainCafeSyncMs = 0;
 let lastMainCafeAttemptMs = 0;
 let mainCafeInFlight = false;
+let lastCoursesSyncAttemptMs = 0;
+let lastCoursesSyncOkMs = 0;
+let lastSnapshotUploadScanMs = 0;
+let coursesByKey = new Map();
+let uploaderState = null;
 
 function envBool(name, fallback = false) {
   const raw = String(process.env[name] ?? "").trim();
@@ -37,6 +43,14 @@ function envInt(name, fallback, min, max) {
   if (typeof max === "number") n = Math.min(max, n);
   return n;
 }
+
+const COURSES_AUTO_SYNC_ENABLED = envBool("COURSEOPS_COURSES_AUTO_SYNC", true);
+const COURSES_SYNC_INTERVAL_MS = envInt("COURSEOPS_COURSES_SYNC_INTERVAL_SEC", 60, 15, 3600) * 1000;
+const COURSES_SYNC_RETRY_INTERVAL_MS = envInt("COURSEOPS_COURSES_SYNC_RETRY_SEC", 20, 5, 600) * 1000;
+
+const SNAPSHOT_AUTO_UPLOAD_ENABLED = envBool("COURSEOPS_SNAPSHOT_AUTO_UPLOAD", true);
+const SNAPSHOT_UPLOAD_SCAN_INTERVAL_MS = envInt("COURSEOPS_SNAPSHOT_UPLOAD_INTERVAL_SEC", 10, 5, 3600) * 1000;
+const SNAPSHOT_UPLOAD_MAX_PER_SCAN = envInt("COURSEOPS_SNAPSHOT_UPLOAD_MAX_PER_SCAN", 1, 1, 5);
 
 const MAIN_CAFE_SNAPSHOT_KEY = "main_cafe";
 const MAIN_CAFE_CLUB_ID = parseClubId(
@@ -324,6 +338,178 @@ async function postJson(url, body, timeoutMs = 45000) {
     return { ok: res.ok, status: res.status, json: j };
   } finally {
     clearTimeout(t);
+  }
+}
+
+async function getJson(url, timeoutMs = 45000) {
+  const ms = Math.max(1000, Number(timeoutMs || 0) || 45000);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { "x-courseops-agent-token": agentToken },
+      signal: ctrl.signal,
+    });
+    const text = await res.text().catch(() => "");
+    let j = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      j = {};
+    }
+    return { ok: res.ok, status: res.status, json: j };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function readUploaderState() {
+  const j = readJson(uploaderStatePath);
+  const courses = j && typeof j.courses === "object" && j.courses && !Array.isArray(j.courses) ? j.courses : {};
+  return { courses };
+}
+
+function writeUploaderState(next) {
+  const safe = next && typeof next === "object" && !Array.isArray(next) ? next : {};
+  writeJsonAtomic(uploaderStatePath, { ...safe, updatedAt: new Date().toISOString() });
+}
+
+async function fetchCoursesFromConsole() {
+  const r = await getJson(`${consoleBase}/api/agent/courses`, 45000);
+  if (!r.ok) {
+    const msg = String(r?.json?.error || "").trim();
+    throw new Error(msg ? `코스 목록 조회에 실패했어요(${msg}).` : `코스 목록 조회에 실패했어요(HTTP ${r.status}).`);
+  }
+  const list = Array.isArray(r?.json?.courses) ? r.json.courses : [];
+  return list.filter((c) => c && typeof c === "object");
+}
+
+function rebuildCoursesByKey(list) {
+  const m = new Map();
+  for (const course of list) {
+    const key = String(course?.courseKey || course?.course_key || "").trim();
+    if (!key) continue;
+    m.set(key, course);
+  }
+  coursesByKey = m;
+}
+
+async function maybeSyncCoursesFromConsole() {
+  if (!COURSES_AUTO_SYNC_ENABLED) return;
+
+  const nowMs = Date.now();
+  if (nowMs - lastCoursesSyncOkMs < COURSES_SYNC_INTERVAL_MS) return;
+  if (nowMs - lastCoursesSyncAttemptMs < COURSES_SYNC_RETRY_INTERVAL_MS) return;
+
+  lastCoursesSyncAttemptMs = nowMs;
+  try {
+    const list = await fetchCoursesFromConsole();
+    rebuildCoursesByKey(list);
+    for (const course of list) {
+      try {
+        upsertLocalCourseConfig(course);
+      } catch {}
+    }
+    lastCoursesSyncOkMs = nowMs;
+  } catch (e) {
+    const msg = String(e?.message || "코스 목록 동기화에 실패했어요.").trim();
+    heartbeat({ coursesSyncError: msg.slice(0, 200) });
+  }
+}
+
+async function maybeUploadCourseSnapshots() {
+  if (!SNAPSHOT_AUTO_UPLOAD_ENABLED) return;
+  if (coursesByKey.size === 0) return;
+
+  const nowMs = Date.now();
+  if (nowMs - lastSnapshotUploadScanMs < SNAPSHOT_UPLOAD_SCAN_INTERVAL_MS) return;
+  lastSnapshotUploadScanMs = nowMs;
+
+  if (!uploaderState) uploaderState = readUploaderState();
+  if (!uploaderState || typeof uploaderState !== "object") uploaderState = { courses: {} };
+  if (!uploaderState.courses || typeof uploaderState.courses !== "object" || Array.isArray(uploaderState.courses)) {
+    uploaderState.courses = {};
+  }
+
+  const st = readJson(statePath);
+  const csMap = st && typeof st.courses === "object" && st.courses ? st.courses : {};
+  const entries = Object.entries(csMap)
+    .map(([k, v]) => [String(k), v])
+    .filter(([k]) => Boolean(k))
+    .sort((a, b) => Number(b?.[1]?.lastRunMs || b?.[1]?.lastOkMs || 0) - Number(a?.[1]?.lastRunMs || a?.[1]?.lastOkMs || 0));
+
+  let uploaded = 0;
+  for (const [courseKey, cs] of entries) {
+    if (uploaded >= SNAPSHOT_UPLOAD_MAX_PER_SCAN) break;
+
+    const course = coursesByKey.get(courseKey) || null;
+    const courseId = String(course?.id || "").trim();
+    if (!courseId) continue;
+
+    const runMs = Number(cs?.lastRunMs || cs?.lastOkMs || 0);
+    if (!runMs) continue;
+
+    const prev = uploaderState.courses?.[courseKey] || {};
+    const lastUploadedRunMs = Number(prev?.lastRunMs || 0);
+    if (runMs <= lastUploadedRunMs) continue;
+
+    const snapshotPath =
+      String(cs?.lastSnapshotPath || "").trim() ||
+      path.join(repoRoot, "node-iris-app", "data", "courseops_snapshots", `${safeFilename(courseKey)}.json`);
+    if (!fs.existsSync(snapshotPath)) continue;
+
+    let payload = null;
+    try {
+      payload = readJsonFileStrict(snapshotPath);
+    } catch (e) {
+      const msg = String(e?.message || "스냅샷 파일을 읽지 못했어요.").trim();
+      uploaderState.courses[courseKey] = {
+        ...(prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {}),
+        lastError: msg.slice(0, 200),
+        lastAttemptAt: new Date().toISOString(),
+      };
+      try {
+        writeUploaderState(uploaderState);
+      } catch {}
+      continue;
+    }
+
+    const fetchedAt =
+      String(payload?.fetchedAt || cs?.lastSnapshotFetchedAt || cs?.lastOkTs || "").trim() || null;
+
+    try {
+      const up = await postJson(`${consoleBase}/api/agent/snapshot`, { courseId, fetchedAt, payload }, 180000);
+      if (!up.ok) {
+        const msg = String(up?.json?.error || "").trim();
+        throw new Error(msg ? `스냅샷 업로드에 실패했어요(${msg}).` : `스냅샷 업로드에 실패했어요(HTTP ${up.status}).`);
+      }
+
+      uploaderState.courses[courseKey] = {
+        courseId,
+        lastRunMs: runMs,
+        fetchedAt,
+        uploadedAt: new Date().toISOString(),
+      };
+      try {
+        writeUploaderState(uploaderState);
+      } catch {}
+      uploaded += 1;
+    } catch (e) {
+      const msg = String(e?.message || "스냅샷 업로드에 실패했어요.").trim();
+      uploaderState.courses[courseKey] = {
+        ...(prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {}),
+        lastError: msg.slice(0, 200),
+        lastAttemptAt: new Date().toISOString(),
+      };
+      try {
+        writeUploaderState(uploaderState);
+      } catch {}
+    }
+  }
+
+  if (uploaded > 0) {
+    heartbeat({ lastSnapshotUploadTs: new Date().toISOString(), lastSnapshotUploadCount: uploaded });
   }
 }
 
@@ -1046,6 +1232,14 @@ async function runReverifyPending(job) {
 
 async function main() {
   writeAgentStatus({ state: "STARTING" });
+  try {
+    uploaderState = readUploaderState();
+  } catch {
+    uploaderState = { courses: {} };
+  }
+  try {
+    await maybeSyncCoursesFromConsole();
+  } catch {}
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
@@ -1073,6 +1267,12 @@ async function main() {
           } catch {}
         }
         } else {
+          try {
+            await maybeSyncCoursesFromConsole();
+          } catch {}
+          try {
+            await maybeUploadCourseSnapshots();
+          } catch {}
           try {
             await maybeSyncMainCafe();
           } catch {}
