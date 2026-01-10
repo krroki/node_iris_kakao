@@ -47,9 +47,10 @@ export default function AppShell({
             <NavItem href="/queue" label="작업 대기열" />
             <NavItem href="/dashboard" label="대시보드" />
             <NavItem href="/main-cafe" label="메인 카페" />
+            <NavItem href="/openchat" label="오픈채팅 현황" />
             <NavItem href="/roster" label="전체 명단" />
             <NavItem href="/settings" label="설정" />
-            {isAdmin ? <NavItem href="/accounts" label="계정 관리" /> : null}
+            {isAdmin ? <NavItem href="/accounts" label="계정 관리" /> : null}   
           </div>
           <div className="mt-6 rounded-xl bg-slate-50 p-3 text-sm">
             <div className="text-slate-500">로그인</div>

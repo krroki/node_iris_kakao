@@ -133,3 +133,31 @@ create table if not exists courseops_global_snapshots (
 );
 
 create index if not exists courseops_global_snapshots_updated_at_idx on courseops_global_snapshots(updated_at desc);
+
+create table if not exists courseops_openchat_watchlist (
+  room_id text primary key,
+  pinned boolean not null default false,
+  hidden boolean not null default false,
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists courseops_openchat_watchlist_sort_idx on courseops_openchat_watchlist(pinned desc, sort_order asc);
+
+alter table courseops_openchat_watchlist add column if not exists pinned boolean not null default false;
+alter table courseops_openchat_watchlist add column if not exists hidden boolean not null default false;
+alter table courseops_openchat_watchlist add column if not exists sort_order int not null default 0;
+alter table courseops_openchat_watchlist add column if not exists updated_at timestamptz not null default now();
+
+create table if not exists courseops_agent_requests (
+  key text primary key,
+  requested_at timestamptz not null default now(),
+  requested_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table courseops_agent_requests add column if not exists requested_at timestamptz not null default now();
+alter table courseops_agent_requests add column if not exists requested_by text;
+alter table courseops_agent_requests add column if not exists updated_at timestamptz not null default now();
