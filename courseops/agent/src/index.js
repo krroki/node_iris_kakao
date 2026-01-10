@@ -14,16 +14,23 @@ if (!agentToken) throw new Error("COURSEOPS_AGENT_TOKEN is required");
 const statePath = path.join(repoRoot, "node-iris-app", "data", "course_membership_audit_worker_state.json");
 const agentStatusPath = path.join(repoRoot, "node-iris-app", "data", "courseops_agent_status.json");
 const uploaderStatePath = path.join(repoRoot, "node-iris-app", "data", "courseops_agent_uploader_state.json");
+const openchatOverviewStatePath = path.join(repoRoot, "node-iris-app", "data", "courseops_openchat_overview_state.json");
 const agentStartedTs = new Date().toISOString();
 let lastHeartbeatMs = 0;
 let lastMainCafeSyncMs = 0;
 let lastMainCafeAttemptMs = 0;
 let mainCafeInFlight = false;
+let lastOpenchatSyncMs = 0;
+let lastOpenchatAttemptMs = 0;
+let openchatInFlight = false;
+let lastRequestsPollMs = 0;
+let lastOpenchatRequestSeenMs = 0;
 let lastCoursesSyncAttemptMs = 0;
 let lastCoursesSyncOkMs = 0;
 let lastSnapshotUploadScanMs = 0;
 let coursesByKey = new Map();
 let uploaderState = null;
+let openchatOverviewState = null;
 
 function envBool(name, fallback = false) {
   const raw = String(process.env[name] ?? "").trim();
@@ -71,8 +78,21 @@ const MAIN_CAFE_SNAPSHOT_PATH = path.join(
 );
 
 try {
-  lastMainCafeSyncMs = fs.statSync(MAIN_CAFE_SNAPSHOT_PATH).mtimeMs || 0;
+  lastMainCafeSyncMs = fs.statSync(MAIN_CAFE_SNAPSHOT_PATH).mtimeMs || 0;    
 } catch {}
+
+const OPENCHAT_OVERVIEW_SNAPSHOT_KEY = "openchat_overview";
+const LOCAL_API_BASE = String(process.env.COURSEOPS_LOCAL_API_BASE_URL || "http://127.0.0.1:8650").replace(/\/$/, "");
+const OPENCHAT_OVERVIEW_ENABLED = envBool("COURSEOPS_OPENCHAT_OVERVIEW_ENABLED", true);
+const OPENCHAT_OVERVIEW_SYNC_INTERVAL_MS =
+  envInt("COURSEOPS_OPENCHAT_OVERVIEW_SYNC_INTERVAL_SEC", 30, 10, 300) * 1000;
+const OPENCHAT_OVERVIEW_RETRY_INTERVAL_MS =
+  envInt("COURSEOPS_OPENCHAT_OVERVIEW_RETRY_INTERVAL_SEC", 10, 5, 120) * 1000;
+const OPENCHAT_ADMINS_REFRESH_INTERVAL_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMINS_REFRESH_INTERVAL_SEC", 10 * 60, 60, 6 * 3600) * 1000;
+const OPENCHAT_REQUESTS_POLL_INTERVAL_MS =
+  envInt("COURSEOPS_REQUESTS_POLL_INTERVAL_SEC", 3, 1, 60) * 1000;
+const LOGS_BASE_DIR = path.join(repoRoot, "node-iris-app", "data", "logs");
 
 function writeAgentStatus(extra = {}) {
   const now = new Date().toISOString();
@@ -373,6 +393,602 @@ function readUploaderState() {
 function writeUploaderState(next) {
   const safe = next && typeof next === "object" && !Array.isArray(next) ? next : {};
   writeJsonAtomic(uploaderStatePath, { ...safe, updatedAt: new Date().toISOString() });
+}
+
+function readOpenchatOverviewState() {
+  const j = readJson(openchatOverviewStatePath);
+  const rooms = j && typeof j.rooms === "object" && j.rooms && !Array.isArray(j.rooms) ? j.rooms : {};
+  const meta = j && typeof j.meta === "object" && j.meta && !Array.isArray(j.meta) ? j.meta : {};
+  return { rooms, meta };
+}
+
+function writeOpenchatOverviewState(next) {
+  const safe = next && typeof next === "object" && !Array.isArray(next) ? next : {};
+  writeJsonAtomic(openchatOverviewStatePath, { ...safe, updatedAt: new Date().toISOString() });
+}
+
+async function getLocalJson(url, timeoutMs = 15000) {
+  const ms = Math.max(1000, Number(timeoutMs || 0) || 15000);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { method: "GET", signal: ctrl.signal });
+    const text = await res.text().catch(() => "");
+    let j = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      j = {};
+    }
+    return { ok: res.ok, status: res.status, json: j };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function kstYmd(dt = new Date()) {
+  try {
+    // en-CA: YYYY-MM-DD
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(dt);
+  } catch {
+    // fallback: local timezone
+    return dt.toISOString().slice(0, 10);
+  }
+}
+
+function kstHourIndex(isoTs) {
+  const s = String(isoTs || "").trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const hh = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }).format(d);
+    const n = Number(hh);
+    return Number.isFinite(n) ? Math.max(0, Math.min(23, Math.floor(n))) : null;
+  } catch {
+    return d.getHours();
+  }
+}
+
+function clampInt(n, min, max) {
+  const x = Math.floor(Number(n) || 0);
+  return Math.max(min, Math.min(max, x));
+}
+
+function normalizeMessageType(raw) {
+  let mt = Number(raw);
+  if (!Number.isFinite(mt)) return null;
+  mt = Math.floor(mt);
+  // 일부 환경에서 플래그가 섞여 들어오는 케이스(예: 16384)가 있어 제거한다.
+  if (mt >= 16384) mt = mt & ~16384;
+  return mt;
+}
+
+function classifyMessage(mt) {
+  if (mt === 1) return "text";
+  if (mt === 2 || mt === 27 || mt === 71) return "image";
+  return "other";
+}
+
+function roomLogFilePath(roomId, ymd) {
+  const rid = String(roomId || "").trim();
+  const day = String(ymd || "").trim();
+  if (!rid || !day) return "";
+  return path.join(LOGS_BASE_DIR, rid, `${day}.log`);
+}
+
+async function statSafe(p) {
+  try {
+    return await fs.promises.stat(p);
+  } catch {
+    return null;
+  }
+}
+
+async function scanJsonlFileFromOffset(filePath, startOffset, onLine) {
+  const start = Math.max(0, Number(startOffset || 0) || 0);
+  const st = await statSafe(filePath);
+  if (!st) return { ok: false, size: 0, scannedBytes: 0 };
+  const size = Number(st.size || 0) || 0;
+  if (start >= size) return { ok: true, size, scannedBytes: 0 };
+
+  return await new Promise((resolve, reject) => {
+    let buf = "";
+    let scanned = 0;
+    const stream = fs.createReadStream(filePath, { start, encoding: "utf8" });
+    stream.on("data", (chunk) => {
+      scanned += Buffer.byteLength(chunk, "utf8");
+      buf += chunk;
+      while (true) {
+        const idx = buf.indexOf("\n");
+        if (idx < 0) break;
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        const trimmed = String(line || "").trim();
+        if (!trimmed) continue;
+        try {
+          onLine(trimmed);
+        } catch {}
+      }
+    });
+    stream.on("end", () => {
+      const trimmed = String(buf || "").trim();
+      if (trimmed) {
+        try {
+          onLine(trimmed);
+        } catch {}
+      }
+      resolve({ ok: true, size, scannedBytes: scanned });
+    });
+    stream.on("error", (e) => reject(e));
+  });
+}
+
+function ensureRoomStateContainer(roomId) {
+  if (!openchatOverviewState) openchatOverviewState = readOpenchatOverviewState();
+  if (!openchatOverviewState.rooms || typeof openchatOverviewState.rooms !== "object" || Array.isArray(openchatOverviewState.rooms)) {
+    openchatOverviewState.rooms = {};
+  }
+  const rid = String(roomId || "").trim();
+  if (!rid) return null;
+  const cur = openchatOverviewState.rooms[rid];
+  if (cur && typeof cur === "object" && !Array.isArray(cur)) return cur;
+  openchatOverviewState.rooms[rid] = { days: {}, utcFiles: {}, admins: null };
+  return openchatOverviewState.rooms[rid];
+}
+
+function ensureKstDayState(roomState, ymd) {
+  if (!roomState.days || typeof roomState.days !== "object" || Array.isArray(roomState.days)) {
+    roomState.days = {};
+  }
+  const day = String(ymd || "").trim();
+  if (!day) return null;
+  if (!roomState.days[day] || typeof roomState.days[day] !== "object" || Array.isArray(roomState.days[day])) {
+    roomState.days[day] = {
+      total: 0,
+      text: 0,
+      image: 0,
+      other: 0,
+      hourly: Array.from({ length: 24 }, () => 0),
+      lastMessageTs: null,
+      updatedAt: null,
+    };
+  }
+  const ds = roomState.days[day];
+  if (!Array.isArray(ds.hourly) || ds.hourly.length !== 24) {
+    ds.hourly = Array.from({ length: 24 }, () => 0);
+  }
+  return ds;
+}
+
+function ensureUtcFileState(roomState, utcYmd) {
+  if (!roomState.utcFiles || typeof roomState.utcFiles !== "object" || Array.isArray(roomState.utcFiles)) {
+    roomState.utcFiles = {};
+  }
+  const day = String(utcYmd || "").trim();
+  if (!day) return null;
+  if (!roomState.utcFiles[day] || typeof roomState.utcFiles[day] !== "object" || Array.isArray(roomState.utcFiles[day])) {
+    roomState.utcFiles[day] = {
+      offsetBytes: 0,
+      sizeBytes: 0,
+      lastMessageTs: null,
+      updatedAt: null,
+    };
+  }
+  return roomState.utcFiles[day];
+}
+
+function resetKstDayState(ds) {
+  if (!ds || typeof ds !== "object" || Array.isArray(ds)) return;
+  ds.total = 0;
+  ds.text = 0;
+  ds.image = 0;
+  ds.other = 0;
+  ds.hourly = Array.from({ length: 24 }, () => 0);
+  ds.lastMessageTs = null;
+  ds.updatedAt = null;
+}
+
+function kstYmdFromIso(isoTs) {
+  const s = String(isoTs || "").trim();
+  if (!s) return "";
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return "";
+  return kstYmd(d);
+}
+
+function utcYmdFromDate(dt) {
+  if (!dt || Number.isNaN(dt.getTime())) return "";
+  return dt.toISOString().slice(0, 10);
+}
+
+function parseKstMidnight(kstDayYmd) {
+  const s = String(kstDayYmd || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00+09:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function buildUtcYmdsForKstDays(kstYmds) {
+  const set = new Set();
+  const dayMs = 24 * 60 * 60 * 1000;
+  for (const kstDay of Array.isArray(kstYmds) ? kstYmds : []) {
+    const startKst = parseKstMidnight(kstDay);
+    if (!startKst) continue;
+    const startUtc = utcYmdFromDate(startKst);
+    const endUtc = utcYmdFromDate(new Date(startKst.getTime() + dayMs));
+    if (startUtc) set.add(startUtc);
+    if (endUtc) set.add(endUtc);
+  }
+  return Array.from(set).sort();
+}
+
+function applyMessageToRoomState(roomState, obj, allowedKstDaysSet) {
+  const payload = obj?.payload && typeof obj.payload === "object" ? obj.payload : null;
+  if (!payload) return;
+  if (String(payload.type || "") !== "message") return;
+
+  const ts = String(obj?.timestamp || "").trim();
+  const kstDay = kstYmdFromIso(ts);
+  if (!kstDay) return;
+  if (allowedKstDaysSet && allowedKstDaysSet instanceof Set && !allowedKstDaysSet.has(kstDay)) return;
+
+  const dayState = ensureKstDayState(roomState, kstDay);
+  if (!dayState) return;
+
+  const mt = normalizeMessageType(payload?.messageType);
+  const kind = classifyMessage(mt);
+
+  dayState.total = (Number(dayState.total) || 0) + 1;
+  if (kind === "text") dayState.text = (Number(dayState.text) || 0) + 1;
+  else if (kind === "image") dayState.image = (Number(dayState.image) || 0) + 1;
+  else dayState.other = (Number(dayState.other) || 0) + 1;
+
+  const hi = kstHourIndex(ts);
+  if (typeof hi === "number" && hi >= 0 && hi <= 23) {
+    const hourly = Array.isArray(dayState.hourly) ? dayState.hourly : [];
+    hourly[hi] = (Number(hourly[hi]) || 0) + 1;
+    dayState.hourly = hourly;
+  }
+
+  if (ts) dayState.lastMessageTs = ts;
+}
+
+async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
+  const rid = String(roomId || "").trim();
+  const day = String(utcYmd || "").trim();
+  if (!rid || !day) return null;
+
+  const roomState = ensureRoomStateContainer(rid);
+  if (!roomState) return null;
+  const fsState = ensureUtcFileState(roomState, day);
+  if (!fsState) return null;
+
+  const filePath = roomLogFilePath(rid, day);
+  if (!filePath) return fsState;
+
+  const st = await statSafe(filePath);
+  if (!st) return fsState;
+  const size = Number(st.size || 0) || 0;
+
+  const forceFull = Boolean(opts.forceFull);
+  const onlyIfStale = Boolean(opts.onlyIfStale);
+  const prevSize = Number(fsState.sizeBytes || 0) || 0;
+  const prevOffset = Number(fsState.offsetBytes || 0) || 0;
+  const allowedKstDaysSet = opts.allowedKstDaysSet && opts.allowedKstDaysSet instanceof Set ? opts.allowedKstDaysSet : null;
+
+  if (onlyIfStale && prevSize === size && prevOffset === size) return fsState;
+
+  if (forceFull || prevOffset > size) {
+    fsState.offsetBytes = 0;
+    fsState.sizeBytes = 0;
+    fsState.lastMessageTs = null;
+  }
+
+  const startOffset = forceFull ? 0 : prevOffset;
+  await scanJsonlFileFromOffset(filePath, startOffset, (line) => {
+    let obj = null;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      obj = null;
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+    applyMessageToRoomState(roomState, obj, allowedKstDaysSet);
+    const ts = String(obj?.timestamp || "").trim();
+    if (ts) fsState.lastMessageTs = ts;
+  });
+
+  fsState.sizeBytes = size;
+  fsState.offsetBytes = size;
+  fsState.updatedAt = new Date().toISOString();
+  return fsState;
+}
+
+function normalizeAdminNames(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const it of list) {
+    const nick = String(it?.nickname || "").trim();
+    if (nick) out.push(nick);
+  }
+  // 숫자만인 경우는 화면에 그대로 보여주지 않는다.
+  return out.map((x) => (/^\d{6,}$/.test(x) ? "어떤 분" : x)).slice(0, 30);
+}
+
+function buildAdminsHint(raw) {
+  const loaded = Number(raw?.loadedMembersCount || 0) || 0;
+  const active = Number(raw?.activeMembersCount || 0) || 0;
+  if (!loaded) return "멤버 목록이 아직 덜 불러와졌어요.";
+  if (active > 0 && loaded < active) return "운영진 목록이 일부만 보일 수 있어요.";
+  return null;
+}
+
+async function fetchLocalOpenchatRooms() {
+  const r = await getLocalJson(`${LOCAL_API_BASE}/rooms`, 15000);
+  if (!r.ok) {
+    const msg = String(r?.json?.detail || r?.json?.error || "").trim();
+    throw new Error(msg ? `방 목록을 가져오지 못했어요(${msg}).` : `방 목록을 가져오지 못했어요(HTTP ${r.status}).`);
+  }
+  const list = Array.isArray(r.json) ? r.json : [];
+  return list
+    .map((x) => ({
+      roomId: String(x?.roomId || "").trim(),
+      roomName: String(x?.roomName || "").trim(),
+      activeMembersCount: x?.activeMembersCount ?? null,
+    }))
+    .filter((x) => Boolean(x.roomId));
+}
+
+async function fetchLocalOpenchatAdmins(roomId) {
+  const rid = String(roomId || "").trim();
+  if (!rid) return { hostNames: [], subhostNames: [], hint: "멤버 목록을 확인하지 못했어요." };
+  const r = await getLocalJson(`${LOCAL_API_BASE}/rooms/${encodeURIComponent(rid)}/admins`, 15000);
+  if (!r.ok) {
+    return { hostNames: [], subhostNames: [], hint: "운영진 정보를 확인하지 못했어요." };
+  }
+  const raw = r.json && typeof r.json === "object" ? r.json : {};
+  return {
+    hostNames: normalizeAdminNames(raw?.host),
+    subhostNames: normalizeAdminNames(raw?.subhosts),
+    hint: buildAdminsHint(raw),
+  };
+}
+
+function getRecent7DaysYmds() {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const out = [];
+  for (let i = 6; i >= 0; i -= 1) {
+    out.push(kstYmd(new Date(now - i * dayMs)));
+  }
+  return out;
+}
+
+function pruneRoomDays(roomState, keepDaysSet) {
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return;
+  if (!roomState.days || typeof roomState.days !== "object" || Array.isArray(roomState.days)) return;
+  if (!keepDaysSet || !(keepDaysSet instanceof Set)) return;
+  for (const k of Object.keys(roomState.days)) {
+    if (!keepDaysSet.has(k)) delete roomState.days[k];
+  }
+}
+
+function pruneRoomUtcFiles(roomState, keepUtcDaysSet) {
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return;
+  if (!roomState.utcFiles || typeof roomState.utcFiles !== "object" || Array.isArray(roomState.utcFiles)) return;
+  if (!keepUtcDaysSet || !(keepUtcDaysSet instanceof Set)) return;
+  for (const k of Object.keys(roomState.utcFiles)) {
+    if (!keepUtcDaysSet.has(k)) delete roomState.utcFiles[k];
+  }
+}
+
+function pickLastMessageTs(days) {
+  const keys = Object.keys(days || {}).sort();
+  for (let i = keys.length - 1; i >= 0; i -= 1) {
+    const ds = days[keys[i]];
+    const ts = String(ds?.lastMessageTs || "").trim();
+    if (ts) return ts;
+  }
+  return null;
+}
+
+async function syncOpenchatOverviewOnce(opts = {}) {
+  const forceAdmins = Boolean(opts.forceAdmins);
+  const forceFullWindow = Boolean(opts.forceFullWindow || opts.forceFullToday);
+
+  const fetchedAt = new Date().toISOString();
+  const todayYmd = kstYmd(new Date());
+  const ymds7 = getRecent7DaysYmds(); // oldest -> newest (includes today)
+  const yesterdayYmd = ymds7.length >= 2 ? ymds7[ymds7.length - 2] : null;
+  const utcYmds = buildUtcYmdsForKstDays(ymds7);
+  const keepDaysSet = new Set(ymds7);
+  const keepUtcDaysSet = new Set(utcYmds);
+
+  const rooms = await fetchLocalOpenchatRooms();
+  const payloadRooms = [];
+
+  for (const r of rooms) {
+    const rid = String(r.roomId || "").trim();
+    if (!rid) continue;
+    const roomState = ensureRoomStateContainer(rid);
+    if (!roomState) continue;
+
+    // logs
+    for (const kstDay of ymds7) ensureKstDayState(roomState, kstDay);
+    const hasUtcFiles =
+      roomState.utcFiles && typeof roomState.utcFiles === "object" && !Array.isArray(roomState.utcFiles);
+
+    const rebuildWindow = async () => {
+      // KST 기준 7일치만 안전하게 재집계한다(중복 카운트 방지).
+      for (const kstDay of ymds7) resetKstDayState(ensureKstDayState(roomState, kstDay));
+      roomState.utcFiles = {};
+      for (const utcDay of utcYmds) {
+        await updateRoomUtcFileFromLog(rid, utcDay, {
+          forceFull: true,
+          onlyIfStale: false,
+          allowedKstDaysSet: keepDaysSet,
+        });
+      }
+    };
+
+    if (forceFullWindow || !hasUtcFiles) {
+      await rebuildWindow();
+    } else {
+      pruneRoomDays(roomState, keepDaysSet);
+      pruneRoomUtcFiles(roomState, keepUtcDaysSet);
+
+      let needsRebuild = false;
+      for (const utcDay of utcYmds) {
+        const fsState = ensureUtcFileState(roomState, utcDay);
+        const prevOffset = Number(fsState?.offsetBytes || 0) || 0;
+        const st = await statSafe(roomLogFilePath(rid, utcDay));
+        const size = Number(st?.size || 0) || 0;
+        if (st && prevOffset > size) {
+          needsRebuild = true;
+          break;
+        }
+      }
+
+      if (needsRebuild) {
+        await rebuildWindow();
+      } else {
+        for (const utcDay of utcYmds) {
+          await updateRoomUtcFileFromLog(rid, utcDay, {
+            forceFull: false,
+            onlyIfStale: true,
+            allowedKstDaysSet: keepDaysSet,
+          });
+        }
+      }
+    }
+
+    // admins (cached)
+    const nowMs = Date.now();
+    const prevAdmins = roomState.admins && typeof roomState.admins === "object" ? roomState.admins : null;
+    const prevAt = Number(prevAdmins?.fetchedAtMs || 0) || 0;
+    const shouldRefresh = forceAdmins || !prevAdmins || nowMs - prevAt > OPENCHAT_ADMINS_REFRESH_INTERVAL_MS;
+    let admins = prevAdmins;
+    if (shouldRefresh) {
+      const a = await fetchLocalOpenchatAdmins(rid);
+      admins = {
+        fetchedAtMs: nowMs,
+        hostNames: Array.isArray(a.hostNames) ? a.hostNames : [],
+        subhostNames: Array.isArray(a.subhostNames) ? a.subhostNames : [],
+        hint: a.hint || null,
+      };
+      roomState.admins = admins;
+    }
+
+    const days = roomState.days || {};
+    const todayState = days[todayYmd] || {};
+    const yesterdayState = yesterdayYmd ? days[yesterdayYmd] || {} : {};
+    const totals7 = ymds7.map((d) => Math.max(0, Number(days?.[d]?.total || 0) || 0));
+    const sum7 = totals7.reduce((acc, x) => acc + x, 0);
+    const avg7 = totals7.length > 0 ? Math.round(sum7 / totals7.length) : 0;
+    const sparkTodayHourly = Array.isArray(todayState.hourly) ? todayState.hourly.map((x) => Math.max(0, Number(x) || 0)).slice(0, 24) : [];
+    while (sparkTodayHourly.length < 24) sparkTodayHourly.push(0);
+
+    payloadRooms.push({
+      roomId: rid,
+      roomName: String(r.roomName || "").trim() || "오픈채팅방",
+      activeMembersCount: r.activeMembersCount == null ? null : Math.max(0, Number(r.activeMembersCount) || 0),
+      lastMessageTs: pickLastMessageTs(days),
+      today: {
+        total: Math.max(0, Number(todayState.total || 0) || 0),
+        text: Math.max(0, Number(todayState.text || 0) || 0),
+        image: Math.max(0, Number(todayState.image || 0) || 0),
+        other: Math.max(0, Number(todayState.other || 0) || 0),
+      },
+      yesterday: { total: Math.max(0, Number(yesterdayState.total || 0) || 0) },
+      avg7d: { total: avg7 },
+      sparkTodayHourly,
+      spark7dDaily: totals7.slice(0, 7),
+      hostNames: Array.isArray(admins?.hostNames) && admins.hostNames.length > 0 ? admins.hostNames : ["어떤 분"],
+      subhostNames: Array.isArray(admins?.subhostNames) && admins.subhostNames.length > 0 ? admins.subhostNames : ["어떤 분"],
+      adminsHint: String(admins?.hint || "").trim() || null,
+    });
+  }
+
+  payloadRooms.sort((a, b) => String(a.roomName).localeCompare(String(b.roomName), "ko"));
+
+  const uploadPayload = {
+    ok: true,
+    fetchedAt,
+    rooms: payloadRooms,
+  };
+
+  const up = await postJson(
+    `${consoleBase}/api/agent/global-snapshot`,
+    { key: OPENCHAT_OVERVIEW_SNAPSHOT_KEY, fetchedAt, payload: uploadPayload },
+    60000,
+  );
+  if (!up.ok) {
+    const msg = String(up?.json?.error || "").trim();
+    throw new Error(msg || `오픈채팅 업로드에 실패했어요(HTTP ${up.status}).`);
+  }
+
+  return { ok: true, fetchedAt, rooms: payloadRooms.length };
+}
+
+async function maybeSyncOpenchatOverview(opts = {}) {
+  if (!OPENCHAT_OVERVIEW_ENABLED) return;
+  if (openchatInFlight) return;
+
+  const force = Boolean(opts.force);
+  const now = Date.now();
+  if (!force) {
+    if (lastOpenchatSyncMs && now - lastOpenchatSyncMs < OPENCHAT_OVERVIEW_SYNC_INTERVAL_MS) return;
+    if (lastOpenchatAttemptMs && now - lastOpenchatAttemptMs < OPENCHAT_OVERVIEW_RETRY_INTERVAL_MS) return;
+  }
+
+  openchatInFlight = true;
+  lastOpenchatAttemptMs = now;
+  try {
+    writeAgentStatus({ state: "OPENCHAT_OVERVIEW_SYNC" });
+    const r = await syncOpenchatOverviewOnce({ forceAdmins: force });
+    lastOpenchatSyncMs = Date.now();
+    writeAgentStatus({
+      state: "POLLING",
+      openchatOverview: { ok: true, fetchedAt: r.fetchedAt, rooms: r.rooms, lastSyncTs: new Date().toISOString() },
+    });
+    if (openchatOverviewState) {
+      writeOpenchatOverviewState(openchatOverviewState);
+    }
+  } catch (e) {
+    const msg = String(e?.message || "오픈채팅 갱신에 실패했어요.").trim();
+    writeAgentStatus({
+      state: "POLLING",
+      openchatOverview: { ok: false, lastError: msg.slice(0, 200), lastSyncTs: new Date().toISOString() },
+    });
+  } finally {
+    lastOpenchatAttemptMs = Date.now();
+    openchatInFlight = false;
+  }
+}
+
+async function maybeConsumeConsoleRequests() {
+  if (!OPENCHAT_OVERVIEW_ENABLED) return;
+  const now = Date.now();
+  if (now - lastRequestsPollMs < OPENCHAT_REQUESTS_POLL_INTERVAL_MS) return;
+  lastRequestsPollMs = now;
+
+  const r = await getJson(`${consoleBase}/api/agent/requests`, 15000);
+  if (!r.ok) return;
+  const req = r?.json?.requests?.openchat_overview || null;
+  const ts = String(req?.requestedAt || req?.requested_at || "").trim();
+  if (!ts) return;
+  const ms = new Date(ts).getTime();
+  if (!Number.isFinite(ms)) return;
+  if (ms <= lastOpenchatRequestSeenMs) return;
+  lastOpenchatRequestSeenMs = ms;
+  await maybeSyncOpenchatOverview({ force: true });
 }
 
 async function fetchCoursesFromConsole() {
@@ -1221,14 +1837,14 @@ async function runReverifyPending(job) {
     heartbeat({ lastJobId: String(job.id || ""), lastJobKind: String(job.kind || "") });
     if (job.kind === "SYNC_FULL") {
       await runSyncFull(job);
-    return;
+      return;
+    }
+    if (job.kind === "REVERIFY_PENDING") {
+      await runReverifyPending(job);
+      return;
+    }
+    await report(job.id, { status: "FAILED", resultMessage: "지원하지 않는 작업이에요." });
   }
-  if (job.kind === "REVERIFY_PENDING") {
-    await runReverifyPending(job);
-    return;
-  }
-  await report(job.id, { status: "FAILED", resultMessage: "지원하지 않는 작업이에요." });
-}
 
 async function main() {
   writeAgentStatus({ state: "STARTING" });
@@ -1236,6 +1852,11 @@ async function main() {
     uploaderState = readUploaderState();
   } catch {
     uploaderState = { courses: {} };
+  }
+  try {
+    openchatOverviewState = readOpenchatOverviewState();
+  } catch {
+    openchatOverviewState = { rooms: {}, meta: {} };
   }
   try {
     await maybeSyncCoursesFromConsole();
@@ -1275,6 +1896,12 @@ async function main() {
           } catch {}
           try {
             await maybeSyncMainCafe();
+          } catch {}
+          try {
+            await maybeConsumeConsoleRequests();
+          } catch {}
+          try {
+            await maybeSyncOpenchatOverview();
           } catch {}
           await sleep(pollSec * 1000);
         }

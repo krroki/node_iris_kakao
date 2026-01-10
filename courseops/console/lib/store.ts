@@ -74,6 +74,21 @@ export type GlobalSnapshotRow = {
   updatedAt: string;
 };
 
+export type OpenchatWatchRow = {
+  roomId: string;
+  pinned: boolean;
+  hidden: boolean;
+  sortOrder: number;
+  updatedAt: string | null;
+};
+
+export type AgentRequestRow = {
+  key: string;
+  requestedAt: string;
+  requestedBy: string | null;
+  updatedAt: string | null;
+};
+
 const CreateCourseBody = z
   .object({
     courseKey: z.string().trim().min(1),
@@ -570,6 +585,140 @@ export async function coursesStore() {
             updated_at=now()
         `;
       return this.getGlobalSnapshot(k);
+    },
+    async listOpenchatWatchlist(): Promise<OpenchatWatchRow[]> {
+      const rows = await sql<
+        {
+          room_id: string;
+          pinned: boolean | null;
+          hidden: boolean | null;
+          sort_order: number | null;
+          updated_at: Date | null;
+        }[]
+      >`select room_id, pinned, hidden, sort_order, updated_at from courseops_openchat_watchlist`;
+      return rows.map((r) => ({
+        roomId: String(r.room_id),
+        pinned: Boolean(r.pinned),
+        hidden: Boolean(r.hidden),
+        sortOrder: Number(r.sort_order ?? 0),
+        updatedAt: r.updated_at ? r.updated_at.toISOString() : null,
+      }));
+    },
+    async ensureOpenchatWatchlistRooms(roomIds: string[]): Promise<void> {
+      const ids = Array.from(
+        new Set(
+          (Array.isArray(roomIds) ? roomIds : [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean),
+        ),
+      );
+      if (ids.length === 0) return;
+
+      const existing = await sql<{ room_id: string }[]>`
+        select room_id from courseops_openchat_watchlist where room_id = any(${ids})
+      `;
+      const existingSet = new Set(existing.map((r) => String(r.room_id)));
+      const missing = ids.filter((id) => !existingSet.has(id));
+      if (missing.length === 0) return;
+
+      const maxRow = await sql<{ max_order: number | null }[]>`
+        select max(sort_order) as max_order from courseops_openchat_watchlist
+      `;
+      const start = Number(maxRow?.[0]?.max_order ?? 0) + 1;
+
+      const values = missing.map((rid, idx) => ({
+        room_id: rid,
+        pinned: false,
+        hidden: false,
+        sort_order: start + idx,
+      }));
+
+      await sql`
+        insert into courseops_openchat_watchlist (room_id, pinned, hidden, sort_order, updated_at)
+        select x.room_id, x.pinned, x.hidden, x.sort_order, now()
+        from jsonb_to_recordset(${JSON.stringify(values)}::jsonb)
+          as x(room_id text, pinned boolean, hidden boolean, sort_order int)
+        on conflict (room_id) do nothing
+      `;
+    },
+    async updateOpenchatWatchlist(input: { roomId: string; pinned?: boolean; hidden?: boolean }) {
+      const roomId = String(input.roomId || "").trim();
+      if (!roomId) throw new Error("roomId is required");
+
+      const cur = await sql<
+        { room_id: string; pinned: boolean | null; hidden: boolean | null }[]
+      >`select room_id, pinned, hidden from courseops_openchat_watchlist where room_id=${roomId} limit 1`;
+
+      if (cur.length === 0) {
+        await sql`
+          insert into courseops_openchat_watchlist (room_id, pinned, hidden, sort_order, updated_at)
+          values (${roomId}, ${Boolean(input.pinned)}, ${Boolean(input.hidden)}, 0, now())
+          on conflict (room_id)
+          do update set pinned=excluded.pinned, hidden=excluded.hidden, updated_at=now()
+        `;
+        return;
+      }
+
+      const nextPinned = typeof input.pinned === "boolean" ? input.pinned : Boolean(cur[0].pinned);
+      const nextHidden = typeof input.hidden === "boolean" ? input.hidden : Boolean(cur[0].hidden);
+      await sql`
+        update courseops_openchat_watchlist
+        set pinned=${nextPinned}, hidden=${nextHidden}, updated_at=now()
+        where room_id=${roomId}
+      `;
+    },
+    async reorderOpenchatWatchlist(input: { pinned: boolean; roomIds: string[] }) {
+      const pinned = Boolean(input.pinned);
+      const roomIds = Array.from(
+        new Set(
+          (Array.isArray(input.roomIds) ? input.roomIds : [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean),
+        ),
+      );
+      if (roomIds.length === 0) return;
+
+      const rows = roomIds.map((rid, idx) => ({ room_id: rid, sort_order: idx + 1 }));
+      await sql`
+        update courseops_openchat_watchlist w
+        set sort_order = x.sort_order, updated_at = now()
+        from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as x(room_id text, sort_order int)
+        where w.room_id = x.room_id and w.pinned = ${pinned}
+      `;
+    },
+    async getAgentRequest(key: string): Promise<AgentRequestRow | null> {
+      const k = String(key || "").trim();
+      if (!k) return null;
+      const rows = await sql<
+        { key: string; requested_at: Date; requested_by: string | null; updated_at: Date | null }[]
+      >`select key, requested_at, requested_by, updated_at from courseops_agent_requests where key=${k} limit 1`;
+      if (rows.length === 0) return null;
+      return {
+        key: rows[0].key,
+        requestedAt: rows[0].requested_at.toISOString(),
+        requestedBy: rows[0].requested_by,
+        updatedAt: rows[0].updated_at ? rows[0].updated_at.toISOString() : null,
+      };
+    },
+    async upsertAgentRequest(input: { key: string; requestedBy?: string | null }): Promise<AgentRequestRow> {
+      const key = String(input.key || "").trim();
+      if (!key) throw new Error("key is required");
+      const requestedBy = input.requestedBy ? String(input.requestedBy).trim() : null;
+      const rows = await sql<
+        { key: string; requested_at: Date; requested_by: string | null; updated_at: Date | null }[]
+      >`
+        insert into courseops_agent_requests (key, requested_at, requested_by, updated_at)
+        values (${key}, now(), ${requestedBy}, now())
+        on conflict (key)
+        do update set requested_at=now(), requested_by=excluded.requested_by, updated_at=now()
+        returning key, requested_at, requested_by, updated_at
+      `;
+      return {
+        key: rows[0].key,
+        requestedAt: rows[0].requested_at.toISOString(),
+        requestedBy: rows[0].requested_by,
+        updatedAt: rows[0].updated_at ? rows[0].updated_at.toISOString() : null,
+      };
     },
     async getActionStates(courseId: string, actionKeys: string[]): Promise<ActionStateRow[]> {
       if (!actionKeys || actionKeys.length === 0) return [];

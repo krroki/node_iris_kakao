@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 
 type Course = { id: string; courseKey: string };
 type Job = {
@@ -30,6 +31,9 @@ function formatEventTs(ts: string) {
 }
 
 export default function TopBar({ userName, canSync }: { userName: string; canSync: boolean }) {
+  const pathname = usePathname();
+  const isOpenchat = pathname === "/openchat" || pathname.startsWith("/openchat/");
+
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseId, setCourseId] = useState<string>("");
   const [job, setJob] = useState<Job | null>(null);
@@ -41,6 +45,7 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
   const [eventsError, setEventsError] = useState("");
 
   useEffect(() => {
+    if (isOpenchat) return;
     (async () => {
       const res = await fetch("/api/courses", { cache: "no-store" });
       const j = (await res.json().catch(() => ({}))) as any;
@@ -51,7 +56,7 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
       if (picked) setCourseId(picked);
       else if (courses.length > 0) setCourseId(String(courses[0].id || ""));
     })();
-  }, []);
+  }, [isOpenchat]);
 
   const refreshJob = async (cid: string) => {
     if (!cid) return;
@@ -78,20 +83,22 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
   };
 
   useEffect(() => {
+    if (isOpenchat) return;
     if (!courseId) return;
     refreshJob(courseId);
     const t = setInterval(() => refreshJob(courseId), 2500);
     return () => clearInterval(t);
-  }, [courseId]);
+  }, [courseId, isOpenchat]);
 
   useEffect(() => {
+    if (isOpenchat) return;
     if (!logOpen || !job?.id) return;
     refreshEvents(job.id);
     const intervalMs = job.status === "RUNNING" || job.status === "QUEUED" ? 2500 : 8000;
     const t = setInterval(() => refreshEvents(job.id), intervalMs);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [logOpen, job?.id, job?.status]);
+  }, [logOpen, job?.id, job?.status, isOpenchat]);
 
   const badge = useMemo(() => {
     if (!job) return null;
@@ -134,6 +141,20 @@ export default function TopBar({ userName, canSync }: { userName: string; canSyn
       setReverifying(false);
     }
   };
+
+  if (isOpenchat) {
+    return (
+      <div className="sticky top-0 z-10 border-b bg-white/90 backdrop-blur">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 md:px-8">
+          <div className="min-w-0">
+            <div className="text-sm text-slate-500">로그인</div>
+            <div className="truncate text-sm font-medium">{userName}</div>
+          </div>
+          <div className="text-sm text-slate-600">오픈채팅 현황</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="sticky top-0 z-10 border-b bg-white/90 backdrop-blur">
