@@ -8,29 +8,43 @@
 - 테스트 및 로그를 통해 “다음 행동”이 무엇인지 명확히 유지한다.
 
 ## 핵심 규칙
-- main 브랜치는 보호 대상이며 직접 커밋/푸시는 금지한다.
-- 모든 작업은 `feat/*`, `fix/*`, `chore/*` 네이밍의 브랜치에서 진행한다.
-- Draft PR 본문은 Goal/Scope/AC(완료 기준)/로그 및 참고 문서를 포함한다.
+- 원칙: `feat/*`, `fix/*`, `chore/*` 브랜치에서 Draft PR → 검증 후 main 머지
+- PR 본문은 Goal/Scope/Invariants/AC/Docs/Tasks/Decision Log를 포함한다.
 - 작성 중인 결정 사항은 SSOT와 세션 로그에 즉시 반영한다.
+- PR 템플릿: `.github/PULL_REQUEST_TEMPLATE.md`
 
-## 표준 흐름
-1. **브랜치 생성**: `git switch -c feat/<주요-기능>` 형식으로 새 브랜치를 만든다.
-2. **Epic Draft PR 작성**  
-   - 제목 예시: `EPIC: <기능 설명>`  
-   - 필수 섹션: Goal / Scope / Invariants / Acceptance Criteria / Docs / Tasks / Decision Log  
-   - 관련 문서 링크(SSOT, PRD, ADR 등)를 본문에 포함한다.
-3. **작업 분할**: 필요한 경우 하위 브랜치/PR을 만들어 Draft Epic에 연결한다.
-4. **검증**  
-   - Python 변경: `pytest`  
+### (중요) 공유 워킹트리(main-only) 예외
+이 PC의 `C:\\dev\\12.kakao` 워킹트리는 여러 세션이 공유하므로, 여기서는 브랜치 체크아웃/`git pull/merge/rebase`를 하지 않는다.
+PR이 필요하면 “main에서 커밋 → 패치 생성 → 별도 clone/worktree에서 브랜치/PR” 패턴을 사용한다(아래 참고).
+
+## 표준 흐름(권장: 별도 clone/worktree에서 진행)
+1. **브랜치 생성**: `git switch -c feat/<주요-기능>`
+2. **Draft PR 작성**
+   - PR 템플릿을 채운다: `.github/PULL_REQUEST_TEMPLATE.md`
+   - 큰 기능이면 Epic Draft PR(선택): 제목 `EPIC: <기능>` + 하위 PR 연결
+3. **검증(변경 범위만)**
+   - Python 변경: `pytest`
    - Playwright 스크립트 변경: `npx playwright test` (또는 관련 전용 스크립트)  
-   - Node 스크립트/실행파일 변경: `node <script>` 로 스모크 테스트  
-   - 문서 전용 PR(`docs/**`, `README*.md`, `**/*.md`)은 실행 테스트 생략 가능
-5. **Draft → Ready 전환**  
-   - Acceptance Criteria 충족 여부, 테스트 통과 여부를 점검한다.  
+   - Node 스크립트/실행파일 변경: `node <script>` 로 스모크 테스트
+   - 문서 전용 PR(`docs/**`, `README*.md`, `**/*.md`)은 실행 테스트 생략 가능   
+4. **Draft → Ready 전환**
+   - Acceptance Criteria 충족 여부, 테스트 통과 여부를 점검한다.
    - 주요 로그/스크린샷/테스트 결과는 PR 코멘트로 첨부한다.
-6. **Merge & Clean up**  
-   - Reviewer 합의 후 main에 Merge commit으로 반영한다.  
+5. **Merge & Clean up**
+   - Reviewer 합의 후 main에 Merge commit으로 반영한다.
    - 브랜치 삭제는 자유지만 세션 로그와 PR 링크는 보존한다.
+
+## 표준 흐름(이 워킹트리 예외: main에서 작업 후 PR 올리기)
+> 이 PC의 `C:\\dev\\12.kakao`에서는 브랜치를 만들지 않는다. PR은 아래 패턴으로 만든다.
+
+1. `main`에서 변경을 작은 커밋 단위로 만든다.
+2. 패치 생성: `git format-patch -1 <commit> -o C:\\dev\\patches_<name>`
+3. 별도 clone/worktree에서 PR 브랜치 생성 + 패치 적용
+   - `git clone --no-checkout <repo> <dir>` → `git checkout -f main`
+   - `git switch -c feat/<name>`
+   - `git am <patch>`
+4. 푸시/PR 생성: `git push -u origin <branch>` + `gh pr create ...`
+5. 머지 후 브랜치 정리(원격/로컬)까지 포함해 종료
 
 ## 세션 로그 운영
 - 경로: `docs/sessions/<branch>.md` (브랜치 당 1개 파일 유지)
