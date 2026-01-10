@@ -107,6 +107,7 @@ export default function OpenchatView() {
   const [refreshingNow, setRefreshingNow] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState("");
   const lastUpdatedAtRef = useRef<string | null>(null);
+  const [isTouch, setIsTouch] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -132,7 +133,21 @@ export default function OpenchatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    try {
+      const touch =
+        typeof navigator !== "undefined" &&
+        (Number((navigator as any).maxTouchPoints || 0) > 0 ||
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          Boolean((window as any).ontouchstart));
+      setIsTouch(Boolean(touch));
+    } catch {
+      setIsTouch(false);
+    }
+  }, []);
+
   const normalizedQuery = query.trim().toLowerCase();
+  const canReorder = !normalizedQuery && !savingOrder && !busyRoomId;
   const rooms = useMemo(() => {
     const list = Array.isArray(data?.rooms) ? data!.rooms : [];
     if (!normalizedQuery) return list;
@@ -303,9 +318,23 @@ export default function OpenchatView() {
           >
             새로고침
           </button>
+          {normalizedQuery ? (
+            <button
+              onClick={() => setQuery("")}
+              className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"
+            >
+              검색 지우기
+            </button>
+          ) : null}
         </div>
         {savingOrder ? <div className="text-sm text-slate-600">순서를 저장하는 중...</div> : null}
       </div>
+
+      {normalizedQuery ? (
+        <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          검색 중에는 순서 변경이 잠깐 꺼져요.
+        </div>
+      ) : null}
 
       {rooms.length === 0 && !loading ? (
         <div className="rounded-2xl border bg-white p-8 text-sm text-slate-600 shadow-sm">
@@ -326,9 +355,12 @@ export default function OpenchatView() {
           pinned
           rooms={pinnedRooms}
           busyRoomId={busyRoomId}
+          canReorder={canReorder}
+          canDragReorder={canReorder && !isTouch}
           onTogglePin={(rid, next) => patchWatch(rid, { pinned: next })}
           onHide={(rid) => patchWatch(rid, { hidden: true })}
           onDropReorder={onDropReorder}
+          onSaveOrder={saveOrder}
         />
       </Section>
 
@@ -337,9 +369,12 @@ export default function OpenchatView() {
           pinned={false}
           rooms={normalRooms}
           busyRoomId={busyRoomId}
+          canReorder={canReorder}
+          canDragReorder={canReorder && !isTouch}
           onTogglePin={(rid, next) => patchWatch(rid, { pinned: next })}
           onHide={(rid) => patchWatch(rid, { hidden: true })}
           onDropReorder={onDropReorder}
+          onSaveOrder={saveOrder}
         />
       </Section>
 
@@ -386,18 +421,37 @@ function RoomList({
   pinned,
   rooms,
   busyRoomId,
+  canReorder,
+  canDragReorder,
   onTogglePin,
   onHide,
   onDropReorder,
+  onSaveOrder,
 }: {
   pinned: boolean;
   rooms: Room[];
   busyRoomId: string;
+  canReorder: boolean;
+  canDragReorder: boolean;
   onTogglePin: (roomId: string, next: boolean) => void;
   onHide: (roomId: string) => void;
   onDropReorder: (pinned: boolean, fromId: string, toId: string) => void;
+  onSaveOrder: (pinned: boolean, roomIds: string[]) => Promise<void>;
 }) {
   const draggingIdRef = useRef<string>("");
+
+  const move = async (roomId: string, dir: -1 | 1) => {
+    if (!canReorder) return;
+    const ids = rooms.map((r) => r.roomId);
+    const idx = ids.indexOf(roomId);
+    if (idx < 0) return;
+    const nextIdx = idx + dir;
+    if (nextIdx < 0 || nextIdx >= ids.length) return;
+    const next = [...ids];
+    const [moved] = next.splice(idx, 1);
+    next.splice(nextIdx, 0, moved);
+    await onSaveOrder(pinned, next);
+  };
 
   if (rooms.length === 0) {
     return <div className="rounded-2xl border bg-white p-6 text-sm text-slate-600 shadow-sm">표시할 방이 없어요.</div>;
@@ -423,14 +477,12 @@ function RoomList({
           return (
             <div
               key={r.roomId}
-              draggable
-              onDragStart={() => {
-                draggingIdRef.current = r.roomId;
-              }}
               onDragOver={(e) => {
+                if (!canDragReorder) return;
                 e.preventDefault();
               }}
               onDrop={() => {
+                if (!canDragReorder) return;
                 const from = draggingIdRef.current;
                 const to = r.roomId;
                 draggingIdRef.current = "";
@@ -438,14 +490,30 @@ function RoomList({
               }}
               className="grid grid-cols-1 gap-3 px-4 py-4 md:grid-cols-[56px_1.2fr_120px_1fr_1fr_140px_120px_120px] md:items-center md:gap-0"
             >
-              <button
-                onClick={() => onTogglePin(r.roomId, !pinned)}
-                disabled={disabled}
-                className="w-fit disabled:opacity-60"
-                title={pinned ? "고정 해제" : "고정"}
-              >
-                <IconPin on={pinned} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onTogglePin(r.roomId, !pinned)}
+                  disabled={disabled}
+                  className="w-fit disabled:opacity-60"
+                  title={pinned ? "고정 해제" : "고정"}
+                >
+                  <IconPin on={pinned} />
+                </button>
+                <div
+                  draggable={canDragReorder}
+                  onDragStart={() => {
+                    if (!canDragReorder) return;
+                    draggingIdRef.current = r.roomId;
+                  }}
+                  className={[
+                    "hidden h-8 w-8 items-center justify-center rounded-lg border bg-white text-sm text-slate-600 md:flex",
+                    canDragReorder ? "cursor-grab hover:bg-slate-50 active:cursor-grabbing" : "opacity-50",
+                  ].join(" ")}
+                  title={canDragReorder ? "드래그해서 순서를 바꿔요" : "지금은 순서를 바꿀 수 없어요"}
+                >
+                  ⋮⋮
+                </div>
+              </div>
 
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -498,6 +566,20 @@ function RoomList({
 
               <div className="flex flex-wrap gap-2 md:col-span-8">
                 <button
+                  onClick={() => move(r.roomId, -1)}
+                  disabled={disabled || !canReorder}
+                  className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60 md:hidden"
+                >
+                  위로
+                </button>
+                <button
+                  onClick={() => move(r.roomId, 1)}
+                  disabled={disabled || !canReorder}
+                  className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60 md:hidden"
+                >
+                  아래로
+                </button>
+                <button
                   onClick={() => onHide(r.roomId)}
                   disabled={disabled}
                   className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60"
@@ -512,4 +594,3 @@ function RoomList({
     </div>
   );
 }
-
