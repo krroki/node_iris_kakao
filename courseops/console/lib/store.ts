@@ -615,7 +615,7 @@ export async function coursesStore() {
       if (ids.length === 0) return;
 
       const existing = await sql<{ room_id: string }[]>`
-        select room_id from courseops_openchat_watchlist where room_id = any(${ids})
+        select room_id from courseops_openchat_watchlist where room_id = any(${ids}::text[])
       `;
       const existingSet = new Set(existing.map((r) => String(r.room_id)));
       const missing = ids.filter((id) => !existingSet.has(id));
@@ -626,18 +626,10 @@ export async function coursesStore() {
       `;
       const start = Number(maxRow?.[0]?.max_order ?? 0) + 1;
 
-      const values = missing.map((rid, idx) => ({
-        room_id: rid,
-        pinned: false,
-        hidden: false,
-        sort_order: start + idx,
-      }));
-
       await sql`
         insert into courseops_openchat_watchlist (room_id, pinned, hidden, sort_order, updated_at)
-        select x.room_id, x.pinned, x.hidden, x.sort_order, now()
-        from jsonb_to_recordset(${JSON.stringify(values)}::jsonb)
-          as x(room_id text, pinned boolean, hidden boolean, sort_order int)
+        select u.room_id, false, false, ${start} + u.ord - 1, now()
+        from unnest(${missing}::text[]) with ordinality as u(room_id, ord)
         on conflict (room_id) do nothing
       `;
     },
@@ -678,12 +670,11 @@ export async function coursesStore() {
       );
       if (roomIds.length === 0) return;
 
-      const rows = roomIds.map((rid, idx) => ({ room_id: rid, sort_order: idx + 1 }));
       await sql`
         update courseops_openchat_watchlist w
-        set sort_order = x.sort_order, updated_at = now()
-        from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as x(room_id text, sort_order int)
-        where w.room_id = x.room_id and w.pinned = ${pinned}
+        set sort_order = u.ord, updated_at = now()
+        from unnest(${roomIds}::text[]) with ordinality as u(room_id, ord)
+        where w.room_id = u.room_id and w.pinned = ${pinned}
       `;
     },
     async getAgentRequest(key: string): Promise<AgentRequestRow | null> {
