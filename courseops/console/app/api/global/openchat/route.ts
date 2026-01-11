@@ -23,6 +23,10 @@ type OpenchatRoomSnapshot = {
   spark7dDaily: number[];
   hostNames: string[];
   subhostNames: string[];
+  hostCount: number;
+  subhostCount: number;
+  adminsLoadedMembersCount: number;
+  adminsActiveMembersCount: number | null;
   adminsHint: string | null;
 };
 
@@ -31,7 +35,7 @@ function normalizeNameList(v: unknown): string[] {
   return v
     .map((x) => safeString(x).trim())
     .filter(Boolean)
-    .map((x) => (/^\d{6,}$/.test(x) ? "어떤 분" : x))
+    .filter((x) => x !== "어떤 분" && !/^\d{6,}$/.test(x))
     .slice(0, 30);
 }
 
@@ -50,6 +54,12 @@ function normalizeRoom(raw: any): OpenchatRoomSnapshot | null {
 
   const sparkTodayHourly = Array.isArray(raw?.sparkTodayHourly) ? raw.sparkTodayHourly : [];
   const spark7dDaily = Array.isArray(raw?.spark7dDaily) ? raw.spark7dDaily : [];
+  const hostCount = Math.max(0, safeNumber(raw?.hostCount));
+  const subhostCount = Math.max(0, safeNumber(raw?.subhostCount));
+  const adminsLoadedMembersCount = Math.max(0, safeNumber(raw?.adminsLoadedMembersCount));
+  const adminsActiveMembersCountRaw = raw?.adminsActiveMembersCount;
+  const adminsActiveMembersCount =
+    adminsActiveMembersCountRaw == null ? null : Math.max(0, safeNumber(adminsActiveMembersCountRaw));
 
   return {
     roomId,
@@ -64,10 +74,14 @@ function normalizeRoom(raw: any): OpenchatRoomSnapshot | null {
     },
     yesterday: { total: Math.max(0, safeNumber(yesterday?.total)) },
     avg7d: { total: Math.max(0, safeNumber(avg7d?.total)) },
-    sparkTodayHourly: sparkTodayHourly.map(safeNumber).slice(0, 24),
+    sparkTodayHourly: sparkTodayHourly.map(safeNumber).slice(0, 24),       
     spark7dDaily: spark7dDaily.map(safeNumber).slice(0, 7),
     hostNames: normalizeNameList(raw?.hostNames),
     subhostNames: normalizeNameList(raw?.subhostNames),
+    hostCount,
+    subhostCount,
+    adminsLoadedMembersCount,
+    adminsActiveMembersCount,
     adminsHint: safeString(raw?.adminsHint || "").trim() || null,
   };
 }

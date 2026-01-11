@@ -691,6 +691,26 @@ export async function coursesStore() {
         updatedAt: rows[0].updated_at ? rows[0].updated_at.toISOString() : null,
       };
     },
+    async listAgentRequestsByPrefix(prefix: string, limit = 50): Promise<AgentRequestRow[]> {
+      const p = String(prefix || "").trim();
+      if (!p) return [];
+      const max = Math.max(1, Math.min(200, Number(limit || 50)));
+      const like = `${p}%`;
+      const rows = await sql<
+        { key: string; requested_at: Date; requested_by: string | null; updated_at: Date | null }[]
+      >`select key, requested_at, requested_by, updated_at from courseops_agent_requests where key like ${like} order by requested_at asc limit ${max}`;
+      return rows.map((r) => ({
+        key: r.key,
+        requestedAt: r.requested_at.toISOString(),
+        requestedBy: r.requested_by,
+        updatedAt: r.updated_at ? r.updated_at.toISOString() : null,
+      }));
+    },
+    async deleteAgentRequest(key: string) {
+      const k = String(key || "").trim();
+      if (!k) return;
+      await sql`delete from courseops_agent_requests where key=${k}`;
+    },
     async upsertAgentRequest(input: { key: string; requestedBy?: string | null }): Promise<AgentRequestRow> {
       const key = String(input.key || "").trim();
       if (!key) throw new Error("key is required");
