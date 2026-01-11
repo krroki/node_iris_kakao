@@ -663,12 +663,34 @@ async def logs_bulk(rooms: Optional[str] = None, limit: int = 80, include: str =
 
 
 @app.get("/rooms")
-async def rooms():
+async def rooms(openchat: str = ""):
     base = list_rooms()
     ids = []
     for r in base:
         if isinstance(r, dict) and r.get("roomId") is not None:
             ids.append(str(r.get("roomId")))
+
+    only_openchat = str(openchat or "").strip().lower() in ("1", "true", "yes", "y")
+    link_ids: dict[str, int] = {}
+    if only_openchat and ids:
+        link_ids = _fetch_room_link_ids(ids)
+        open_ids = {rid for rid, link_id in link_ids.items() if (link_id or 0) > 0}
+        if open_ids:
+            filtered = []
+            for r in base:
+                if not isinstance(r, dict):
+                    continue
+                rid = str(r.get("roomId") or "").strip()
+                if not rid or rid not in open_ids:
+                    continue
+                r["isOpenChat"] = True
+                r["linkId"] = int(link_ids.get(rid) or 0)
+                filtered.append(r)
+            base = filtered
+            ids = [str(r.get("roomId")) for r in base if isinstance(r, dict) and r.get("roomId") is not None]
+        else:
+            base = []
+            ids = []
 
     counts: dict[str, int] = {}
     names: dict[str, str] = {}
@@ -2053,12 +2075,14 @@ async def _wait_for_iris_sending_log_cleared(
 
 
 # ---- Avatar auto-resolve (Kakao open_link icon_url) ----
-_AVATAR_AUTO_CACHE_SEC = int(os.getenv("AVATAR_AUTO_CACHE_SEC", "3600"))
+_AVATAR_AUTO_CACHE_SEC = int(os.getenv("AVATAR_AUTO_CACHE_SEC", "3600"))        
 _avatar_auto_cache: dict[str, tuple[float, str]] = {}
 _ROOM_COUNT_CACHE_SEC = int(os.getenv("ROOM_COUNT_CACHE_SEC", "30"))
 _room_count_cache: dict[str, tuple[float, int]] = {}
 _ROOM_NAME_CACHE_SEC = int(os.getenv("ROOM_NAME_CACHE_SEC", "3600"))
 _room_name_cache: dict[str, tuple[float, str]] = {}
+_ROOM_LINK_CACHE_SEC = int(os.getenv("ROOM_LINK_CACHE_SEC", "3600"))
+_room_link_cache: dict[str, tuple[float, int]] = {}
 
 
 def _iris_base() -> str:
@@ -2207,6 +2231,44 @@ def _fetch_room_names(room_ids: list[str]) -> dict[str, str]:
                 continue
             out[rid] = name
             _room_name_cache[rid] = (now, name)
+
+    return out
+
+
+def _fetch_room_link_ids(room_ids: list[str]) -> dict[str, int]:
+    now = datetime.now(timezone.utc).timestamp()
+    out: dict[str, int] = {}
+
+    todo: list[str] = []
+    for rid in room_ids:
+        rid2 = str(rid or "").strip()
+        if not rid2:
+            continue
+        cached = _room_link_cache.get(rid2)
+        if cached and now - cached[0] < max(1, _ROOM_LINK_CACHE_SEC):
+            out[rid2] = cached[1]
+            continue
+        todo.append(rid2)
+
+    if not todo:
+        return out
+
+    # IRIS sqlite bind limit을 고려해 chunk
+    chunk_size = 200
+    for i in range(0, len(todo), chunk_size):
+        chunk = todo[i : i + chunk_size]
+        placeholders = ",".join(["?"] * len(chunk))
+        q = f"select id, link_id from chat_rooms where id in ({placeholders})"
+        rows = _iris_query(q, chunk)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("id") or "").strip()
+            link_id = _safe_int(row.get("link_id")) or 0
+            if not rid:
+                continue
+            out[rid] = link_id
+            _room_link_cache[rid] = (now, link_id)
 
     return out
 

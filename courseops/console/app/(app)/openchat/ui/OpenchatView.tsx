@@ -341,7 +341,7 @@ export default function OpenchatView() {
         <div>
           <h1 className="text-xl font-semibold">오픈채팅 현황</h1>
           <div className="mt-1 text-sm text-slate-600">
-            방별 인원/운영진/대화 흐름을 한눈에 봐요.
+            방별 인원/운영진/대화 흐름을 한눈에 봐요. 여기서는 오픈채팅만 보여요.
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
@@ -366,7 +366,7 @@ export default function OpenchatView() {
 
       <div className="grid gap-4 md:grid-cols-4">
         <div className="rounded-2xl border bg-white p-4 shadow-sm">
-          <div className="text-xs font-medium text-slate-500">감시 중 방</div>
+          <div className="text-xs font-medium text-slate-500">감시 중 오픈채팅</div>
           <div className="mt-1 text-2xl font-semibold">{summary ? summary.rooms : "-"}</div>
           <div className="mt-1 text-xs text-slate-500">숨긴 방 {summary ? summary.hiddenRooms : "-"}개</div>
         </div>
