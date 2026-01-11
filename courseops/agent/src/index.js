@@ -94,6 +94,15 @@ const OPENCHAT_REQUESTS_POLL_INTERVAL_MS =
   envInt("COURSEOPS_REQUESTS_POLL_INTERVAL_SEC", 3, 1, 60) * 1000;
 const LOGS_BASE_DIR = path.join(repoRoot, "node-iris-app", "data", "logs");
 
+const DEFAULT_IRIS_DECRYPT_USER_ID = envInt("IRIS_DECRYPT_USER_ID", 435780965, 1, 2_147_483_647);
+const IRIS_BOT_ID_CACHE_TTL_MS = envInt("COURSEOPS_IRIS_BOT_ID_CACHE_TTL_SEC", 600, 30, 24 * 3600) * 1000;
+const IRIS_DECRYPT_CACHE_MAX = envInt("COURSEOPS_IRIS_DECRYPT_CACHE_MAX", 2000, 100, 20_000);
+const IRIS_MEMBER_NICK_CACHE_MAX = envInt("COURSEOPS_IRIS_MEMBER_NICK_CACHE_MAX", 5000, 100, 100_000);
+let irisBotId = null;
+let irisBotIdFetchedMs = 0;
+const irisDecryptCache = new Map();
+const irisMemberNickCache = new Map();
+
 function writeAgentStatus(extra = {}) {
   const now = new Date().toISOString();
   let prev = {};
@@ -537,8 +546,13 @@ function ensureRoomStateContainer(roomId) {
   const rid = String(roomId || "").trim();
   if (!rid) return null;
   const cur = openchatOverviewState.rooms[rid];
-  if (cur && typeof cur === "object" && !Array.isArray(cur)) return cur;
-  openchatOverviewState.rooms[rid] = { days: {}, utcFiles: {}, admins: null };
+  if (cur && typeof cur === "object" && !Array.isArray(cur)) {
+    if (!cur.nickByUserId || typeof cur.nickByUserId !== "object" || Array.isArray(cur.nickByUserId)) {
+      cur.nickByUserId = {};
+    }
+    return cur;
+  }
+  openchatOverviewState.rooms[rid] = { days: {}, utcFiles: {}, admins: null, nickByUserId: {} };
   return openchatOverviewState.rooms[rid];
 }
 
@@ -629,7 +643,7 @@ function buildUtcYmdsForKstDays(kstYmds) {
   return Array.from(set).sort();
 }
 
-function applyMessageToRoomState(roomState, obj, allowedKstDaysSet) {
+function applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserIdsSet) {
   const payload = obj?.payload && typeof obj.payload === "object" ? obj.payload : null;
   if (!payload) return;
   if (String(payload.type || "") !== "message") return;
@@ -658,6 +672,7 @@ function applyMessageToRoomState(roomState, obj, allowedKstDaysSet) {
   }
 
   if (ts) dayState.lastMessageTs = ts;
+  maybeCaptureSenderNickname(roomState, obj, wantedUserIdsSet);
 }
 
 async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
@@ -682,6 +697,7 @@ async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
   const prevSize = Number(fsState.sizeBytes || 0) || 0;
   const prevOffset = Number(fsState.offsetBytes || 0) || 0;
   const allowedKstDaysSet = opts.allowedKstDaysSet && opts.allowedKstDaysSet instanceof Set ? opts.allowedKstDaysSet : null;
+  const wantedUserIdsSet = opts.wantedUserIdsSet && opts.wantedUserIdsSet instanceof Set ? opts.wantedUserIdsSet : null;
 
   if (onlyIfStale && prevSize === size && prevOffset === size) return fsState;
 
@@ -700,7 +716,7 @@ async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
       obj = null;
     }
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
-    applyMessageToRoomState(roomState, obj, allowedKstDaysSet);
+    applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserIdsSet);
     const ts = String(obj?.timestamp || "").trim();
     if (ts) fsState.lastMessageTs = ts;
   });
@@ -711,12 +727,291 @@ async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
   return fsState;
 }
 
-function normalizeAdminNames(list) {
+function normalizeBase64Ciphertext(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+
+  // base64url(-_) -> base64(+/)
+  let v = s.replace(/-/g, "+").replace(/_/g, "/");
+
+  // padding
+  const mod = v.length % 4;
+  if (mod === 2) v += "==";
+  else if (mod === 3) v += "=";
+  else if (mod === 1) return null;
+
+  if (v.length < 8) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(v)) return null;
+  return v;
+}
+
+function looksLikeBase64Ciphertext(s) {
+  const v = normalizeBase64Ciphertext(s);
+  if (!v) return false;
+  try {
+    const buf = Buffer.from(v, "base64");
+    if (!buf || buf.length < 16) return false;
+    if (buf.length % 16 !== 0) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSuspiciousNickname(nickname) {
+  const s = String(nickname || "").trim();
+  if (!s) return true;
+  if (s.length > 80) return true;
+  if (s.includes("\uFFFD")) return true; // replacement char
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(s)) return true; // control chars
+  if (/[가-힣]/.test(s)) return false;
+  if (/^\d{6,}$/.test(s)) return true;
+  if (s.length >= 12 && looksLikeBase64Ciphertext(s)) return true;
+  if (s.length >= 24 && /^[0-9a-fA-F]+$/.test(s)) return true;
+  if (s.length >= 30 && /^[A-Za-z0-9_-]+$/.test(s)) return true;
+  return false;
+}
+
+async function getIrisBotId() {
+  const now = Date.now();
+  if (irisBotId && now - irisBotIdFetchedMs < IRIS_BOT_ID_CACHE_TTL_MS) return irisBotId;
+  irisBotIdFetchedMs = now;
+
+  const base = readIrisBase();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${base}/config`, { method: "GET", signal: ctrl.signal });
+    const text = await res.text().catch(() => "");
+    let j = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      j = {};
+    }
+
+    const botIdRaw = Number(j?.bot_id ?? j?.botId ?? 0);
+    if (Number.isFinite(botIdRaw) && botIdRaw > 0) irisBotId = Math.floor(botIdRaw);
+  } catch {} finally {
+    clearTimeout(t);
+  }
+
+  return irisBotId || DEFAULT_IRIS_DECRYPT_USER_ID;
+}
+
+async function irisDecryptNickname(enc, b64Ciphertext) {
+  const raw = normalizeBase64Ciphertext(b64Ciphertext);
+  const encNum = Math.floor(Number(enc || 0) || 0);
+  if (!raw || !encNum) return null;
+
+  const key = `${encNum}:${raw}`;
+  if (irisDecryptCache.has(key)) return irisDecryptCache.get(key) || null;
+
+  const base = readIrisBase();
+  const botId = await getIrisBotId();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 9000);
+  try {
+    const res = await fetch(`${base}/decrypt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: botId, enc: encNum, b64_ciphertext: raw }),
+      signal: ctrl.signal,
+    });
+    const text = await res.text().catch(() => "");
+    let j = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      j = {};
+    }
+    const plain = String(j?.plain_text || "").trim();
+    if (plain) {
+      irisDecryptCache.set(key, plain);
+      while (irisDecryptCache.size > IRIS_DECRYPT_CACHE_MAX) {
+        const first = irisDecryptCache.keys().next().value;
+        irisDecryptCache.delete(first);
+      }
+      return plain;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function irisQuerySafe(query, bind, timeoutMs = 12000) {
+  try {
+    const rows = await irisQuery(query, bind, timeoutMs);
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchOpenchatNicknameFromIris(roomId, userId) {
+  const rid = String(roomId || "").trim();
+  const uid = String(userId || "").trim();
+  if (!rid || !uid) return null;
+
+  const cacheKey = `${rid}:${uid}`;
+  if (irisMemberNickCache.has(cacheKey)) {
+    const cached = String(irisMemberNickCache.get(cacheKey) || "").trim();
+    return cached || null;
+  }
+
+  const cacheSet = (v) => {
+    irisMemberNickCache.set(cacheKey, String(v || "").trim());
+    while (irisMemberNickCache.size > IRIS_MEMBER_NICK_CACHE_MAX) {
+      const first = irisMemberNickCache.keys().next().value;
+      irisMemberNickCache.delete(first);
+    }
+  };
+
+  const pickName = async (row) => {
+    if (!row || typeof row !== "object") return null;
+    const enc = Math.floor(Number(row?.enc || 31) || 31);
+    let nickname = decodeNickname(row?.nickname);
+    if (nickname && looksLikeBase64Ciphertext(nickname)) {
+      const plain = await irisDecryptNickname(enc, nickname);
+      if (plain) nickname = plain;
+    }
+    const s = String(nickname || "").trim();
+    if (!s || isSuspiciousNickname(s)) return null;
+    return s;
+  };
+
+  // 1) involved_chat_id
+  let rows = await irisQuerySafe(
+    "select nickname, enc from db2.open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
+    [rid, uid],
+    15000,
+  );
+  let name = rows && rows[0] ? await pickName(rows[0]) : null;
+  if (name) {
+    cacheSet(name);
+    return name;
+  }
+
+  // 2) link_id from chat_rooms or open_chat_member
+  let linkId = "";
+  rows = await irisQuerySafe("select link_id from chat_rooms where id=? limit 1", [rid], 12000);
+  linkId = rows && rows[0] ? String(rows[0]?.link_id || "").trim() : "";
+  if (!linkId) {
+    rows = await irisQuerySafe(
+      "select link_id from db2.open_chat_member where involved_chat_id=? and link_id is not null limit 1",
+      [rid],
+      12000,
+    );
+    linkId = rows && rows[0] ? String(rows[0]?.link_id || "").trim() : "";
+  }
+
+  if (linkId) {
+    rows = await irisQuerySafe(
+      "select nickname, enc from db2.open_chat_member where link_id=? and user_id=? order by rowid desc limit 1",
+      [linkId, uid],
+      15000,
+    );
+    name = rows && rows[0] ? await pickName(rows[0]) : null;
+    if (name) {
+      cacheSet(name);
+      return name;
+    }
+  }
+
+  cacheSet("");
+  return null;
+}
+
+function ensureRoomNickMap(roomState) {
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return null;
+  if (!roomState.nickByUserId || typeof roomState.nickByUserId !== "object" || Array.isArray(roomState.nickByUserId)) {
+    roomState.nickByUserId = {};
+  }
+  return roomState.nickByUserId;
+}
+
+function pruneRoomNickMap(roomState, keepUserIdsSet) {
+  if (!keepUserIdsSet || !(keepUserIdsSet instanceof Set)) return;
+  const m = ensureRoomNickMap(roomState);
+  if (!m) return;
+  for (const k of Object.keys(m)) {
+    if (!keepUserIdsSet.has(k)) delete m[k];
+  }
+}
+
+function rememberRoomNickname(roomState, userId, nickname, ts) {
+  const uid = String(userId || "").trim();
+  const name = String(nickname || "").trim();
+  if (!uid || !name) return;
+  if (isSuspiciousNickname(name)) return;
+
+  const m = ensureRoomNickMap(roomState);
+  if (!m) return;
+  const prev = m[uid] && typeof m[uid] === "object" ? m[uid] : null;
+  const prevTs = prev ? String(prev.ts || "").trim() : "";
+  const nextTs = String(ts || "").trim();
+  if (prev && prevTs && nextTs && nextTs <= prevTs) return;
+  m[uid] = { name, ts: nextTs || null };
+}
+
+function maybeCaptureSenderNickname(roomState, obj, wantedUserIdsSet) {
+  if (!wantedUserIdsSet || !(wantedUserIdsSet instanceof Set) || wantedUserIdsSet.size === 0) return;
+  const sid = String(obj?.snapshot?.senderId || obj?.snapshot?.sender_id || "").trim();
+  if (!sid || !wantedUserIdsSet.has(sid)) return;
+  const sname = String(obj?.snapshot?.senderName || obj?.snapshot?.sender_name || "").trim();
+  if (!sname) return;
+  rememberRoomNickname(roomState, sid, sname, String(obj?.timestamp || "").trim());
+}
+
+async function normalizeOpenchatAdminEntries(roomId, list) {
+  const rid = String(roomId || "").trim();
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const it of list) {
-    const nick = String(it?.nickname || "").trim();
-    if (nick) out.push(nick);
+    const userId = String(it?.userId || it?.user_id || "").trim() || null;
+    let nickname = decodeNickname(it?.nickname);
+
+    const nickNow = String(nickname || "").trim();
+    const shouldLookup = Boolean(userId) && (!nickNow || isSuspiciousNickname(nickNow));
+    if (shouldLookup) {
+      const resolved = await fetchOpenchatNicknameFromIris(rid, userId);
+      if (resolved && !isSuspiciousNickname(resolved)) nickname = resolved;
+    }
+
+    let nick2 = String(nickname || "").trim();
+    if (nick2 && isSuspiciousNickname(nick2)) nick2 = "";
+    const nickFinal = nick2 || null;
+
+    if (!userId && !nickFinal) continue;
+    out.push({ userId, nickname: nickFinal });
+  }
+  return out.slice(0, 30);
+}
+
+function resolveAdminDisplayName(roomState, entry) {
+  const uid = String(entry?.userId || "").trim();
+  const m = ensureRoomNickMap(roomState);
+  const fromLog = uid && m && m[uid] ? String(m[uid]?.name || "").trim() : "";
+  if (fromLog && !isSuspiciousNickname(fromLog)) return fromLog;
+  const raw = String(entry?.nickname || "").trim();
+  if (raw && !isSuspiciousNickname(raw)) return raw;
+  return "";
+}
+
+function buildAdminNameList(roomState, entries) {
+  if (!Array.isArray(entries)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const e of entries) {
+    const name = resolveAdminDisplayName(roomState, e);
+    const s = String(name || "").trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
   }
   // 숫자만인 경우는 화면에 그대로 보여주지 않는다.
   return out.map((x) => (/^\d{6,}$/.test(x) ? "어떤 분" : x)).slice(0, 30);
@@ -748,15 +1043,17 @@ async function fetchLocalOpenchatRooms() {
 
 async function fetchLocalOpenchatAdmins(roomId) {
   const rid = String(roomId || "").trim();
-  if (!rid) return { hostNames: [], subhostNames: [], hint: "멤버 목록을 확인하지 못했어요." };
+  if (!rid) return { host: [], subhosts: [], hint: "멤버 목록을 확인하지 못했어요." };
   const r = await getLocalJson(`${LOCAL_API_BASE}/rooms/${encodeURIComponent(rid)}/admins`, 15000);
   if (!r.ok) {
-    return { hostNames: [], subhostNames: [], hint: "운영진 정보를 확인하지 못했어요." };
+    return { host: [], subhosts: [], hint: "운영진 정보를 확인하지 못했어요." };
   }
   const raw = r.json && typeof r.json === "object" ? r.json : {};
+  const host = await normalizeOpenchatAdminEntries(rid, raw?.host);
+  const subhosts = await normalizeOpenchatAdminEntries(rid, raw?.subhosts);
   return {
-    hostNames: normalizeAdminNames(raw?.host),
-    subhostNames: normalizeAdminNames(raw?.subhosts),
+    host,
+    subhosts,
     hint: buildAdminsHint(raw),
   };
 }
@@ -820,8 +1117,35 @@ async function syncOpenchatOverviewOnce(opts = {}) {
     const roomState = ensureRoomStateContainer(rid);
     if (!roomState) continue;
 
+    // admins (cached)
+    // - IRIS DB의 open_chat_member.nickname 이 해시/토큰 형태일 수 있어, userId 기준으로
+    //   로그에서 본 senderName 을 우선 사용한다.
+    const nowMs = Date.now();
+    const prevAdmins = roomState.admins && typeof roomState.admins === "object" ? roomState.admins : null;
+    const prevAt = Number(prevAdmins?.fetchedAtMs || 0) || 0;
+    const prevHasEntries = Array.isArray(prevAdmins?.host) || Array.isArray(prevAdmins?.subhosts);
+    const shouldRefresh = forceAdmins || !prevAdmins || !prevHasEntries || nowMs - prevAt > OPENCHAT_ADMINS_REFRESH_INTERVAL_MS;
+    let admins = prevAdmins;
+    if (shouldRefresh) {
+      const a = await fetchLocalOpenchatAdmins(rid);
+      admins = {
+        fetchedAtMs: nowMs,
+        host: Array.isArray(a.host) ? a.host : [],
+        subhosts: Array.isArray(a.subhosts) ? a.subhosts : [],
+        hint: a.hint || null,
+      };
+      roomState.admins = admins;
+    }
+
+    const hostEntries = Array.isArray(admins?.host) ? admins.host : [];
+    const subhostEntries = Array.isArray(admins?.subhosts) ? admins.subhosts : [];
+    const wantedUserIdsSet = new Set(
+      [...hostEntries, ...subhostEntries].map((x) => String(x?.userId || "").trim()).filter(Boolean),
+    );
+    pruneRoomNickMap(roomState, wantedUserIdsSet);
+
     // logs
-    for (const kstDay of ymds7) ensureKstDayState(roomState, kstDay);
+    for (const kstDay of ymds7) ensureKstDayState(roomState, kstDay);     
     const hasUtcFiles =
       roomState.utcFiles && typeof roomState.utcFiles === "object" && !Array.isArray(roomState.utcFiles);
 
@@ -834,6 +1158,7 @@ async function syncOpenchatOverviewOnce(opts = {}) {
           forceFull: true,
           onlyIfStale: false,
           allowedKstDaysSet: keepDaysSet,
+          wantedUserIdsSet,
         });
       }
     };
@@ -864,36 +1189,23 @@ async function syncOpenchatOverviewOnce(opts = {}) {
             forceFull: false,
             onlyIfStale: true,
             allowedKstDaysSet: keepDaysSet,
+            wantedUserIdsSet,
           });
         }
       }
     }
 
-    // admins (cached)
-    const nowMs = Date.now();
-    const prevAdmins = roomState.admins && typeof roomState.admins === "object" ? roomState.admins : null;
-    const prevAt = Number(prevAdmins?.fetchedAtMs || 0) || 0;
-    const shouldRefresh = forceAdmins || !prevAdmins || nowMs - prevAt > OPENCHAT_ADMINS_REFRESH_INTERVAL_MS;
-    let admins = prevAdmins;
-    if (shouldRefresh) {
-      const a = await fetchLocalOpenchatAdmins(rid);
-      admins = {
-        fetchedAtMs: nowMs,
-        hostNames: Array.isArray(a.hostNames) ? a.hostNames : [],
-        subhostNames: Array.isArray(a.subhostNames) ? a.subhostNames : [],
-        hint: a.hint || null,
-      };
-      roomState.admins = admins;
-    }
-
     const days = roomState.days || {};
     const todayState = days[todayYmd] || {};
-    const yesterdayState = yesterdayYmd ? days[yesterdayYmd] || {} : {};
+    const yesterdayState = yesterdayYmd ? days[yesterdayYmd] || {} : {};  
     const totals7 = ymds7.map((d) => Math.max(0, Number(days?.[d]?.total || 0) || 0));
     const sum7 = totals7.reduce((acc, x) => acc + x, 0);
     const avg7 = totals7.length > 0 ? Math.round(sum7 / totals7.length) : 0;
     const sparkTodayHourly = Array.isArray(todayState.hourly) ? todayState.hourly.map((x) => Math.max(0, Number(x) || 0)).slice(0, 24) : [];
-    while (sparkTodayHourly.length < 24) sparkTodayHourly.push(0);
+    while (sparkTodayHourly.length < 24) sparkTodayHourly.push(0);        
+
+    const hostNames = buildAdminNameList(roomState, hostEntries);
+    const subhostNames = buildAdminNameList(roomState, subhostEntries);
 
     payloadRooms.push({
       roomId: rid,
@@ -910,8 +1222,8 @@ async function syncOpenchatOverviewOnce(opts = {}) {
       avg7d: { total: avg7 },
       sparkTodayHourly,
       spark7dDaily: totals7.slice(0, 7),
-      hostNames: Array.isArray(admins?.hostNames) && admins.hostNames.length > 0 ? admins.hostNames : ["어떤 분"],
-      subhostNames: Array.isArray(admins?.subhostNames) && admins.subhostNames.length > 0 ? admins.subhostNames : ["어떤 분"],
+      hostNames,
+      subhostNames,
       adminsHint: String(admins?.hint || "").trim() || null,
     });
   }
@@ -981,14 +1293,42 @@ async function maybeConsumeConsoleRequests() {
 
   const r = await getJson(`${consoleBase}/api/agent/requests`, 15000);
   if (!r.ok) return;
+
+  // 1) 오픈채팅 대시보드 즉시 갱신
   const req = r?.json?.requests?.openchat_overview || null;
   const ts = String(req?.requestedAt || req?.requested_at || "").trim();
-  if (!ts) return;
-  const ms = new Date(ts).getTime();
-  if (!Number.isFinite(ms)) return;
-  if (ms <= lastOpenchatRequestSeenMs) return;
-  lastOpenchatRequestSeenMs = ms;
-  await maybeSyncOpenchatOverview({ force: true });
+  if (ts) {
+    const ms = new Date(ts).getTime();
+    if (Number.isFinite(ms) && ms > lastOpenchatRequestSeenMs) {
+      lastOpenchatRequestSeenMs = ms;
+      await maybeSyncOpenchatOverview({ force: true });
+    }
+  }
+
+  // 2) 특정 방 멤버/운영진 정보 보강(단말 스크롤)
+  const prefix = "openchat_admins_refresh:";
+  const list = Array.isArray(r?.json?.requests?.openchat_admins_refresh) ? r.json.requests.openchat_admins_refresh : [];
+  const next = list && list.length > 0 ? list[0] : null;
+  const key = String(next?.key || "").trim();
+  if (!key || !key.startsWith(prefix)) return;
+  const roomId = key.slice(prefix.length).trim();
+  if (!roomId) {
+    await postJson(`${consoleBase}/api/agent/requests/ack`, { key }, 15000).catch(() => {});
+    return;
+  }
+
+  const opts = readOpenchatLoadOpts();
+  const refresh = await postJson(
+    `${LOCAL_API_BASE}/rooms/${encodeURIComponent(roomId)}/admins/refresh`,
+    { serial: opts.serial || null, scrolls: opts.scrolls, pauseMs: opts.scrollPauseMs },
+    20000,
+  ).catch(() => null);
+
+  // NOTE: refresh 성공/실패와 무관하게, 동일 요청을 반복 처리하지 않도록 ack 한다.
+  await postJson(`${consoleBase}/api/agent/requests/ack`, { key }, 15000).catch(() => {});
+
+  // 즉시 반영은 보장되지 않는다(단말 스크롤이 끝난 후 '지금 갱신'을 한 번 더 누르는 것이 안전).
+  if (refresh && refresh.ok) heartbeat({ openchatAdminsRefresh: { ok: true, requestedAt: ts || null } });
 }
 
 async function fetchCoursesFromConsole() {

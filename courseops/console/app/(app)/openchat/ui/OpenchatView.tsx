@@ -49,10 +49,65 @@ function formatRelative(ts: string | null) {
   return `${diffDay}일 전`;
 }
 
-function safeNames(list: string[]) {
+function normalizeBase64Ciphertext(raw: string) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  let v = s.replace(/-/g, "+").replace(/_/g, "/");
+  const mod = v.length % 4;
+  if (mod === 2) v += "==";
+  else if (mod === 3) v += "=";
+  else if (mod === 1) return null;
+  if (v.length < 8) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(v)) return null;
+  return v;
+}
+
+function looksLikeCiphertext(raw: string) {
+  const v = normalizeBase64Ciphertext(raw);
+  if (!v) return false;
+  try {
+    const bin = atob(v);
+    return bin.length >= 16 && bin.length % 16 === 0;
+  } catch {
+    return false;
+  }
+}
+
+function hasHangul(s: string) {
+  try {
+    return /\p{Script=Hangul}/u.test(String(s || ""));
+  } catch {
+    return /[가-힣]/.test(String(s || ""));
+  }
+}
+
+function isSuspiciousName(name: string) {
+  const s = String(name || "").trim();
+  if (!s) return true;
+  if (s.length > 80) return true;
+  if (s.includes("\uFFFD")) return true;
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(s)) return true;
+  if (hasHangul(s)) return false;
+  if (/^\d{6,}$/.test(s)) return true;
+  if (s.length >= 12 && looksLikeCiphertext(s)) return true;
+  if (s.length >= 24 && /^[0-9a-fA-F]+$/.test(s)) return true;
+  if (s.length >= 30 && /^[A-Za-z0-9_-]+$/.test(s)) return true;
+  return false;
+}
+
+function normalizeNames(list: string[]) {
   const names = Array.isArray(list) ? list : [];
-  if (names.length === 0) return ["어떤 분"];
-  return names.map((x) => (String(x || "").trim() ? String(x).trim() : "어떤 분"));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of names) {
+    const s = String(x || "").trim();
+    if (!s) continue;
+    if (isSuspiciousName(s)) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
 }
 
 function SparkBars({
@@ -250,6 +305,29 @@ export default function OpenchatView() {
     }
   };
 
+  const requestAdminsRefresh = async (roomId: string) => {
+    setBusyRoomId(roomId);
+    setRefreshMessage("");
+    try {
+      const res = await fetch("/api/openchat/admins/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId }),
+      });
+      const j = (await res.json().catch(() => ({}))) as any;
+      if (res.status === 429) {
+        const sec = Math.max(1, Number(j?.retryAfterSec || 0) || 0);
+        throw new Error(`잠깐만요. ${sec}초 후 다시 시도해 주세요.`);
+      }
+      if (!res.ok) throw new Error(String(j?.error || "요청하지 못했어요."));
+      setRefreshMessage("운영진 불러오기를 요청했어요. 1~2분 뒤 “지금 갱신”을 눌러 확인해요.");
+    } catch (e: any) {
+      setError(String(e?.message || "요청하지 못했어요."));
+    } finally {
+      setBusyRoomId("");
+    }
+  };
+
   const summary = data?.summary;
 
   return (
@@ -300,7 +378,7 @@ export default function OpenchatView() {
         <div className="rounded-2xl border bg-white p-4 shadow-sm">
           <div className="text-xs font-medium text-slate-500">다음 행동</div>
           <div className="mt-1 text-sm font-medium text-slate-900">순서를 바꾸거나, 고정/숨김을 조정해요.</div>
-          <div className="mt-1 text-xs text-slate-500">필요하면 “지금 갱신”을 눌러요.</div>
+          <div className="mt-1 text-xs text-slate-500">운영진이 “미확인”이면 “운영진 불러오기”를 누른 뒤 1~2분 후 “지금 갱신”을 눌러요.</div>
         </div>
       </div>
 
@@ -471,9 +549,10 @@ function RoomList({
       </div>
       <div className="divide-y">
         {rooms.map((r) => {
-          const host = safeNames(r.hostNames);
-          const sub = safeNames(r.subhostNames);
+          const host = normalizeNames(r.hostNames);
+          const sub = normalizeNames(r.subhostNames);
           const disabled = busyRoomId === r.roomId;
+          const needsAdmins = Boolean(r.adminsHint) || host.length === 0 || sub.length === 0;
           return (
             <div
               key={r.roomId}
@@ -519,7 +598,10 @@ function RoomList({
                 <div className="flex items-center gap-2">
                   <div className="truncate text-sm font-semibold text-slate-900">{r.roomName}</div>
                   {r.adminsHint ? (
-                    <span className="hidden rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 md:inline">
+                    <span
+                      className="hidden cursor-help rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 md:inline"
+                      title={r.adminsHint}
+                    >
                       운영진 확인 중
                     </span>
                   ) : null}
@@ -535,10 +617,12 @@ function RoomList({
 
               <div className="min-w-0">
                 <div className="truncate text-sm text-slate-900">
-                  <span className="text-slate-500">방장</span> {host.join(", ")}
+                  <span className="text-slate-500">방장</span>{" "}
+                  {host.length > 0 ? host.join(", ") : <span className="text-slate-400">미확인</span>}
                 </div>
                 <div className="mt-1 truncate text-xs text-slate-600">
-                  <span className="text-slate-500">부방장</span> {sub.join(", ")}
+                  <span className="text-slate-500">부방장</span>{" "}
+                  {sub.length > 0 ? sub.join(", ") : <span className="text-slate-400">미확인</span>}
                 </div>
               </div>
 
@@ -565,6 +649,16 @@ function RoomList({
               </div>
 
               <div className="flex flex-wrap gap-2 md:col-span-8">
+                {needsAdmins ? (
+                  <button
+                    onClick={() => requestAdminsRefresh(r.roomId)}
+                    disabled={disabled}
+                    className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60"
+                    title="단말에서 멤버 목록을 불러와 운영진/닉네임 정보를 보강해요."
+                  >
+                    운영진 불러오기
+                  </button>
+                ) : null}
                 <button
                   onClick={() => move(r.roomId, -1)}
                   disabled={disabled || !canReorder}
