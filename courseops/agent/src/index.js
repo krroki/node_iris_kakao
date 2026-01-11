@@ -1148,7 +1148,9 @@ function buildAdminsHint(raw) {
 }
 
 async function fetchLocalOpenchatRooms() {
-  const r = await getLocalJson(`${LOCAL_API_BASE}/rooms`, 15000);
+  // NOTE: 오픈채팅 대시보드는 "오픈채팅(link_id 보유)"만 다룬다.
+  // - 일반 단톡방은 방장/부방장 개념이 없어서 여기서 섞이면 "비어 보이는 방"이 대량으로 발생한다.
+  const r = await getLocalJson(`${LOCAL_API_BASE}/rooms?openchat=1`, 15000);
   if (!r.ok) {
     const msg = String(r?.json?.detail || r?.json?.error || "").trim();
     throw new Error(msg ? `방 목록을 가져오지 못했어요(${msg}).` : `방 목록을 가져오지 못했어요(HTTP ${r.status}).`);
@@ -1159,8 +1161,9 @@ async function fetchLocalOpenchatRooms() {
       roomId: String(x?.roomId || "").trim(),
       roomName: String(x?.roomName || "").trim(),
       activeMembersCount: x?.activeMembersCount ?? null,
+      isOpenChat: Boolean(x?.isOpenChat) || Math.max(0, Number(x?.linkId || 0) || 0) > 0,
     }))
-    .filter((x) => Boolean(x.roomId));
+    .filter((x) => Boolean(x.roomId) && x.isOpenChat);
 }
 
 async function fetchLocalOpenchatAdmins(roomId) {
@@ -1248,6 +1251,12 @@ async function syncOpenchatOverviewOnce(opts = {}) {
   const meta = openchatOverviewState.meta;
   let autoLoadStarted = false;
   let nickBackfillStarted = false;
+  const openchatIdsSet = new Set(rooms.map((x) => String(x?.roomId || "").trim()).filter(Boolean));
+  if (openchatOverviewState.rooms && typeof openchatOverviewState.rooms === "object" && !Array.isArray(openchatOverviewState.rooms)) {
+    for (const k of Object.keys(openchatOverviewState.rooms)) {
+      if (!openchatIdsSet.has(k)) delete openchatOverviewState.rooms[k];
+    }
+  }
 
   for (const r of rooms) {
     const rid = String(r.roomId || "").trim();
