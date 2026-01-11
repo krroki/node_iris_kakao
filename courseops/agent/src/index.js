@@ -101,6 +101,17 @@ const OPENCHAT_REQUESTS_POLL_INTERVAL_MS =
   envInt("COURSEOPS_REQUESTS_POLL_INTERVAL_SEC", 3, 1, 60) * 1000;
 const LOGS_BASE_DIR = path.join(repoRoot, "node-iris-app", "data", "logs");
 
+const OPENCHAT_ADMIN_NICK_BACKFILL_ENABLED = envBool("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_ENABLED", true);
+const OPENCHAT_ADMIN_NICK_BACKFILL_GLOBAL_COOLDOWN_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_GLOBAL_COOLDOWN_SEC", 60, 10, 30 * 60) * 1000;
+const OPENCHAT_ADMIN_NICK_BACKFILL_ROOM_COOLDOWN_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_ROOM_COOLDOWN_SEC", 10 * 60, 60, 6 * 3600) * 1000;
+const OPENCHAT_ADMIN_NICK_BACKFILL_MAX_FILES = envInt("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_MAX_FILES", 60, 1, 365);
+const OPENCHAT_ADMIN_NICK_BACKFILL_TAIL_BYTES_PER_FILE =
+  envInt("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_TAIL_BYTES_PER_FILE", 256_000, 16_000, 2_000_000);
+const OPENCHAT_ADMIN_NICK_BACKFILL_MAX_TOTAL_BYTES =
+  envInt("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_MAX_TOTAL_BYTES", 2_000_000, 200_000, 20_000_000);
+
 const DEFAULT_IRIS_DECRYPT_USER_ID = envInt("IRIS_DECRYPT_USER_ID", 435780965, 1, 2_147_483_647);
 const IRIS_BOT_ID_CACHE_TTL_MS = envInt("COURSEOPS_IRIS_BOT_ID_CACHE_TTL_SEC", 600, 30, 24 * 3600) * 1000;
 const IRIS_DECRYPT_CACHE_MAX = envInt("COURSEOPS_IRIS_DECRYPT_CACHE_MAX", 2000, 100, 20_000);
@@ -498,6 +509,12 @@ function roomLogFilePath(roomId, ymd) {
   return path.join(LOGS_BASE_DIR, rid, `${day}.log`);
 }
 
+function roomLogDirPath(roomId) {
+  const rid = String(roomId || "").trim();
+  if (!rid) return "";
+  return path.join(LOGS_BASE_DIR, rid);
+}
+
 async function statSafe(p) {
   try {
     return await fs.promises.stat(p);
@@ -543,6 +560,87 @@ async function scanJsonlFileFromOffset(filePath, startOffset, onLine) {
     });
     stream.on("error", (e) => reject(e));
   });
+}
+
+function computeMissingNicknames(roomState, wantedUserIdsSet) {
+  const missing = new Set();
+  if (!wantedUserIdsSet || !(wantedUserIdsSet instanceof Set) || wantedUserIdsSet.size === 0) return missing;
+  const m = ensureRoomNickMap(roomState);
+  for (const uid of wantedUserIdsSet) {
+    const name = uid && m && m[uid] ? String(m[uid]?.name || "").trim() : "";
+    if (!name || isSuspiciousNickname(name)) missing.add(uid);
+  }
+  return missing;
+}
+
+async function maybeBackfillAdminNicknamesFromLogHistory(roomId, roomState, wantedUserIdsSet, meta) {
+  if (!OPENCHAT_ADMIN_NICK_BACKFILL_ENABLED) return { ok: false, found: 0 };
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return { ok: false, found: 0 };
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return { ok: false, found: 0 };
+
+  const nowMs = Date.now();
+  const lastGlobalMs = Number(meta.openchatAdminNickBackfillLastMs || 0) || 0;
+  const lastRoomMs = Number(roomState.openchatAdminNickBackfillLastMs || 0) || 0;
+  if (nowMs - lastGlobalMs < OPENCHAT_ADMIN_NICK_BACKFILL_GLOBAL_COOLDOWN_MS) return { ok: false, found: 0 };
+  if (nowMs - lastRoomMs < OPENCHAT_ADMIN_NICK_BACKFILL_ROOM_COOLDOWN_MS) return { ok: false, found: 0 };
+
+  const missing = computeMissingNicknames(roomState, wantedUserIdsSet);
+  const missingBefore = missing.size;
+  if (missingBefore === 0) return { ok: false, found: 0 };
+
+  meta.openchatAdminNickBackfillLastMs = nowMs;
+  roomState.openchatAdminNickBackfillLastMs = nowMs;
+
+  const roomDir = roomLogDirPath(roomId);
+  if (!roomDir) return { ok: false, found: 0 };
+
+  let names = [];
+  try {
+    names = await fs.promises.readdir(roomDir);
+  } catch {
+    return { ok: false, found: 0 };
+  }
+
+  const files = names
+    .filter((x) => /^\d{4}-\d{2}-\d{2}\.log$/.test(String(x || "").trim()))
+    .sort()
+    .reverse()
+    .slice(0, OPENCHAT_ADMIN_NICK_BACKFILL_MAX_FILES);
+
+  const m = ensureRoomNickMap(roomState);
+  let scannedTotal = 0;
+  for (const name of files) {
+    if (missing.size === 0) break;
+    if (scannedTotal >= OPENCHAT_ADMIN_NICK_BACKFILL_MAX_TOTAL_BYTES) break;
+    const filePath = path.join(roomDir, name);
+    const st = await statSafe(filePath);
+    if (!st) continue;
+    const size = Number(st.size || 0) || 0;
+    const startOffset = Math.max(0, size - OPENCHAT_ADMIN_NICK_BACKFILL_TAIL_BYTES_PER_FILE);
+
+    await scanJsonlFileFromOffset(filePath, startOffset, (line) => {
+      let obj = null;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        obj = null;
+      }
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+      const sid = String(obj?.snapshot?.senderId || obj?.snapshot?.sender_id || "").trim();
+      if (!sid || !missing.has(sid)) return;
+      const sname = String(obj?.snapshot?.senderName || obj?.snapshot?.sender_name || "").trim();
+      if (!sname) return;
+      rememberRoomNickname(roomState, sid, sname, String(obj?.timestamp || "").trim());
+      const stored = sid && m && m[sid] ? String(m[sid]?.name || "").trim() : "";
+      if (stored && !isSuspiciousNickname(stored)) missing.delete(sid);
+    });
+
+    scannedTotal += Math.max(0, size - startOffset);
+  }
+
+  const missingAfter = computeMissingNicknames(roomState, wantedUserIdsSet).size;
+  const found = Math.max(0, missingBefore - missingAfter);
+  return { ok: found > 0, found };
 }
 
 function ensureRoomStateContainer(roomId) {
@@ -806,23 +904,25 @@ async function getIrisBotId() {
   return irisBotId || DEFAULT_IRIS_DECRYPT_USER_ID;
 }
 
-async function irisDecryptNickname(enc, b64Ciphertext) {
+async function irisDecryptNickname(decryptUserId, enc, b64Ciphertext) {
   const raw = normalizeBase64Ciphertext(b64Ciphertext);
+  const uid = String(decryptUserId || "").trim();
   const encNum = Math.floor(Number(enc || 0) || 0);
   if (!raw || !encNum) return null;
 
-  const key = `${encNum}:${raw}`;
+  const cacheUid = uid || "__bot__";
+  const key = `${cacheUid}:${encNum}:${raw}`;
   if (irisDecryptCache.has(key)) return irisDecryptCache.get(key) || null;
 
   const base = readIrisBase();
-  const botId = await getIrisBotId();
+  const userId = uid || (await getIrisBotId());
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 9000);
   try {
     const res = await fetch(`${base}/decrypt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: botId, enc: encNum, b64_ciphertext: raw }),
+      body: JSON.stringify({ user_id: userId, enc: encNum, b64_ciphertext: raw }),
       signal: ctrl.signal,
     });
     const text = await res.text().catch(() => "");
@@ -884,8 +984,21 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
     const s0 = String(nickname || "").trim();
     if (s0 && isSuspiciousNickname(s0)) {
-      const plain = await irisDecryptNickname(enc, s0);
-      if (plain) nickname = plain;
+      const candidates = [
+        String(row?.profile_link_id || "").trim(),
+        String(row?.user_id || "").trim(),
+        uid,
+      ].filter(Boolean);
+      const seen = new Set();
+      for (const decryptUserId of candidates) {
+        if (seen.has(decryptUserId)) continue;
+        seen.add(decryptUserId);
+        const plain = await irisDecryptNickname(decryptUserId, enc, s0);
+        if (plain) {
+          nickname = plain;
+          break;
+        }
+      }
     }
     const s = String(nickname || "").trim();
     if (!s || isSuspiciousNickname(s)) return null;
@@ -894,7 +1007,7 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   // 1) involved_chat_id
   let rows = await irisQuerySafe(
-    "select nickname, enc from db2.open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
+    "select nickname, enc, user_id, profile_link_id from db2.open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
     [rid, uid],
     15000,
   );
@@ -919,7 +1032,7 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   if (linkId) {
     rows = await irisQuerySafe(
-      "select nickname, enc from db2.open_chat_member where link_id=? and user_id=? order by rowid desc limit 1",
+      "select nickname, enc, user_id, profile_link_id from db2.open_chat_member where link_id=? and user_id=? order by rowid desc limit 1",
       [linkId, uid],
       15000,
     );
@@ -1134,6 +1247,7 @@ async function syncOpenchatOverviewOnce(opts = {}) {
   }
   const meta = openchatOverviewState.meta;
   let autoLoadStarted = false;
+  let nickBackfillStarted = false;
 
   for (const r of rooms) {
     const rid = String(r.roomId || "").trim();
@@ -1236,14 +1350,29 @@ async function syncOpenchatOverviewOnce(opts = {}) {
     const sparkTodayHourly = Array.isArray(todayState.hourly) ? todayState.hourly.map((x) => Math.max(0, Number(x) || 0)).slice(0, 24) : [];
     while (sparkTodayHourly.length < 24) sparkTodayHourly.push(0);        
 
-    const hostNames = buildAdminNameList(roomState, hostEntries);
-    const subhostNames = buildAdminNameList(roomState, subhostEntries);
+    let hostNames = buildAdminNameList(roomState, hostEntries);
+    let subhostNames = buildAdminNameList(roomState, subhostEntries);
     const hostCount = hostEntries.length;
     const subhostCount = subhostEntries.length;
-    const needsAdmins =
+    let needsAdmins =
       hostCount === 0 ||
       (hostCount > 0 && hostNames.length === 0) ||
       (subhostCount > 0 && subhostNames.length === 0);
+
+    // 1) 운영진 닉네임은 로그(senderName)가 SSOT다.
+    // - 최근 7일 로그에 없을 수 있어, 필요할 때만 과거 로그 tail을 스캔해 보강한다.
+    if (needsAdmins && !nickBackfillStarted && OPENCHAT_ADMIN_NICK_BACKFILL_ENABLED && wantedUserIdsSet.size > 0) {
+      const bf = await maybeBackfillAdminNicknamesFromLogHistory(rid, roomState, wantedUserIdsSet, meta);
+      if (bf && bf.ok) {
+        nickBackfillStarted = true;
+        hostNames = buildAdminNameList(roomState, hostEntries);
+        subhostNames = buildAdminNameList(roomState, subhostEntries);
+        needsAdmins =
+          hostCount === 0 ||
+          (hostCount > 0 && hostNames.length === 0) ||
+          (subhostCount > 0 && subhostNames.length === 0);
+      }
+    }
 
     if (needsAdmins) {
       roomState.adminsForceUntilMs = Math.max(Number(roomState.adminsForceUntilMs || 0) || 0, nowMs + OPENCHAT_ADMINS_FORCE_REFRESH_MS);
