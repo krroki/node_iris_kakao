@@ -14,6 +14,10 @@ type Room = {
   spark7dDaily: number[];
   hostNames: string[];
   subhostNames: string[];
+  hostCount: number;
+  subhostCount: number;
+  adminsLoadedMembersCount: number;
+  adminsActiveMembersCount: number | null;
   adminsHint: string | null;
   pinned?: boolean;
 };
@@ -102,6 +106,7 @@ function normalizeNames(list: string[]) {
   for (const x of names) {
     const s = String(x || "").trim();
     if (!s) continue;
+    if (s === "어떤 분") continue;
     if (isSuspiciousName(s)) continue;
     if (seen.has(s)) continue;
     seen.add(s);
@@ -378,7 +383,7 @@ export default function OpenchatView() {
         <div className="rounded-2xl border bg-white p-4 shadow-sm">
           <div className="text-xs font-medium text-slate-500">다음 행동</div>
           <div className="mt-1 text-sm font-medium text-slate-900">순서를 바꾸거나, 고정/숨김을 조정해요.</div>
-          <div className="mt-1 text-xs text-slate-500">운영진이 “미확인”이면 “운영진 불러오기”를 누른 뒤 1~2분 후 “지금 갱신”을 눌러요.</div>
+          <div className="mt-1 text-xs text-slate-500">운영진이 “확인 중”이면 “운영진 불러오기”를 눌러요. 1~2분 안에 자동으로 반영돼요.</div>
         </div>
       </div>
 
@@ -435,10 +440,11 @@ export default function OpenchatView() {
           busyRoomId={busyRoomId}
           canReorder={canReorder}
           canDragReorder={canReorder && !isTouch}
-          onTogglePin={(rid, next) => patchWatch(rid, { pinned: next })}
+          onTogglePin={(rid, next) => patchWatch(rid, { pinned: next })}   
           onHide={(rid) => patchWatch(rid, { hidden: true })}
           onDropReorder={onDropReorder}
           onSaveOrder={saveOrder}
+          onAdminsRefresh={requestAdminsRefresh}
         />
       </Section>
 
@@ -449,10 +455,11 @@ export default function OpenchatView() {
           busyRoomId={busyRoomId}
           canReorder={canReorder}
           canDragReorder={canReorder && !isTouch}
-          onTogglePin={(rid, next) => patchWatch(rid, { pinned: next })}
+          onTogglePin={(rid, next) => patchWatch(rid, { pinned: next })}   
           onHide={(rid) => patchWatch(rid, { hidden: true })}
           onDropReorder={onDropReorder}
           onSaveOrder={saveOrder}
+          onAdminsRefresh={requestAdminsRefresh}
         />
       </Section>
 
@@ -505,6 +512,7 @@ function RoomList({
   onHide,
   onDropReorder,
   onSaveOrder,
+  onAdminsRefresh,
 }: {
   pinned: boolean;
   rooms: Room[];
@@ -513,8 +521,9 @@ function RoomList({
   canDragReorder: boolean;
   onTogglePin: (roomId: string, next: boolean) => void;
   onHide: (roomId: string) => void;
-  onDropReorder: (pinned: boolean, fromId: string, toId: string) => void;
-  onSaveOrder: (pinned: boolean, roomIds: string[]) => Promise<void>;
+  onDropReorder: (pinned: boolean, fromId: string, toId: string) => void;  
+  onSaveOrder: (pinned: boolean, roomIds: string[]) => Promise<void>;      
+  onAdminsRefresh: (roomId: string) => void;
 }) {
   const draggingIdRef = useRef<string>("");
 
@@ -552,7 +561,11 @@ function RoomList({
           const host = normalizeNames(r.hostNames);
           const sub = normalizeNames(r.subhostNames);
           const disabled = busyRoomId === r.roomId;
-          const needsAdmins = Boolean(r.adminsHint) || host.length === 0 || sub.length === 0;
+          const hostCount = Math.max(0, Number(r.hostCount) || 0);
+          const subhostCount = Math.max(0, Number(r.subhostCount) || 0);
+          const hostMissing = hostCount === 0 || host.length === 0;
+          const subhostsMissing = subhostCount > 0 && sub.length === 0;
+          const needsAdmins = Boolean(r.adminsHint) || hostMissing || subhostsMissing;
           return (
             <div
               key={r.roomId}
@@ -618,11 +631,17 @@ function RoomList({
               <div className="min-w-0">
                 <div className="truncate text-sm text-slate-900">
                   <span className="text-slate-500">방장</span>{" "}
-                  {host.length > 0 ? host.join(", ") : <span className="text-slate-400">미확인</span>}
+                  {host.length > 0 ? host.join(", ") : <span className="text-slate-400">확인 중</span>}
                 </div>
                 <div className="mt-1 truncate text-xs text-slate-600">
                   <span className="text-slate-500">부방장</span>{" "}
-                  {sub.length > 0 ? sub.join(", ") : <span className="text-slate-400">미확인</span>}
+                  {subhostCount === 0 ? (
+                    <span className="text-slate-400">없음</span>
+                  ) : sub.length > 0 ? (
+                    sub.join(", ")
+                  ) : (
+                    <span className="text-slate-400">확인 중</span>
+                  )}
                 </div>
               </div>
 
@@ -651,7 +670,7 @@ function RoomList({
               <div className="flex flex-wrap gap-2 md:col-span-8">
                 {needsAdmins ? (
                   <button
-                    onClick={() => requestAdminsRefresh(r.roomId)}
+                    onClick={() => onAdminsRefresh(r.roomId)}
                     disabled={disabled}
                     className="rounded-lg border bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-60"
                     title="단말에서 멤버 목록을 불러와 운영진/닉네임 정보를 보강해요."

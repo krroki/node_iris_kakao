@@ -90,6 +90,13 @@ const OPENCHAT_OVERVIEW_RETRY_INTERVAL_MS =
   envInt("COURSEOPS_OPENCHAT_OVERVIEW_RETRY_INTERVAL_SEC", 10, 5, 120) * 1000;
 const OPENCHAT_ADMINS_REFRESH_INTERVAL_MS =
   envInt("COURSEOPS_OPENCHAT_ADMINS_REFRESH_INTERVAL_SEC", 10 * 60, 60, 6 * 3600) * 1000;
+const OPENCHAT_ADMINS_AUTOLOAD_ENABLED = envBool("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_ENABLED", true);
+const OPENCHAT_ADMINS_AUTOLOAD_GLOBAL_COOLDOWN_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_GLOBAL_COOLDOWN_SEC", 3 * 60, 60, 30 * 60) * 1000;
+const OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_SEC", 15 * 60, 60, 6 * 3600) * 1000;
+const OPENCHAT_ADMINS_FORCE_REFRESH_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMINS_FORCE_REFRESH_SEC", 5 * 60, 30, 30 * 60) * 1000;
 const OPENCHAT_REQUESTS_POLL_INTERVAL_MS =
   envInt("COURSEOPS_REQUESTS_POLL_INTERVAL_SEC", 3, 1, 60) * 1000;
 const LOGS_BASE_DIR = path.join(repoRoot, "node-iris-app", "data", "logs");
@@ -872,10 +879,12 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   const pickName = async (row) => {
     if (!row || typeof row !== "object") return null;
-    const enc = Math.floor(Number(row?.enc || 31) || 31);
+    const enc = Math.floor(Number(row?.enc ?? 31) || 31);
     let nickname = decodeNickname(row?.nickname);
-    if (nickname && looksLikeBase64Ciphertext(nickname)) {
-      const plain = await irisDecryptNickname(enc, nickname);
+
+    const s0 = String(nickname || "").trim();
+    if (s0 && isSuspiciousNickname(s0)) {
+      const plain = await irisDecryptNickname(enc, s0);
       if (plain) nickname = plain;
     }
     const s = String(nickname || "").trim();
@@ -1013,15 +1022,15 @@ function buildAdminNameList(roomState, entries) {
     seen.add(s);
     out.push(s);
   }
-  // 숫자만인 경우는 화면에 그대로 보여주지 않는다.
-  return out.map((x) => (/^\d{6,}$/.test(x) ? "어떤 분" : x)).slice(0, 30);
+  // 숫자 식별자/플레이스홀더는 이름으로 쓰지 않는다(닉네임은 수집/복호화로 해결한다).
+  return out.filter((x) => x !== "어떤 분" && !/^\d{6,}$/.test(x)).slice(0, 30);
 }
 
 function buildAdminsHint(raw) {
-  const loaded = Number(raw?.loadedMembersCount || 0) || 0;
-  const active = Number(raw?.activeMembersCount || 0) || 0;
-  if (!loaded) return "멤버 목록이 아직 덜 불러와졌어요.";
-  if (active > 0 && loaded < active) return "운영진 목록이 일부만 보일 수 있어요.";
+  const loaded = Number(raw?.loadedMembersCount ?? raw?.loaded_members_count ?? 0) || 0;
+  const active = Number(raw?.activeMembersCount ?? raw?.active_members_count ?? 0) || 0;
+  if (!loaded) return "멤버 목록을 아직 불러오지 못했어요. 운영진/닉네임을 확인하려면 ‘운영진 불러오기’를 눌러주세요.";
+  if (active > 0 && loaded < active) return "멤버 목록이 일부만 불러와졌어요. 운영진/닉네임이 비어 보이면 ‘운영진 불러오기’로 보강해요.";
   return null;
 }
 
@@ -1043,18 +1052,26 @@ async function fetchLocalOpenchatRooms() {
 
 async function fetchLocalOpenchatAdmins(roomId) {
   const rid = String(roomId || "").trim();
-  if (!rid) return { host: [], subhosts: [], hint: "멤버 목록을 확인하지 못했어요." };
+  if (!rid) return { host: [], subhosts: [], hint: "멤버 목록을 확인하지 못했어요.", loadedMembersCount: 0, activeMembersCount: null };
   const r = await getLocalJson(`${LOCAL_API_BASE}/rooms/${encodeURIComponent(rid)}/admins`, 15000);
   if (!r.ok) {
-    return { host: [], subhosts: [], hint: "운영진 정보를 확인하지 못했어요." };
+    return { host: [], subhosts: [], hint: "운영진 정보를 확인하지 못했어요.", loadedMembersCount: 0, activeMembersCount: null };
   }
   const raw = r.json && typeof r.json === "object" ? r.json : {};
   const host = await normalizeOpenchatAdminEntries(rid, raw?.host);
   const subhosts = await normalizeOpenchatAdminEntries(rid, raw?.subhosts);
+  const loadedMembersCount = Number(raw?.loadedMembersCount ?? raw?.loaded_members_count ?? 0) || 0;
+  const activeMembersCountRaw = raw?.activeMembersCount ?? raw?.active_members_count;
+  const activeMembersCount =
+    activeMembersCountRaw === 0 || activeMembersCountRaw
+      ? Math.max(0, Number(activeMembersCountRaw) || 0)
+      : null;
   return {
     host,
     subhosts,
     hint: buildAdminsHint(raw),
+    loadedMembersCount,
+    activeMembersCount,
   };
 }
 
@@ -1111,6 +1128,13 @@ async function syncOpenchatOverviewOnce(opts = {}) {
   const rooms = await fetchLocalOpenchatRooms();
   const payloadRooms = [];
 
+  if (!openchatOverviewState) openchatOverviewState = { rooms: {}, meta: {} };
+  if (!openchatOverviewState.meta || typeof openchatOverviewState.meta !== "object" || Array.isArray(openchatOverviewState.meta)) {
+    openchatOverviewState.meta = {};
+  }
+  const meta = openchatOverviewState.meta;
+  let autoLoadStarted = false;
+
   for (const r of rooms) {
     const rid = String(r.roomId || "").trim();
     if (!rid) continue;
@@ -1121,10 +1145,16 @@ async function syncOpenchatOverviewOnce(opts = {}) {
     // - IRIS DB의 open_chat_member.nickname 이 해시/토큰 형태일 수 있어, userId 기준으로
     //   로그에서 본 senderName 을 우선 사용한다.
     const nowMs = Date.now();
+    const forceUntilMs = Number(roomState.adminsForceUntilMs || 0) || 0;
     const prevAdmins = roomState.admins && typeof roomState.admins === "object" ? roomState.admins : null;
     const prevAt = Number(prevAdmins?.fetchedAtMs || 0) || 0;
     const prevHasEntries = Array.isArray(prevAdmins?.host) || Array.isArray(prevAdmins?.subhosts);
-    const shouldRefresh = forceAdmins || !prevAdmins || !prevHasEntries || nowMs - prevAt > OPENCHAT_ADMINS_REFRESH_INTERVAL_MS;
+    const shouldRefresh =
+      forceAdmins ||
+      !prevAdmins ||
+      !prevHasEntries ||
+      nowMs - prevAt > OPENCHAT_ADMINS_REFRESH_INTERVAL_MS ||
+      (forceUntilMs > 0 && nowMs < forceUntilMs);
     let admins = prevAdmins;
     if (shouldRefresh) {
       const a = await fetchLocalOpenchatAdmins(rid);
@@ -1133,6 +1163,8 @@ async function syncOpenchatOverviewOnce(opts = {}) {
         host: Array.isArray(a.host) ? a.host : [],
         subhosts: Array.isArray(a.subhosts) ? a.subhosts : [],
         hint: a.hint || null,
+        loadedMembersCount: Math.max(0, Number(a.loadedMembersCount || 0) || 0),
+        activeMembersCount: a.activeMembersCount == null ? null : Math.max(0, Number(a.activeMembersCount) || 0),
       };
       roomState.admins = admins;
     }
@@ -1206,6 +1238,49 @@ async function syncOpenchatOverviewOnce(opts = {}) {
 
     const hostNames = buildAdminNameList(roomState, hostEntries);
     const subhostNames = buildAdminNameList(roomState, subhostEntries);
+    const hostCount = hostEntries.length;
+    const subhostCount = subhostEntries.length;
+    const needsAdmins =
+      hostCount === 0 ||
+      (hostCount > 0 && hostNames.length === 0) ||
+      (subhostCount > 0 && subhostNames.length === 0);
+
+    if (needsAdmins) {
+      roomState.adminsForceUntilMs = Math.max(Number(roomState.adminsForceUntilMs || 0) || 0, nowMs + OPENCHAT_ADMINS_FORCE_REFRESH_MS);
+
+      if (!autoLoadStarted && OPENCHAT_ADMINS_AUTOLOAD_ENABLED) {
+        const lastGlobalMs = Number(meta.openchatAdminsAutoLoadLastMs || 0) || 0;
+        const lastRoomMs = Number(roomState.openchatAdminsAutoLoadLastMs || 0) || 0;
+        const canGlobal = nowMs - lastGlobalMs >= OPENCHAT_ADMINS_AUTOLOAD_GLOBAL_COOLDOWN_MS;
+        const canRoom = nowMs - lastRoomMs >= OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_MS;
+
+        if (canGlobal && canRoom) {
+          autoLoadStarted = true;
+          meta.openchatAdminsAutoLoadLastMs = nowMs;
+          roomState.openchatAdminsAutoLoadLastMs = nowMs;
+
+          const opts = readOpenchatLoadOpts();
+          const refresh = await postJson(
+            `${LOCAL_API_BASE}/rooms/${encodeURIComponent(rid)}/admins/refresh`,
+            { serial: opts.serial || null, scrolls: opts.scrolls, pauseMs: opts.scrollPauseMs },
+            20000,
+          ).catch(() => null);
+
+          if (refresh && refresh.ok) {
+            if (roomState.admins && typeof roomState.admins === "object") {
+              roomState.admins.fetchedAtMs = 0;
+              roomState.admins.hint = "운영진 정보를 불러오는 중이에요.";
+            }
+          }
+        }
+      }
+    } else if (Number(roomState.adminsForceUntilMs || 0) > 0) {
+      roomState.adminsForceUntilMs = 0;
+    }
+
+    const adminsHint = needsAdmins ? (String(admins?.hint || "").trim() || "운영진/닉네임을 확인하고 있어요.") : null;
+    const adminsLoadedMembersCount = Math.max(0, Number(admins?.loadedMembersCount || 0) || 0);
+    const adminsActiveMembersCount = admins?.activeMembersCount == null ? null : Math.max(0, Number(admins.activeMembersCount) || 0);
 
     payloadRooms.push({
       roomId: rid,
@@ -1224,7 +1299,11 @@ async function syncOpenchatOverviewOnce(opts = {}) {
       spark7dDaily: totals7.slice(0, 7),
       hostNames,
       subhostNames,
-      adminsHint: String(admins?.hint || "").trim() || null,
+      hostCount,
+      subhostCount,
+      adminsLoadedMembersCount,
+      adminsActiveMembersCount,
+      adminsHint,
     });
   }
 
@@ -1324,10 +1403,30 @@ async function maybeConsumeConsoleRequests() {
     20000,
   ).catch(() => null);
 
+  // 운영진 갱신 요청이 들어오면, 해당 방 admins 캐시를 강제로 새로고침하도록 상태를
+  // 마킹한다(단말 스크롤이 끝나면 다음 오픈채팅 스냅샷에서 자연스럽게 반영됨).
+  try {
+    if (!openchatOverviewState) openchatOverviewState = { rooms: {}, meta: {} };
+    if (!openchatOverviewState.meta || typeof openchatOverviewState.meta !== "object" || Array.isArray(openchatOverviewState.meta)) {
+      openchatOverviewState.meta = {};
+    }
+    const rs = ensureRoomStateContainer(roomId);
+    if (rs) {
+      const nowMs = Date.now();
+      rs.adminsForceUntilMs = Math.max(Number(rs.adminsForceUntilMs || 0) || 0, nowMs + OPENCHAT_ADMINS_FORCE_REFRESH_MS);
+      rs.openchatAdminsAutoLoadLastMs = nowMs;
+      openchatOverviewState.meta.openchatAdminsAutoLoadLastMs = nowMs;
+      if (refresh && refresh.ok && rs.admins && typeof rs.admins === "object") {
+        rs.admins.fetchedAtMs = 0;
+        rs.admins.hint = "운영진 정보를 불러오는 중이에요.";
+      }
+    }
+  } catch {}
+
   // NOTE: refresh 성공/실패와 무관하게, 동일 요청을 반복 처리하지 않도록 ack 한다.
   await postJson(`${consoleBase}/api/agent/requests/ack`, { key }, 15000).catch(() => {});
 
-  // 즉시 반영은 보장되지 않는다(단말 스크롤이 끝난 후 '지금 갱신'을 한 번 더 누르는 것이 안전).
+  // 즉시 반영은 보장되지 않는다(단말 스크롤이 끝난 뒤 1~2분 내 자동 반영됨).
   if (refresh && refresh.ok) heartbeat({ openchatAdminsRefresh: { ok: true, requestedAt: ts || null } });
 }
 
