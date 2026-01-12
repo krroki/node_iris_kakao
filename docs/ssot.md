@@ -4,6 +4,7 @@
 - 이름: 12.kakao
 - 목적: 루팅 안드로이드 + IRIS + Hyper-V 리눅스 봇 서버 조합으로 카카오톡 오픈채팅(명령어, 환영, 방송)을 안정적으로 운영.
 - 현재 상태: Hyper-V/루팅 단말 기반 설치 가이드 정리 및 요구사항 문서 갱신 완료 (2025-10-28).
+- 2026-01-11: CourseOps 오픈채팅 현황 대시보드 강화 — 오늘 TOP/최근 60분(슬라이딩) Hot Live/7일 평균 대비 Surge/오늘의 헤비 유저(전체) 랭킹 + 운영진 닉네임 SSOT(open_profile 우선) + 오픈채팅 썸네일(icon_url) 보강. (ADR-0051, `docs/ops/courseops-openchat-activity-rankings-plan.md`)
 - 2025-12-26: image-worker(Gemini 웹) 브라우저 세션 재사용 기본값 변경 — `GEMINI_WEB_REUSE_CONTEXT` 기본값을 `false`로 바꿔 작업 완료 후 Chrome 창이 남지 않게 정렬. 속도 최적화가 필요하면 env로 `true`를 명시해 재사용(창 유지) 가능.
 - 2025-12-26: Welcome 오픈프로필 닫기 안내 가이드 이미지 교체 — `runtime.json.welcome.openProfileCloseGuide.images` SSOT를 `assets/welcome/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`로 고정하고, 레거시 가이드 이미지는 운영 워킹트리에서 제거(재발 방지).
 - 2025-12-26: CourseOps 대시보드에 메인 카페(장기 운영) 지표 추가 — 로컬 에이전트가 메인 카페 멤버 스냅샷을 수집해 글로벌 스냅샷으로 업로드하고, 웹은 결과 지표만 노출. (ADR-0047)
@@ -92,6 +93,7 @@
 ## 기술 결정 요약
 | 날짜 | 결정 | 참고 |
 | --- | --- | --- |
+| 2026-01-11 | CourseOps: 오픈채팅 현황(오늘 TOP/최근60분/Surge/헤비 유저) + 운영진 닉네임 SSOT(open_profile) + 썸네일(icon_url) 보강 | `docs/adr/ADR-0051-courseops-openchat-dashboard-admin-ssot-and-thumbnails.md`, `docs/ops/courseops-openchat-activity-rankings-plan.md`, `courseops/agent/src/index.js`, `courseops/console/app/(app)/openchat/ui/OpenchatView.tsx`, `courseops/console/app/api/global/openchat/route.ts`, `server/app.py` |
 | 2025-12-24 | CourseOps: 시트(산출) 입력 제거 + 결제 SSOT는 강의별 설정 + Supabase 스냅샷(JSON) 저장/업로드로 전환 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `docs/reference/payment-ssot-google-sheets.md`, `courseops/agent/src/index.js`, `scripts/course_membership_audit/worker.py`, `courseops/console/app/api/agent/snapshot/route.ts` |
 | 2025-12-23 | 강의 운영 v2: 운영 UI를 CourseOps 웹 콘솔(go.yoorang.kr)로 전환(동시접속) + 처리/검증 상태머신 + 빠른 재검증/전체 동기화 + 담당자·메모 기록 | `docs/adr/ADR-0046-courseops-v2-web-console-go-yoorang.md`, `docs/reference/course-ops-v2-web-console.md`, `docs/prd_course_ops_v2_membership_audit.md` |
 | 2025-12-22 | 강의 운영 v2 결제 SSOT 연동 + ACTIONS/시트 UX 개선 | `docs/adr/ADR-0039-course-roster-v2-membership-audit.md`, `docs/reference/course-roster-v2-membership-audit.md`, `docs/reference/payment-ssot-google-sheets.md`, `scripts/course_membership_audit/audit.py`, `scripts/course_membership_audit/sheets.py`, `scripts/course_membership_audit/worker.py` |

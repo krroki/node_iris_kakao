@@ -18,7 +18,10 @@ export async function GET(req: Request) {
 
   const store = await coursesStore();
   const reqOpenchat = await store.getAgentRequest("openchat_overview");
-  const reqOpenchatAdmins = await store.listAgentRequestsByPrefix("openchat_admins_refresh:", 50);
+  const reqOpenchatAdmins = await store.listAgentRequestsByPrefix({
+    prefix: "openchat_admins_refresh:",
+    limit: 50,
+  });
   return NextResponse.json({
     ok: true,
     requests: {
@@ -27,4 +30,3 @@ export async function GET(req: Request) {
     },
   });
 }
-

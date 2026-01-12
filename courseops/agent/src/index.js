@@ -25,6 +25,7 @@ let lastOpenchatAttemptMs = 0;
 let openchatInFlight = false;
 let lastRequestsPollMs = 0;
 let lastOpenchatRequestSeenMs = 0;
+let lastOpenchatAdminsAutoLoadScanMs = 0;
 let lastCoursesSyncAttemptMs = 0;
 let lastCoursesSyncOkMs = 0;
 let lastSnapshotUploadScanMs = 0;
@@ -85,7 +86,7 @@ const OPENCHAT_OVERVIEW_SNAPSHOT_KEY = "openchat_overview";
 const LOCAL_API_BASE = String(process.env.COURSEOPS_LOCAL_API_BASE_URL || "http://127.0.0.1:8650").replace(/\/$/, "");
 const OPENCHAT_OVERVIEW_ENABLED = envBool("COURSEOPS_OPENCHAT_OVERVIEW_ENABLED", true);
 const OPENCHAT_OVERVIEW_SYNC_INTERVAL_MS =
-  envInt("COURSEOPS_OPENCHAT_OVERVIEW_SYNC_INTERVAL_SEC", 30, 10, 300) * 1000;
+  envInt("COURSEOPS_OPENCHAT_OVERVIEW_SYNC_INTERVAL_SEC", 3600, 60, 24 * 3600) * 1000;
 const OPENCHAT_OVERVIEW_RETRY_INTERVAL_MS =
   envInt("COURSEOPS_OPENCHAT_OVERVIEW_RETRY_INTERVAL_SEC", 10, 5, 120) * 1000;
 const OPENCHAT_ADMINS_REFRESH_INTERVAL_MS =
@@ -94,12 +95,22 @@ const OPENCHAT_ADMINS_AUTOLOAD_ENABLED = envBool("COURSEOPS_OPENCHAT_ADMINS_AUTO
 const OPENCHAT_ADMINS_AUTOLOAD_GLOBAL_COOLDOWN_MS =
   envInt("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_GLOBAL_COOLDOWN_SEC", 3 * 60, 60, 30 * 60) * 1000;
 const OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_MS =
-  envInt("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_SEC", 15 * 60, 60, 6 * 3600) * 1000;
+  // 운영진/멤버 로딩은 자주 바뀌지 않으므로 "방별 하루 1회" 정도만 자동 갱신한다.
+  // - 신규 방(처음 본 room)은 lastMs=0이라 즉시 1회 시도된다.
+  envInt("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_SEC", 24 * 3600, 60, 7 * 24 * 3600) * 1000;
+const OPENCHAT_ADMINS_AUTOLOAD_SCAN_INTERVAL_MS =
+  envInt("COURSEOPS_OPENCHAT_ADMINS_AUTOLOAD_SCAN_INTERVAL_SEC", 15, 2, 300) * 1000;
 const OPENCHAT_ADMINS_FORCE_REFRESH_MS =
   envInt("COURSEOPS_OPENCHAT_ADMINS_FORCE_REFRESH_SEC", 5 * 60, 30, 30 * 60) * 1000;
 const OPENCHAT_REQUESTS_POLL_INTERVAL_MS =
   envInt("COURSEOPS_REQUESTS_POLL_INTERVAL_SEC", 3, 1, 60) * 1000;
 const LOGS_BASE_DIR = path.join(repoRoot, "node-iris-app", "data", "logs");
+
+const OPENCHAT_OVERVIEW_SCHEMA_VERSION = envInt("COURSEOPS_OPENCHAT_SCHEMA_VERSION", 2, 1, 100);
+const OPENCHAT_TALKERS_MAP_MAX = envInt("COURSEOPS_OPENCHAT_TALKERS_MAP_MAX", 500, 50, 5000);
+const OPENCHAT_TALKERS_PAYLOAD_LIMIT = envInt("COURSEOPS_OPENCHAT_TALKERS_PAYLOAD_LIMIT", 50, 10, 200);
+const OPENCHAT_SURGE_MIN_BASELINE = envInt("COURSEOPS_OPENCHAT_SURGE_MIN_BASELINE", 30, 1, 100000);
+const OPENCHAT_SURGE_MIN_LAST1H = envInt("COURSEOPS_OPENCHAT_SURGE_MIN_LAST1H", 50, 1, 100000);
 
 const OPENCHAT_ADMIN_NICK_BACKFILL_ENABLED = envBool("COURSEOPS_OPENCHAT_ADMIN_NICK_BACKFILL_ENABLED", true);
 const OPENCHAT_ADMIN_NICK_BACKFILL_GLOBAL_COOLDOWN_MS =
@@ -116,6 +127,8 @@ const DEFAULT_IRIS_DECRYPT_USER_ID = envInt("IRIS_DECRYPT_USER_ID", 435780965, 1
 const IRIS_BOT_ID_CACHE_TTL_MS = envInt("COURSEOPS_IRIS_BOT_ID_CACHE_TTL_SEC", 600, 30, 24 * 3600) * 1000;
 const IRIS_DECRYPT_CACHE_MAX = envInt("COURSEOPS_IRIS_DECRYPT_CACHE_MAX", 2000, 100, 20_000);
 const IRIS_MEMBER_NICK_CACHE_MAX = envInt("COURSEOPS_IRIS_MEMBER_NICK_CACHE_MAX", 5000, 100, 100_000);
+const IRIS_MEMBER_NICK_NEGATIVE_TTL_MS =
+  envInt("COURSEOPS_IRIS_MEMBER_NICK_NEGATIVE_TTL_SEC", 10 * 60, 60, 24 * 3600) * 1000;
 let irisBotId = null;
 let irisBotIdFetchedMs = 0;
 const irisDecryptCache = new Map();
@@ -182,7 +195,7 @@ function readJson(p) {
 
 function writeJsonAtomic(p, obj) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const tmp = `${p}.tmp`;
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n", "utf8");
   fs.renameSync(tmp, p);
 }
@@ -661,6 +674,155 @@ function ensureRoomStateContainer(roomId) {
   return openchatOverviewState.rooms[rid];
 }
 
+function resetRoomLast60State(roomState, baseMinute) {
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return;
+  const bm = Math.max(0, Math.floor(Number(baseMinute || 0) || 0));
+  roomState.last60 = { baseMinute: bm, buckets: Array.from({ length: 60 }, () => 0) };
+}
+
+function ensureRoomLast60State(roomState, baseMinute) {
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return null;
+  const bm = Math.max(0, Math.floor(Number(baseMinute || 0) || 0));
+  const cur = roomState.last60 && typeof roomState.last60 === "object" && !Array.isArray(roomState.last60) ? roomState.last60 : null;
+  const buckets = Array.isArray(cur?.buckets) ? cur.buckets.map((x) => Math.max(0, Number(x) || 0)) : null;
+  const prevBase = Math.max(0, Math.floor(Number(cur?.baseMinute || 0) || 0));
+
+  if (!cur || !buckets || buckets.length !== 60) {
+    resetRoomLast60State(roomState, bm);
+    return roomState.last60;
+  }
+
+  if (prevBase === bm) {
+    cur.buckets = buckets;
+    cur.baseMinute = bm;
+    return cur;
+  }
+
+  const delta = bm - prevBase;
+  if (delta <= 0) {
+    resetRoomLast60State(roomState, bm);
+    return roomState.last60;
+  }
+
+  if (delta >= 60) {
+    resetRoomLast60State(roomState, bm);
+    return roomState.last60;
+  }
+
+  const next = buckets.slice(delta);
+  while (next.length < 60) next.push(0);
+  roomState.last60 = { baseMinute: bm, buckets: next };
+  return roomState.last60;
+}
+
+function bumpRoomLast60(roomState, messageMinuteEpoch, baseMinute) {
+  const st = ensureRoomLast60State(roomState, baseMinute);
+  if (!st) return;
+  const bm = Math.max(0, Math.floor(Number(st.baseMinute || 0) || 0));
+  const mm = Math.max(0, Math.floor(Number(messageMinuteEpoch || 0) || 0));
+  if (mm < bm - 59 || mm > bm) return;
+  const idx = mm - (bm - 59);
+  if (idx < 0 || idx >= 60) return;
+  const buckets = Array.isArray(st.buckets) ? st.buckets : [];
+  buckets[idx] = (Number(buckets[idx]) || 0) + 1;
+  st.buckets = buckets;
+}
+
+function sumRoomLast60(roomState, baseMinute) {
+  const st = ensureRoomLast60State(roomState, baseMinute);
+  if (!st) return 0;
+  const buckets = Array.isArray(st.buckets) ? st.buckets : [];
+  return buckets.reduce((acc, x) => acc + Math.max(0, Number(x) || 0), 0);
+}
+
+function ensureRoomTalkersToday(roomState, todayYmd) {
+  if (!roomState || typeof roomState !== "object" || Array.isArray(roomState)) return null;
+  const day = String(todayYmd || "").trim();
+  if (!day) return null;
+
+  if (!roomState.talkers || typeof roomState.talkers !== "object" || Array.isArray(roomState.talkers)) {
+    roomState.talkers = { day, byKey: Object.create(null) };
+    return roomState.talkers;
+  }
+
+  const curDay = String(roomState.talkers.day || "").trim();
+  if (curDay !== day) {
+    roomState.talkers = { day, byKey: Object.create(null) };
+    return roomState.talkers;
+  }
+
+  if (!roomState.talkers.byKey || typeof roomState.talkers.byKey !== "object" || Array.isArray(roomState.talkers.byKey)) {
+    roomState.talkers.byKey = Object.create(null);
+  }
+  return roomState.talkers;
+}
+
+function bumpRoomTalkerToday(roomState, todayYmd, senderName, ts) {
+  const st = ensureRoomTalkersToday(roomState, todayYmd);
+  if (!st) return;
+  const name = String(senderName || "").trim();
+  if (!name) return;
+  if (isSuspiciousNickname(name)) return;
+  const key = normalizeLooseNameKey(name);
+  if (!key) return;
+
+  const byKey = st.byKey;
+  if (!byKey || typeof byKey !== "object" || Array.isArray(byKey)) return;
+  const cur = byKey[key] && typeof byKey[key] === "object" && !Array.isArray(byKey[key]) ? byKey[key] : null;
+  const nextCount = Math.max(0, Number(cur?.count || 0) || 0) + 1;
+  byKey[key] = { name: cur?.name ? String(cur.name) : name, count: nextCount, lastMessageTs: String(ts || "").trim() || (cur?.lastMessageTs || null) };
+  st.byKey = byKey;
+}
+
+function pruneRoomTalkers(roomState, todayYmd, maxEntries) {
+  const st = ensureRoomTalkersToday(roomState, todayYmd);
+  if (!st) return;
+  const byKey = st.byKey && typeof st.byKey === "object" && !Array.isArray(st.byKey) ? st.byKey : {};
+  const keys = Object.keys(byKey);
+  const max = Math.max(50, Math.floor(Number(maxEntries || 0) || 0));
+  if (keys.length <= max) return;
+
+  const list = keys
+    .map((k) => {
+      const v = byKey[k] && typeof byKey[k] === "object" && !Array.isArray(byKey[k]) ? byKey[k] : null;
+      const count = Math.max(0, Number(v?.count || 0) || 0);
+      const name = String(v?.name || "").trim();
+      const lastMessageTs = String(v?.lastMessageTs || "").trim();
+      return { k, count, name, lastMessageTs };
+    })
+    .filter((x) => x.count > 0 && x.name);
+
+  list.sort((a, b) => {
+    if (a.count !== b.count) return b.count - a.count;
+    return String(b.lastMessageTs || "").localeCompare(String(a.lastMessageTs || ""));
+  });
+
+  const keep = list.slice(0, max);
+  const next = Object.create(null);
+  for (const x of keep) {
+    next[x.k] = { name: x.name, count: x.count, lastMessageTs: x.lastMessageTs || null };
+  }
+  st.byKey = next;
+}
+
+function buildTopTalkersToday(roomState, todayYmd, limit) {
+  const st = ensureRoomTalkersToday(roomState, todayYmd);
+  if (!st) return [];
+  const byKey = st.byKey && typeof st.byKey === "object" && !Array.isArray(st.byKey) ? st.byKey : {};
+  const list = Object.values(byKey)
+    .map((v) => {
+      const o = v && typeof v === "object" && !Array.isArray(v) ? v : null;
+      const name = String(o?.name || "").trim();
+      const count = Math.max(0, Number(o?.count || 0) || 0);
+      return { nickname: name, total: count };
+    })
+    .filter((x) => x.total > 0 && x.nickname && !isSuspiciousNickname(x.nickname));
+
+  list.sort((a, b) => b.total - a.total);
+  const n = Math.max(1, Math.min(100, Math.floor(Number(limit || 0) || 0)));
+  return list.slice(0, n);
+}
+
 function ensureKstDayState(roomState, ymd) {
   if (!roomState.days || typeof roomState.days !== "object" || Array.isArray(roomState.days)) {
     roomState.days = {};
@@ -734,6 +896,61 @@ function parseKstMidnight(kstDayYmd) {
   return d;
 }
 
+function kstHourMinuteFromMs(epochMs) {
+  // KST는 DST가 없어서 고정 오프셋(+09:00)로 계산해도 안전하다.
+  const ms = Number(epochMs || 0) || 0;
+  const d = new Date(ms + 9 * 60 * 60 * 1000);
+  return { hour: d.getUTCHours(), minute: d.getUTCMinutes() };
+}
+
+function prevKstYmd(kstDayYmd) {
+  const d = parseKstMidnight(kstDayYmd);
+  if (!d) return "";
+  const prev = new Date(d.getTime() - 24 * 60 * 60 * 1000);
+  return kstYmd(prev);
+}
+
+function getHourlyArray(days, kstDayYmd) {
+  if (!days || typeof days !== "object" || Array.isArray(days)) return null;
+  const ds = days[kstDayYmd];
+  const hourly = ds && typeof ds === "object" && !Array.isArray(ds) && Array.isArray(ds.hourly) ? ds.hourly : null;
+  if (!hourly || hourly.length !== 24) return null;
+  return hourly;
+}
+
+function approxLast60FromHourly(days, kstDayYmd, kstHour, kstMinute) {
+  const day = String(kstDayYmd || "").trim();
+  if (!day) return null;
+  const hour = Math.max(0, Math.min(23, Math.floor(Number(kstHour || 0) || 0)));
+  const minute = Math.max(0, Math.min(59, Math.floor(Number(kstMinute || 0) || 0)));
+
+  const cur = getHourlyArray(days, day);
+  if (!cur) return null;
+
+  const prevHour = (hour + 23) % 24;
+  const prevDay = hour === 0 ? prevKstYmd(day) : day;
+  const prev = getHourlyArray(days, prevDay);
+  if (!prev) return null;
+
+  const curCount = Math.max(0, Number(cur[hour]) || 0);
+  const prevCount = Math.max(0, Number(prev[prevHour]) || 0);
+  const wCur = minute / 60;
+  const wPrev = (60 - minute) / 60;
+  return wCur * curCount + wPrev * prevCount;
+}
+
+function avg7dLast60FromHourly(days, prev7Ymds, kstHour, kstMinute) {
+  const list = Array.isArray(prev7Ymds) ? prev7Ymds : [];
+  const vals = [];
+  for (const day of list) {
+    const v = approxLast60FromHourly(days, day, kstHour, kstMinute);
+    if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+  }
+  if (vals.length === 0) return 0;
+  const sum = vals.reduce((acc, x) => acc + x, 0);
+  return Math.round(sum / vals.length);
+}
+
 function buildUtcYmdsForKstDays(kstYmds) {
   const set = new Set();
   const dayMs = 24 * 60 * 60 * 1000;
@@ -748,7 +965,7 @@ function buildUtcYmdsForKstDays(kstYmds) {
   return Array.from(set).sort();
 }
 
-function applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserIdsSet) {
+function applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserIdsSet, ctx = {}) {
   const payload = obj?.payload && typeof obj.payload === "object" ? obj.payload : null;
   if (!payload) return;
   if (String(payload.type || "") !== "message") return;
@@ -777,6 +994,23 @@ function applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserId
   }
 
   if (ts) dayState.lastMessageTs = ts;
+
+  // 최근 60분(슬라이딩) 집계
+  const baseMinute = Math.max(0, Math.floor(Number(ctx?.baseMinute || 0) || 0));
+  if (baseMinute > 0 && ts) {
+    const ms = new Date(ts).getTime();
+    if (Number.isFinite(ms) && !Number.isNaN(ms)) {
+      bumpRoomLast60(roomState, Math.floor(ms / 60000), baseMinute);
+    }
+  }
+
+  // 오늘 말많은 사람(닉네임 기반) 집계
+  const todayYmd = String(ctx?.todayYmd || "").trim();
+  if (todayYmd && kstDay === todayYmd) {
+    const sname = String(obj?.snapshot?.senderName || obj?.snapshot?.sender_name || "").trim();
+    if (sname) bumpRoomTalkerToday(roomState, todayYmd, sname, ts);
+  }
+
   maybeCaptureSenderNickname(roomState, obj, wantedUserIdsSet);
 }
 
@@ -803,6 +1037,10 @@ async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
   const prevOffset = Number(fsState.offsetBytes || 0) || 0;
   const allowedKstDaysSet = opts.allowedKstDaysSet && opts.allowedKstDaysSet instanceof Set ? opts.allowedKstDaysSet : null;
   const wantedUserIdsSet = opts.wantedUserIdsSet && opts.wantedUserIdsSet instanceof Set ? opts.wantedUserIdsSet : null;
+  const ctx = {
+    todayYmd: String(opts.todayYmd || "").trim(),
+    baseMinute: Math.max(0, Math.floor(Number(opts.baseMinute || 0) || 0)),
+  };
 
   if (onlyIfStale && prevSize === size && prevOffset === size) return fsState;
 
@@ -821,7 +1059,7 @@ async function updateRoomUtcFileFromLog(roomId, utcYmd, opts = {}) {
       obj = null;
     }
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
-    applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserIdsSet);
+    applyMessageToRoomState(roomState, obj, allowedKstDaysSet, wantedUserIdsSet, ctx);
     const ts = String(obj?.timestamp || "").trim();
     if (ts) fsState.lastMessageTs = ts;
   });
@@ -863,12 +1101,19 @@ function looksLikeBase64Ciphertext(s) {
   }
 }
 
+function normalizeLooseNameKey(name) {
+  return String(name || "")
+    .normalize("NFKC")
+    .replace(/[\s\u200b\u200c\u200d\ufeff\u2060]+/gu, "");
+}
+
 function isSuspiciousNickname(nickname) {
   const s = String(nickname || "").trim();
   if (!s) return true;
   if (s.length > 80) return true;
   if (s.includes("\uFFFD")) return true; // replacement char
   if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(s)) return true; // control chars
+  if (normalizeLooseNameKey(s) === "어떤분") return true;
   if (/[가-힣]/.test(s)) return false;
   if (/^\d{6,}$/.test(s)) return true;
   if (s.length >= 12 && looksLikeBase64Ciphertext(s)) return true;
@@ -925,6 +1170,7 @@ async function irisDecryptNickname(decryptUserId, enc, b64Ciphertext) {
       body: JSON.stringify({ user_id: userId, enc: encNum, b64_ciphertext: raw }),
       signal: ctrl.signal,
     });
+    if (!res.ok) return null;
     const text = await res.text().catch(() => "");
     let j = {};
     try {
@@ -940,6 +1186,12 @@ async function irisDecryptNickname(decryptUserId, enc, b64Ciphertext) {
         irisDecryptCache.delete(first);
       }
       return plain;
+    }
+
+    irisDecryptCache.set(key, "");
+    while (irisDecryptCache.size > IRIS_DECRYPT_CACHE_MAX) {
+      const first = irisDecryptCache.keys().next().value;
+      irisDecryptCache.delete(first);
     }
     return null;
   } catch {
@@ -965,12 +1217,23 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   const cacheKey = `${rid}:${uid}`;
   if (irisMemberNickCache.has(cacheKey)) {
-    const cached = String(irisMemberNickCache.get(cacheKey) || "").trim();
-    return cached || null;
+    const raw = irisMemberNickCache.get(cacheKey);
+    const now = Date.now();
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const v = String(raw.v || "").trim();
+      const ts = Number(raw.ts || 0) || 0;
+      if (v) return v;
+      if (ts && now - ts < IRIS_MEMBER_NICK_NEGATIVE_TTL_MS) return null;
+      irisMemberNickCache.delete(cacheKey);
+    } else {
+      const cached = String(raw || "").trim();
+      if (cached) return cached;
+      irisMemberNickCache.delete(cacheKey);
+    }
   }
 
   const cacheSet = (v) => {
-    irisMemberNickCache.set(cacheKey, String(v || "").trim());
+    irisMemberNickCache.set(cacheKey, { v: String(v || "").trim(), ts: Date.now() });
     while (irisMemberNickCache.size > IRIS_MEMBER_NICK_CACHE_MAX) {
       const first = irisMemberNickCache.keys().next().value;
       irisMemberNickCache.delete(first);
@@ -980,24 +1243,32 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
   const pickName = async (row) => {
     if (!row || typeof row !== "object") return null;
     const enc = Math.floor(Number(row?.enc ?? 31) || 31);
+    const profileLinkId = String(row?.profile_link_id || "").trim();
+    // NOTE: open_chat_member.nickname 가 토큰/해시 형태일 수 있어, open_profile.nickname(가능하면)을 우선 사용한다.
+    const profileNick = decodeNickname(row?.profile_nickname || row?.profileNickname || "");
+    if (profileNick && !isSuspiciousNickname(profileNick)) return profileNick;
+
     let nickname = decodeNickname(row?.nickname);
 
     const s0 = String(nickname || "").trim();
-    if (s0 && isSuspiciousNickname(s0)) {
+    const needsDecrypt = s0 && (isSuspiciousNickname(s0) || (profileLinkId && !/[가-힣]/.test(s0)));
+    if (needsDecrypt) {
+      const botKey = String((await getIrisBotId()) || "").trim();
       const candidates = [
-        String(row?.profile_link_id || "").trim(),
+        profileLinkId,
         String(row?.user_id || "").trim(),
         uid,
+        botKey,
       ].filter(Boolean);
       const seen = new Set();
       for (const decryptUserId of candidates) {
         if (seen.has(decryptUserId)) continue;
         seen.add(decryptUserId);
-        const plain = await irisDecryptNickname(decryptUserId, enc, s0);
-        if (plain) {
-          nickname = plain;
-          break;
-        }
+        const plain = String((await irisDecryptNickname(decryptUserId, enc, s0)) || "").trim();
+        if (!plain) continue;
+        if (isSuspiciousNickname(plain)) continue;
+        nickname = plain;
+        break;
       }
     }
     const s = String(nickname || "").trim();
@@ -1007,7 +1278,7 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   // 1) involved_chat_id
   let rows = await irisQuerySafe(
-    "select nickname, enc, user_id, profile_link_id from db2.open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
+    "select m.nickname, m.enc, m.user_id, m.profile_link_id, p.nickname as profile_nickname from db2.open_chat_member m left join db2.open_profile p on p.profile_link_id = m.profile_link_id where m.involved_chat_id=? and m.user_id=? order by m.rowid desc limit 1",
     [rid, uid],
     15000,
   );
@@ -1032,7 +1303,7 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   if (linkId) {
     rows = await irisQuerySafe(
-      "select nickname, enc, user_id, profile_link_id from db2.open_chat_member where link_id=? and user_id=? order by rowid desc limit 1",
+      "select m.nickname, m.enc, m.user_id, m.profile_link_id, p.nickname as profile_nickname from db2.open_chat_member m left join db2.open_profile p on p.profile_link_id = m.profile_link_id where m.link_id=? and m.user_id=? order by m.rowid desc limit 1",
       [linkId, uid],
       15000,
     );
@@ -1045,6 +1316,156 @@ async function fetchOpenchatNicknameFromIris(roomId, userId) {
 
   cacheSet("");
   return null;
+}
+
+function cacheIrisMemberNick(roomId, userId, nickname) {
+  const rid = String(roomId || "").trim();
+  const uid = String(userId || "").trim();
+  const name = String(nickname || "").trim();
+  if (!rid || !uid || !name) return;
+  const cacheKey = `${rid}:${uid}`;
+  irisMemberNickCache.set(cacheKey, { v: name, ts: Date.now() });
+  while (irisMemberNickCache.size > IRIS_MEMBER_NICK_CACHE_MAX) {
+    const first = irisMemberNickCache.keys().next().value;
+    irisMemberNickCache.delete(first);
+  }
+}
+
+async function resolveNicknameFromOpenchatMemberRow(row, roomId, userId) {
+  if (!row || typeof row !== "object") return null;
+  const rid = String(roomId || "").trim();
+  const uid = String(userId || "").trim() || String(row?.user_id || "").trim();
+  const enc = Math.floor(Number(row?.enc ?? 31) || 31);
+  const profileLinkId = String(row?.profile_link_id || "").trim();
+  // NOTE: open_chat_member.nickname 가 토큰/해시 형태일 수 있어, open_profile.nickname(가능하면)을 우선 사용한다.
+  const profileNick = decodeNickname(row?.profile_nickname || row?.profileNickname || "");
+  if (profileNick && !isSuspiciousNickname(profileNick)) {
+    if (rid && uid) cacheIrisMemberNick(rid, uid, profileNick);
+    return profileNick;
+  }
+
+  let nickname = decodeNickname(row?.nickname);
+
+  const s0 = String(nickname || "").trim();
+  const needsDecrypt = s0 && (isSuspiciousNickname(s0) || (profileLinkId && !/[가-힣]/.test(s0)));
+  if (needsDecrypt) {
+    const botKey = String((await getIrisBotId()) || "").trim();
+    const candidates = [
+      profileLinkId,
+      String(row?.user_id || "").trim(),
+      uid,
+      botKey,
+    ].filter(Boolean);
+    const seen = new Set();
+    for (const decryptUserId of candidates) {
+      if (seen.has(decryptUserId)) continue;
+      seen.add(decryptUserId);
+      const plain = String((await irisDecryptNickname(decryptUserId, enc, s0)) || "").trim();
+      if (!plain) continue;
+      if (isSuspiciousNickname(plain)) continue;
+      nickname = plain;
+      break;
+    }
+  }
+
+  const s = String(nickname || "").trim();
+  if (!s || isSuspiciousNickname(s)) return null;
+  if (rid && uid) cacheIrisMemberNick(rid, uid, s);
+  return s;
+}
+
+async function queryOpenchatAdminsFromIris(roomId) {
+  const rid = String(roomId || "").trim();
+  if (!rid) return { hostEntries: [], subhostEntries: [] };
+
+  const botId = String((await getIrisBotId()) || "").trim();
+
+  // Prefer link_id query (more stable than involved_chat_id in some cases).
+  let linkId = "";
+  let linkRows = await irisQuerySafe("select link_id from chat_rooms where id=? limit 1", [rid], 12000);
+  linkId = linkRows && linkRows[0] ? String(linkRows[0]?.link_id || "").trim() : "";
+  if (!linkId) {
+    linkRows = await irisQuerySafe(
+      "select link_id from db2.open_chat_member where involved_chat_id=? and link_id is not null limit 1",
+      [rid],
+      12000,
+    );
+    linkId = linkRows && linkRows[0] ? String(linkRows[0]?.link_id || "").trim() : "";
+  }
+
+  // Host SSOT: chat_rooms.link_id -> db2.open_link.user_id(owner)
+  let ownerId = "";
+  if (linkId) {
+    const ownerRows = await irisQuerySafe("select user_id from db2.open_link where id=? limit 1", [Number(linkId)], 12000);
+    ownerId = ownerRows && ownerRows[0] ? String(ownerRows[0]?.user_id || "").trim() : "";
+  }
+
+  const whereKey = linkId ? "m.link_id=?" : "m.involved_chat_id=?";
+  const whereBind = linkId ? [linkId] : [rid];
+  const rows = await irisQuerySafe(
+    `select m.user_id, m.nickname, m.enc, m.profile_link_id, m.link_member_type, p.nickname as profile_nickname from db2.open_chat_member m left join db2.open_profile p on p.profile_link_id = m.profile_link_id where ${whereKey} and m.link_member_type in (8,4,1) order by m.rowid desc`,
+    whereBind,
+    20000,
+  );
+
+  const hostEntries = [];
+  const subhostEntries = [];
+  const subSeen = new Set();
+
+  const rowByUserId = new Map();
+  for (const row of rows) {
+    const uid = String(row?.user_id || "").trim();
+    if (!uid) continue;
+    if (rowByUserId.has(uid)) continue;
+    rowByUserId.set(uid, row);
+  }
+
+  let hostId = ownerId && ownerId !== botId ? ownerId : "";
+  if (!hostId) {
+    for (const row of rows) {
+      const uid = String(row?.user_id || "").trim();
+      if (!uid || uid === botId) continue;
+      const t = Math.floor(Number(row?.link_member_type || 0) || 0);
+      if (t === 8) {
+        hostId = uid;
+        break;
+      }
+    }
+  }
+
+  if (hostId) {
+    const hostRow = rowByUserId.get(hostId) || null;
+    const name = hostRow
+      ? await resolveNicknameFromOpenchatMemberRow(hostRow, rid, hostId)
+      : await fetchOpenchatNicknameFromIris(rid, hostId);
+    hostEntries.push({ userId: hostId, nickname: name || null });
+  }
+
+  for (const row of rows) {
+    const uid = String(row?.user_id || "").trim();
+    if (!uid) continue;
+    if (uid === botId) continue;
+    if (hostId && uid === hostId) continue;
+    const t = Math.floor(Number(row?.link_member_type || 0) || 0);
+    if (t === 4 || t === 1) {
+      if (subSeen.has(uid)) continue;
+      subSeen.add(uid);
+      const name = await resolveNicknameFromOpenchatMemberRow(row, rid, uid);
+      subhostEntries.push({ userId: uid, nickname: name || null });
+      if (subhostEntries.length >= 30) break;
+    }
+  }
+
+  return { hostEntries, subhostEntries };
+}
+
+function clearIrisMemberNickCacheForRoom(roomId) {
+  const rid = String(roomId || "").trim();
+  if (!rid) return;
+  const prefix = `${rid}:`;
+  for (const k of Array.from(irisMemberNickCache.keys())) {
+    if (String(k).startsWith(prefix)) irisMemberNickCache.delete(k);
+  }
 }
 
 function ensureRoomNickMap(roomState) {
@@ -1113,6 +1534,21 @@ async function normalizeOpenchatAdminEntries(roomId, list) {
   return out.slice(0, 30);
 }
 
+async function hydrateAdminEntriesNicknameFromIris(roomId, entries) {
+  const rid = String(roomId || "").trim();
+  if (!rid) return;
+  if (!Array.isArray(entries)) return;
+  for (const e of entries) {
+    if (!e || typeof e !== "object" || Array.isArray(e)) continue;
+    const uid = String(e.userId || "").trim();
+    if (!uid) continue;
+    const raw = String(e.nickname || "").trim();
+    if (raw && !isSuspiciousNickname(raw)) continue;
+    const resolved = await fetchOpenchatNicknameFromIris(rid, uid);
+    if (resolved && !isSuspiciousNickname(resolved)) e.nickname = resolved;
+  }
+}
+
 function resolveAdminDisplayName(roomState, entry) {
   const uid = String(entry?.userId || "").trim();
   const m = ensureRoomNickMap(roomState);
@@ -1139,11 +1575,27 @@ function buildAdminNameList(roomState, entries) {
   return out.filter((x) => x !== "어떤 분" && !/^\d{6,}$/.test(x)).slice(0, 30);
 }
 
+function isBotLikeName(name) {
+  const s = String(name || "").trim();
+  if (!s) return false;
+  const compact = normalizeLooseNameKey(s);
+  const lower = compact.toLowerCase();
+  // NOTE: 운영진 대시보드에서 "오픈채팅봇"이 방장으로 표시되면 혼선이 커서,
+  // 해당 케이스만 보수적으로 필터링한다(일반 닉네임의 "봇/로봇" 오탐 방지).
+  if (compact.includes("오픈채팅봇")) return true;
+  if (lower.includes("openchatbot")) return true;
+  return false;
+}
+
 function buildAdminsHint(raw) {
   const loaded = Number(raw?.loadedMembersCount ?? raw?.loaded_members_count ?? 0) || 0;
   const active = Number(raw?.activeMembersCount ?? raw?.active_members_count ?? 0) || 0;
-  if (!loaded) return "멤버 목록을 아직 불러오지 못했어요. 운영진/닉네임을 확인하려면 ‘운영진 불러오기’를 눌러주세요.";
-  if (active > 0 && loaded < active) return "멤버 목록이 일부만 불러와졌어요. 운영진/닉네임이 비어 보이면 ‘운영진 불러오기’로 보강해요.";
+  if (!loaded) {
+    return "멤버 목록을 아직 불러오지 못했어요. 운영진/닉네임은 신규 방/하루 1회 자동으로 보강돼요. 급하면 ‘운영진 불러오기’로 지금 채워요.";
+  }
+  if (active > 0 && loaded < active) {
+    return "멤버 목록이 일부만 불러와졌어요. 운영진/닉네임은 하루 1회 자동으로 보강돼요. 급하면 ‘운영진 불러오기’로 지금 채워요.";
+  }
   return null;
 }
 
@@ -1160,6 +1612,7 @@ async function fetchLocalOpenchatRooms() {
     .map((x) => ({
       roomId: String(x?.roomId || "").trim(),
       roomName: String(x?.roomName || "").trim(),
+      thumbnailUrl: String(x?.thumbnailUrl || x?.thumbnail_url || "").trim() || null,
       activeMembersCount: x?.activeMembersCount ?? null,
       isOpenChat: Boolean(x?.isOpenChat) || Math.max(0, Number(x?.linkId || 0) || 0) > 0,
     }))
@@ -1191,11 +1644,12 @@ async function fetchLocalOpenchatAdmins(roomId) {
   };
 }
 
-function getRecent7DaysYmds() {
+function getRecentDaysYmds(days) {
+  const n = Math.max(1, Math.floor(Number(days || 0) || 0));
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   const out = [];
-  for (let i = 6; i >= 0; i -= 1) {
+  for (let i = n - 1; i >= 0; i -= 1) {
     out.push(kstYmd(new Date(now - i * dayMs)));
   }
   return out;
@@ -1234,11 +1688,15 @@ async function syncOpenchatOverviewOnce(opts = {}) {
   const forceFullWindow = Boolean(opts.forceFullWindow || opts.forceFullToday);
 
   const fetchedAt = new Date().toISOString();
-  const todayYmd = kstYmd(new Date());
-  const ymds7 = getRecent7DaysYmds(); // oldest -> newest (includes today)
-  const yesterdayYmd = ymds7.length >= 2 ? ymds7[ymds7.length - 2] : null;
-  const utcYmds = buildUtcYmdsForKstDays(ymds7);
-  const keepDaysSet = new Set(ymds7);
+  const nowMs = Date.now();
+  const baseMinute = Math.floor(nowMs / 60000);
+  const nowKst = kstHourMinuteFromMs(nowMs);
+  const todayYmd = kstYmd(new Date(nowMs));
+  const ymds8 = getRecentDaysYmds(8); // oldest -> newest (includes today)
+  const prev7Ymds = ymds8.slice(0, -1); // D-7..D-1
+  const yesterdayYmd = ymds8.length >= 2 ? ymds8[ymds8.length - 2] : null;
+  const utcYmds = buildUtcYmdsForKstDays(ymds8);
+  const keepDaysSet = new Set(ymds8);
   const keepUtcDaysSet = new Set(utcYmds);
 
   const rooms = await fetchLocalOpenchatRooms();
@@ -1249,6 +1707,10 @@ async function syncOpenchatOverviewOnce(opts = {}) {
     openchatOverviewState.meta = {};
   }
   const meta = openchatOverviewState.meta;
+  const schemaVersion = Math.max(0, Number(meta.openchatOverviewSchemaVersion || 0) || 0);
+  const forceSchemaRebuild = schemaVersion !== OPENCHAT_OVERVIEW_SCHEMA_VERSION;
+  if (forceSchemaRebuild) meta.openchatOverviewSchemaVersion = OPENCHAT_OVERVIEW_SCHEMA_VERSION;
+  const forceRebuildAllRooms = forceFullWindow || forceSchemaRebuild;
   let autoLoadStarted = false;
   let nickBackfillStarted = false;
   const openchatIdsSet = new Set(rooms.map((x) => String(x?.roomId || "").trim()).filter(Boolean));
@@ -1292,33 +1754,42 @@ async function syncOpenchatOverviewOnce(opts = {}) {
       roomState.admins = admins;
     }
 
-    const hostEntries = Array.isArray(admins?.host) ? admins.host : [];
-    const subhostEntries = Array.isArray(admins?.subhosts) ? admins.subhosts : [];
+    const { hostEntries, subhostEntries } = await queryOpenchatAdminsFromIris(rid);
+    await Promise.all([
+      hydrateAdminEntriesNicknameFromIris(rid, hostEntries),
+      hydrateAdminEntriesNicknameFromIris(rid, subhostEntries),
+    ]);
     const wantedUserIdsSet = new Set(
       [...hostEntries, ...subhostEntries].map((x) => String(x?.userId || "").trim()).filter(Boolean),
     );
     pruneRoomNickMap(roomState, wantedUserIdsSet);
 
     // logs
-    for (const kstDay of ymds7) ensureKstDayState(roomState, kstDay);     
+    for (const kstDay of ymds8) ensureKstDayState(roomState, kstDay);
+    ensureRoomLast60State(roomState, baseMinute);
+    ensureRoomTalkersToday(roomState, todayYmd);
     const hasUtcFiles =
       roomState.utcFiles && typeof roomState.utcFiles === "object" && !Array.isArray(roomState.utcFiles);
 
     const rebuildWindow = async () => {
-      // KST 기준 7일치만 안전하게 재집계한다(중복 카운트 방지).
-      for (const kstDay of ymds7) resetKstDayState(ensureKstDayState(roomState, kstDay));
+      // KST 기준 8일치만 안전하게 재집계한다(중복 카운트 방지).
+      for (const kstDay of ymds8) resetKstDayState(ensureKstDayState(roomState, kstDay));
       roomState.utcFiles = {};
+      resetRoomLast60State(roomState, baseMinute);
+      roomState.talkers = { day: todayYmd, byKey: Object.create(null) };
       for (const utcDay of utcYmds) {
         await updateRoomUtcFileFromLog(rid, utcDay, {
           forceFull: true,
           onlyIfStale: false,
           allowedKstDaysSet: keepDaysSet,
           wantedUserIdsSet,
+          todayYmd,
+          baseMinute,
         });
       }
     };
 
-    if (forceFullWindow || !hasUtcFiles) {
+    if (forceRebuildAllRooms || !hasUtcFiles) {
       await rebuildWindow();
     } else {
       pruneRoomDays(roomState, keepDaysSet);
@@ -1345,6 +1816,8 @@ async function syncOpenchatOverviewOnce(opts = {}) {
             onlyIfStale: true,
             allowedKstDaysSet: keepDaysSet,
             wantedUserIdsSet,
+            todayYmd,
+            baseMinute,
           });
         }
       }
@@ -1353,11 +1826,24 @@ async function syncOpenchatOverviewOnce(opts = {}) {
     const days = roomState.days || {};
     const todayState = days[todayYmd] || {};
     const yesterdayState = yesterdayYmd ? days[yesterdayYmd] || {} : {};  
-    const totals7 = ymds7.map((d) => Math.max(0, Number(days?.[d]?.total || 0) || 0));
+
+    pruneRoomTalkers(roomState, todayYmd, OPENCHAT_TALKERS_MAP_MAX);
+
+    const totals7 = prev7Ymds.map((d) => Math.max(0, Number(days?.[d]?.total || 0) || 0));
     const sum7 = totals7.reduce((acc, x) => acc + x, 0);
     const avg7 = totals7.length > 0 ? Math.round(sum7 / totals7.length) : 0;
     const sparkTodayHourly = Array.isArray(todayState.hourly) ? todayState.hourly.map((x) => Math.max(0, Number(x) || 0)).slice(0, 24) : [];
     while (sparkTodayHourly.length < 24) sparkTodayHourly.push(0);        
+
+    const last1hTotal = sumRoomLast60(roomState, baseMinute);
+    const avg7dLast1h = avg7dLast60FromHourly(days, prev7Ymds, nowKst.hour, nowKst.minute);
+    const surgeDelta = last1hTotal - avg7dLast1h;
+    const surgePct = avg7dLast1h > 0 ? Math.round((surgeDelta / avg7dLast1h) * 100) : null;
+    const surgeOk =
+      avg7dLast1h >= OPENCHAT_SURGE_MIN_BASELINE &&
+      last1hTotal >= OPENCHAT_SURGE_MIN_LAST1H &&
+      surgeDelta > 0;
+    const topTalkersToday = buildTopTalkersToday(roomState, todayYmd, OPENCHAT_TALKERS_PAYLOAD_LIMIT);
 
     let hostNames = buildAdminNameList(roomState, hostEntries);
     let subhostNames = buildAdminNameList(roomState, subhostEntries);
@@ -1409,6 +1895,7 @@ async function syncOpenchatOverviewOnce(opts = {}) {
               roomState.admins.fetchedAtMs = 0;
               roomState.admins.hint = "운영진 정보를 불러오는 중이에요.";
             }
+            clearIrisMemberNickCacheForRoom(rid);
           }
         }
       }
@@ -1420,11 +1907,22 @@ async function syncOpenchatOverviewOnce(opts = {}) {
     const adminsLoadedMembersCount = Math.max(0, Number(admins?.loadedMembersCount || 0) || 0);
     const adminsActiveMembersCount = admins?.activeMembersCount == null ? null : Math.max(0, Number(admins.activeMembersCount) || 0);
 
+    // NOTE: 방장/부방장 표시는 "권한"이 SSOT다. (표시를 위해 부방장을 방장으로 바꾸지 않는다)
+    hostNames = hostNames.filter((x) => !isBotLikeName(x)).slice(0, 1);
+    subhostNames = subhostNames.filter((x) => !isBotLikeName(x));
+
     payloadRooms.push({
       roomId: rid,
       roomName: String(r.roomName || "").trim() || "오픈채팅방",
+      thumbnailUrl: r.thumbnailUrl || null,
       activeMembersCount: r.activeMembersCount == null ? null : Math.max(0, Number(r.activeMembersCount) || 0),
       lastMessageTs: pickLastMessageTs(days),
+      last1h: { total: Math.max(0, Number(last1hTotal || 0) || 0) },
+      surge: {
+        pct: surgeOk && typeof surgePct === "number" && Number.isFinite(surgePct) ? surgePct : null,
+        delta: Math.max(-999999999, Math.min(999999999, Number(surgeDelta || 0) || 0)),
+        baseline: Math.max(0, Number(avg7dLast1h || 0) || 0),
+      },
       today: {
         total: Math.max(0, Number(todayState.total || 0) || 0),
         text: Math.max(0, Number(todayState.text || 0) || 0),
@@ -1434,7 +1932,8 @@ async function syncOpenchatOverviewOnce(opts = {}) {
       yesterday: { total: Math.max(0, Number(yesterdayState.total || 0) || 0) },
       avg7d: { total: avg7 },
       sparkTodayHourly,
-      spark7dDaily: totals7.slice(0, 7),
+      spark7dDaily: totals7,
+      topTalkersToday,
       hostNames,
       subhostNames,
       hostCount,
@@ -1450,6 +1949,7 @@ async function syncOpenchatOverviewOnce(opts = {}) {
   const uploadPayload = {
     ok: true,
     fetchedAt,
+    range: { todayYmd, prev7Ymds },
     rooms: payloadRooms,
   };
 
@@ -1502,10 +2002,70 @@ async function maybeSyncOpenchatOverview(opts = {}) {
   }
 }
 
+async function maybeAutoLoadOpenchatAdmins() {
+  if (!OPENCHAT_OVERVIEW_ENABLED) return;
+  if (!OPENCHAT_ADMINS_AUTOLOAD_ENABLED) return;
+  const nowMs = Date.now();
+  if (nowMs - lastOpenchatAdminsAutoLoadScanMs < OPENCHAT_ADMINS_AUTOLOAD_SCAN_INTERVAL_MS) return;
+  lastOpenchatAdminsAutoLoadScanMs = nowMs;
+
+  if (!openchatOverviewState) return;
+  if (!openchatOverviewState.meta || typeof openchatOverviewState.meta !== "object" || Array.isArray(openchatOverviewState.meta)) {
+    openchatOverviewState.meta = {};
+  }
+  const meta = openchatOverviewState.meta;
+  const lastGlobalMs = Number(meta.openchatAdminsAutoLoadLastMs || 0) || 0;
+  if (nowMs - lastGlobalMs < OPENCHAT_ADMINS_AUTOLOAD_GLOBAL_COOLDOWN_MS) return;
+
+  const rooms = openchatOverviewState.rooms;
+  if (!rooms || typeof rooms !== "object" || Array.isArray(rooms)) return;
+
+  for (const roomId of Object.keys(rooms)) {
+    const rs = ensureRoomStateContainer(roomId);
+    if (!rs) continue;
+    const lastRoomMs = Number(rs.openchatAdminsAutoLoadLastMs || 0) || 0;
+    if (nowMs - lastRoomMs < OPENCHAT_ADMINS_AUTOLOAD_ROOM_COOLDOWN_MS) continue;
+
+    const admins = rs.admins && typeof rs.admins === "object" && !Array.isArray(rs.admins) ? rs.admins : null;
+    if (!admins) continue;
+    const host = Array.isArray(admins.host) ? admins.host : [];
+    const subhosts = Array.isArray(admins.subhosts) ? admins.subhosts : [];
+    const loaded = Math.max(0, Number(admins.loadedMembersCount || 0) || 0);
+    const activeRaw = admins.activeMembersCount;
+    const active = activeRaw == null ? null : Math.max(0, Number(activeRaw) || 0);
+
+    const hostMissing = host.length === 0 || !String(host[0]?.nickname || "").trim();
+    const subMissing = subhosts.some((x) => !String(x?.nickname || "").trim());
+    const needsMembers = loaded === 0 || (active != null && active > 0 && loaded < active);
+    if (!(needsMembers && (hostMissing || subMissing))) continue;
+
+    // single-flight via cooldown (global + room)
+    meta.openchatAdminsAutoLoadLastMs = nowMs;
+    rs.openchatAdminsAutoLoadLastMs = nowMs;
+
+    const opts = readOpenchatLoadOpts();
+    const refresh = await postJson(
+      `${LOCAL_API_BASE}/rooms/${encodeURIComponent(roomId)}/admins/refresh`,
+      { serial: opts.serial || null, scrolls: opts.scrolls, pauseMs: opts.scrollPauseMs },
+      20000,
+    ).catch(() => null);
+
+    if (refresh && refresh.ok && rs.admins && typeof rs.admins === "object") {
+      rs.admins.fetchedAtMs = 0;
+      rs.admins.hint = "운영진 정보를 불러오는 중이에요.";
+    }
+    if (refresh && refresh.ok) clearIrisMemberNickCacheForRoom(roomId);
+    try {
+      writeOpenchatOverviewState(openchatOverviewState);
+    } catch {}
+    break;
+  }
+}
+
 async function maybeConsumeConsoleRequests() {
   if (!OPENCHAT_OVERVIEW_ENABLED) return;
   const now = Date.now();
-  if (now - lastRequestsPollMs < OPENCHAT_REQUESTS_POLL_INTERVAL_MS) return;
+  if (now - lastRequestsPollMs < OPENCHAT_REQUESTS_POLL_INTERVAL_MS) return;    
   lastRequestsPollMs = now;
 
   const r = await getJson(`${consoleBase}/api/agent/requests`, 15000);
@@ -1566,6 +2126,7 @@ async function maybeConsumeConsoleRequests() {
 
   // 즉시 반영은 보장되지 않는다(단말 스크롤이 끝난 뒤 1~2분 내 자동 반영됨).
   if (refresh && refresh.ok) heartbeat({ openchatAdminsRefresh: { ok: true, requestedAt: ts || null } });
+  if (refresh && refresh.ok) clearIrisMemberNickCacheForRoom(roomId);
 }
 
 async function fetchCoursesFromConsole() {
@@ -2466,19 +3027,24 @@ async function main() {
         }
         } else {
           try {
+            await maybeConsumeConsoleRequests();
+          } catch {}
+          try {
+            await maybeAutoLoadOpenchatAdmins();
+          } catch {}
+          try {
+            await maybeSyncOpenchatOverview();
+          } catch {}
+          try {
             await maybeSyncCoursesFromConsole();
           } catch {}
           try {
             await maybeUploadCourseSnapshots();
           } catch {}
           try {
-            await maybeSyncMainCafe();
-          } catch {}
-          try {
-            await maybeConsumeConsoleRequests();
-          } catch {}
-          try {
-            await maybeSyncOpenchatOverview();
+            // NOTE: 메인 카페 크롤링은 길게 걸릴 수 있어, 오픈채팅 현황/요청 처리를 막지 않도록
+            // 백그라운드로 돌린다(중복 실행은 mainCafeInFlight로 방지).
+            maybeSyncMainCafe().catch(() => {});
           } catch {}
           await sleep(pollSec * 1000);
         }
