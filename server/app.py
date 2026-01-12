@@ -688,6 +688,46 @@ async def rooms(openchat: str = ""):
                 filtered.append(r)
             base = filtered
             ids = [str(r.get("roomId")) for r in base if isinstance(r, dict) and r.get("roomId") is not None]
+
+            # open_link 썸네일(icon_url/image_url) 보강
+            try:
+                link_values = sorted({int(link_ids.get(rid) or 0) for rid in ids if int(link_ids.get(rid) or 0) > 0})
+                thumbs_by_link_id: dict[int, str] = {}
+                if link_values:
+                    chunk_size = 200
+                    for i in range(0, len(link_values), chunk_size):
+                        chunk = link_values[i : i + chunk_size]
+                        placeholders = ",".join(["?"] * len(chunk))
+                        q = f"select id, icon_url, image_url from db2.open_link where id in ({placeholders})"
+                        rows2 = _iris_query(q, chunk)
+                        for row in rows2:
+                            if not isinstance(row, dict):
+                                continue
+                            link_id = _safe_int(row.get("id")) or 0
+                            if link_id <= 0:
+                                continue
+                            icon_url = str(row.get("icon_url") or "").strip()
+                            img_url = str(row.get("image_url") or "").strip()
+                            url = icon_url or img_url
+                            if not url:
+                                continue
+                            if not (url.startswith("http://") or url.startswith("https://")):
+                                continue
+                            thumbs_by_link_id[link_id] = url
+
+                if thumbs_by_link_id:
+                    for r in base:
+                        if not isinstance(r, dict):
+                            continue
+                        rid = str(r.get("roomId") or "").strip()
+                        if not rid:
+                            continue
+                        link_id = int(link_ids.get(rid) or 0)
+                        url = thumbs_by_link_id.get(link_id)
+                        if url:
+                            r["thumbnailUrl"] = url
+            except Exception as e:
+                logger.warning("[rooms] openchat thumbnail fetch failed: %s", str(e))
         else:
             base = []
             ids = []

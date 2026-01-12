@@ -312,3 +312,4 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8650/send/iris/reply_text -
 | 에이전트 재기동 | `powershell -ExecutionPolicy Bypass -File windows/start_courseops_agent.ps1 -Restart` | 전역 `node` 종료 금지 |
 | watchdog로 자동 복구 확인 | `powershell -ExecutionPolicy Bypass -File windows/watchdog.ps1` | Task Scheduler 실행이 기본(권장) |
 | 상태 파일 확인 | `type node-iris-app\\data\\courseops_agent_status.json` | heartbeat/progress/마지막 실행 기록 |
+| 오픈채팅 운영진 스모크(카운트만) | `python scripts/courseops_openchat_smoke.py` | roomId/userId 출력 없이 커버리지/미확인 비율만 표시 |

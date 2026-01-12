@@ -691,10 +691,17 @@ export async function coursesStore() {
         updatedAt: rows[0].updated_at ? rows[0].updated_at.toISOString() : null,
       };
     },
-    async listAgentRequestsByPrefix(prefix: string, limit = 50): Promise<AgentRequestRow[]> {
-      const p = String(prefix || "").trim();
+    async listAgentRequestsByPrefix(
+      input: string | { prefix: string; limit?: number },
+      limitFallback = 50,
+    ): Promise<AgentRequestRow[]> {
+      const p =
+        typeof input === "string" ? String(input || "").trim() : String(input?.prefix || "").trim();
       if (!p) return [];
-      const max = Math.max(1, Math.min(200, Number(limit || 50)));
+      const max =
+        typeof input === "string"
+          ? Math.max(1, Math.min(200, Number(limitFallback || 50)))
+          : Math.max(1, Math.min(200, Number(input.limit ?? 50) || 50));
       const like = `${p}%`;
       const rows = await sql<
         { key: string; requested_at: Date; requested_by: string | null; updated_at: Date | null }[]

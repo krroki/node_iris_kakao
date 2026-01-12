@@ -117,3 +117,9 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0043 | Welcome 오픈프로필 닫기 안내 + 5분 기본닉 리마인더 | Superseded (→0045) | 기록용(운영 정책 변경으로 대체) |
 | 0044 | 강의 운영 UI를 `/course` 탭으로 통합 | Accepted | RoomCard 강의 운영 입력 제거 + 코스 단위 관리 |
 | 0045 | Welcome 오픈프로필 닫기 안내(첫 이미지 트리거) + 리마인더 제거 | Accepted | 오픈프로필 안내를 첫 이미지 업로드에서만 트리거 + 리마인더 전부 제거 |
+| 0046 | 강의 운영 v2 — 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) | Accepted | ACTIONS 중심 운영 UI |
+| 0047 | CourseOps 메인 카페 홈 지표(글로벌 스냅샷) | Accepted | 메인 카페 요약 지표 업로드/조회 |
+| 0048 | Watchdog Talk-API(talkapi-loco) ensure + heartbeat | Deprecated (→0050) | 실발송 기반 상태 갱신(금지) |
+| 0049 | Talk-API 전송을 Frida/LOCO 기반 로컬로 대체 | Deprecated (→0050) | 계정 리스크로 금지 |
+| 0050 | talkapi-loco(LOCO) 금지 + HTTP TalkApi로 복귀 | Accepted | 계정 영구정지 리스크 대응 |
+| 0051 | CourseOps 오픈채팅 현황 SSOT 정렬(방장/닉네임/썸네일) | Accepted | 운영진/대화 흐름 모니터링 안정화 |
