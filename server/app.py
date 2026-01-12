@@ -876,7 +876,7 @@ def _fetch_room_admins_from_iris(room_id: str) -> dict:
     if not rid:
         raise HTTPException(status_code=400, detail="roomId required")
 
-    # open_chat_member가 비어있을 수 있으므로, 호스트는 open_link로도 보강한다.
+    # Host SSOT는 open_link(owner)이며, open_chat_member는 보조(부방장/닉네임 힌트)로 사용한다.
     # 1) loadedMembersCount / activeMembersCount
     link_id = _resolve_room_link_id(rid)
     if link_id is not None:
@@ -912,42 +912,77 @@ def _fetch_room_admins_from_iris(room_id: str) -> dict:
             timeout_sec=8.0,
         )
 
-    seen: set[str] = set()
-    host: list[dict] = []
+    # Host SSOT: chat_rooms.link_id -> db2.open_link.user_id(owner)
+    owner_uid: str | None = None
+    try:
+        owner_rows = _iris_query_strict(
+            "select ol.user_id as user_id from chat_rooms cr join db2.open_link ol on cr.link_id=ol.id where cr.id=? limit 1",
+            [rid],
+            timeout_sec=6.0,
+        )
+        if owner_rows and isinstance(owner_rows[0], dict):
+            v = str(owner_rows[0].get("user_id") or "").strip()
+            owner_uid = v or None
+    except Exception as e:
+        logger.warning("[rooms/admins] owner lookup failed: %s", str(e))
+
+    host_uid: str | None = owner_uid
+    host_nick: str | None = None
+
     subhosts: list[dict] = []
-    admins: list[dict] = []
+    seen_sub: set[str] = set()
 
     for row in rows:
         if not isinstance(row, dict):
             continue
         uid = str(row.get("user_id") or "").strip()
-        if not uid or uid in seen:
+        if not uid:
             continue
-        seen.add(uid)
         nick = str(row.get("nickname") or "").strip() or None
         t = _safe_int(row.get("link_member_type"))
-        if t == 8:
-            host.append({"userId": uid, "nickname": nick})
-            admins.append({"userId": uid, "nickname": nick})
-        elif t in (4, 1):
-            subhosts.append({"userId": uid, "nickname": nick})
-            admins.append({"userId": uid, "nickname": nick})
 
-    if not host:
-        try:
-            owner_rows = _iris_query_strict(
-                "select ol.user_id as user_id from chat_rooms cr join db2.open_link ol on cr.link_id=ol.id where cr.id=? limit 1",
-                [rid],
-                timeout_sec=6.0,
-            )
-            if owner_rows and isinstance(owner_rows[0], dict):
-                ouid = str(owner_rows[0].get("user_id") or "").strip()
-                if ouid:
-                    host.append({"userId": ouid, "nickname": None})
-                    if ouid not in {a.get("userId") for a in admins}:
-                        admins.append({"userId": ouid, "nickname": None})
-        except Exception as e:
-            logger.warning("[rooms/admins] owner fallback failed: %s", str(e))
+        if host_uid and uid == host_uid:
+            if not host_nick and nick:
+                host_nick = nick
+            continue
+
+        if t in (4, 1):
+            if uid in seen_sub:
+                continue
+            seen_sub.add(uid)
+            subhosts.append({"userId": uid, "nickname": nick})
+
+    # Fallback host: first link_member_type=8
+    if not host_uid:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            uid = str(row.get("user_id") or "").strip()
+            if not uid:
+                continue
+            t = _safe_int(row.get("link_member_type"))
+            if t == 8:
+                host_uid = uid
+                host_nick = str(row.get("nickname") or "").strip() or None
+                break
+
+    host: list[dict] = []
+    admins: list[dict] = []
+    seen_admin: set[str] = set()
+
+    if host_uid:
+        host = [{"userId": host_uid, "nickname": host_nick}]
+        admins.append({"userId": host_uid, "nickname": host_nick})
+        seen_admin.add(host_uid)
+
+    for e in subhosts:
+        uid = str(e.get("userId") or "").strip()
+        if not uid:
+            continue
+        if uid in seen_admin:
+            continue
+        seen_admin.add(uid)
+        admins.append(e)
 
     hint = None
     if loaded_cnt == 0:

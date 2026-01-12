@@ -1378,48 +1378,81 @@ async function queryOpenchatAdminsFromIris(roomId) {
   const rid = String(roomId || "").trim();
   if (!rid) return { hostEntries: [], subhostEntries: [] };
 
+  const botId = String((await getIrisBotId()) || "").trim();
+
+  // Prefer link_id query (more stable than involved_chat_id in some cases).
+  let linkId = "";
+  let linkRows = await irisQuerySafe("select link_id from chat_rooms where id=? limit 1", [rid], 12000);
+  linkId = linkRows && linkRows[0] ? String(linkRows[0]?.link_id || "").trim() : "";
+  if (!linkId) {
+    linkRows = await irisQuerySafe(
+      "select link_id from db2.open_chat_member where involved_chat_id=? and link_id is not null limit 1",
+      [rid],
+      12000,
+    );
+    linkId = linkRows && linkRows[0] ? String(linkRows[0]?.link_id || "").trim() : "";
+  }
+
+  // Host SSOT: chat_rooms.link_id -> db2.open_link.user_id(owner)
+  let ownerId = "";
+  if (linkId) {
+    const ownerRows = await irisQuerySafe("select user_id from db2.open_link where id=? limit 1", [Number(linkId)], 12000);
+    ownerId = ownerRows && ownerRows[0] ? String(ownerRows[0]?.user_id || "").trim() : "";
+  }
+
+  const whereKey = linkId ? "m.link_id=?" : "m.involved_chat_id=?";
+  const whereBind = linkId ? [linkId] : [rid];
   const rows = await irisQuerySafe(
-    "select m.user_id, m.nickname, m.enc, m.profile_link_id, m.link_member_type, p.nickname as profile_nickname from db2.open_chat_member m left join db2.open_profile p on p.profile_link_id = m.profile_link_id where m.involved_chat_id=? and m.link_member_type in (8,4,1) order by m.rowid desc",
-    [rid],
+    `select m.user_id, m.nickname, m.enc, m.profile_link_id, m.link_member_type, p.nickname as profile_nickname from db2.open_chat_member m left join db2.open_profile p on p.profile_link_id = m.profile_link_id where ${whereKey} and m.link_member_type in (8,4,1) order by m.rowid desc`,
+    whereBind,
     20000,
   );
 
   const hostEntries = [];
   const subhostEntries = [];
-  const hostSeen = new Set();
   const subSeen = new Set();
+
+  const rowByUserId = new Map();
+  for (const row of rows) {
+    const uid = String(row?.user_id || "").trim();
+    if (!uid) continue;
+    if (rowByUserId.has(uid)) continue;
+    rowByUserId.set(uid, row);
+  }
+
+  let hostId = ownerId && ownerId !== botId ? ownerId : "";
+  if (!hostId) {
+    for (const row of rows) {
+      const uid = String(row?.user_id || "").trim();
+      if (!uid || uid === botId) continue;
+      const t = Math.floor(Number(row?.link_member_type || 0) || 0);
+      if (t === 8) {
+        hostId = uid;
+        break;
+      }
+    }
+  }
+
+  if (hostId) {
+    const hostRow = rowByUserId.get(hostId) || null;
+    const name = hostRow
+      ? await resolveNicknameFromOpenchatMemberRow(hostRow, rid, hostId)
+      : await fetchOpenchatNicknameFromIris(rid, hostId);
+    hostEntries.push({ userId: hostId, nickname: name || null });
+  }
 
   for (const row of rows) {
     const uid = String(row?.user_id || "").trim();
     if (!uid) continue;
-    const t = Math.floor(Number(row?.link_member_type || 0) || 0);        
-    if (t === 8) {
-      if (hostEntries.length >= 1) continue;
-      if (hostSeen.has(uid)) continue;
-      hostSeen.add(uid);
-      const name = await resolveNicknameFromOpenchatMemberRow(row, rid, uid);
-      hostEntries.push({ userId: uid, nickname: name || null });
-      continue;
-    }
+    if (uid === botId) continue;
+    if (hostId && uid === hostId) continue;
+    const t = Math.floor(Number(row?.link_member_type || 0) || 0);
     if (t === 4 || t === 1) {
       if (subSeen.has(uid)) continue;
       subSeen.add(uid);
       const name = await resolveNicknameFromOpenchatMemberRow(row, rid, uid);
-      subhostEntries.push({ userId: uid, nickname: name || null });       
+      subhostEntries.push({ userId: uid, nickname: name || null });
       if (subhostEntries.length >= 30) break;
-    }
-  }
-
-  if (hostEntries.length === 0) {
-    const linkRows = await irisQuerySafe("select link_id from chat_rooms where id=? limit 1", [rid], 12000);
-    const linkId = linkRows && linkRows[0] ? String(linkRows[0]?.link_id || "").trim() : "";
-    if (linkId) {
-      const ownerRows = await irisQuerySafe("select user_id from open_link where id=? limit 1", [Number(linkId)], 12000);
-      const ownerId = ownerRows && ownerRows[0] ? String(ownerRows[0]?.user_id || "").trim() : "";
-      if (ownerId) {
-        const name = await fetchOpenchatNicknameFromIris(rid, ownerId);
-        hostEntries.push({ userId: ownerId, nickname: name || null });
-      }
     }
   }
 

@@ -48,8 +48,8 @@
 1. 방 목록
    - 오픈채팅만: `/rooms?openchat=1`
 2. 방장(Host)
-   - 기본 SSOT: `open_chat_member.link_member_type=8`의 최신 host 1명(항상 1명)
-   - fallback: host(8)를 못 구할 때 `chat_rooms.link_id ↔ db2.open_link.user_id(owner)`
+   - 기본 SSOT: `chat_rooms.link_id ↔ db2.open_link.user_id(owner)` (항상 1명)
+   - fallback: owner를 못 구할 때 `open_chat_member.link_member_type=8` 중 bot_id(=IRIS `/config`)를 제외한 최신 1명
 3. 닉네임
    - `open_chat_member.nickname`가 base64-like 토큰이면 IRIS `/decrypt`로 복호화한다.
    - 후보별 복호화 결과가 “의심스러운 문자열”이면 채택하지 않고 다음 후보를 시도한다.
