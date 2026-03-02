@@ -1943,7 +1943,9 @@ def _http_post_json(url: str, data: dict, headers: dict, timeout: float) -> tupl
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     if 'Content-Type' not in req.headers:
-        req.add_header('Content-Type', 'application/json')
+        # Some IRIS builds mis-decode JSON bodies when charset is omitted.
+        # Be explicit to keep Hangul/emoji intact end-to-end.
+        req.add_header('Content-Type', 'application/json; charset=utf-8')
     try:
         with _urlreq.urlopen(req, data=body, timeout=timeout) as resp:
             status = resp.getcode()
@@ -2674,6 +2676,24 @@ async def iris_reply_text(request: Request):
     text = str((body or {}).get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text required")
+
+    # 운영/디버깅 메시지가 실서비스(핀트) 방으로 잘못 발신되는 것을 방지한다.
+    # - 실제 브리핑/콘텐츠 발신은 /send/pint/briefing_bundle(guarded target) 경로를 사용한다.
+    # - 직접 roomId를 받는 이 엔드포인트는 테스트/운영 진단용으로만 사용해야 한다.
+    try:
+        pint_cfg = cfg.get("pintBriefing")
+        pint_rid = str(pint_cfg.get("roomId") or "").strip() if isinstance(pint_cfg, dict) else ""
+    except Exception:
+        pint_rid = ""
+    if pint_rid and rid == pint_rid:
+        t = text.strip()
+        tl = t.lower()
+        looks_like_ops = (
+            ("발신" in t or "전송" in t)
+            and ("점검" in t or "테스트" in t or "fallback" in tl)
+        )
+        if looks_like_ops:
+            raise HTTPException(status_code=400, detail="OPS_TEXT_BLOCKED_FOR_PINT_ROOM")
 
     payload = {
         "type": "text",

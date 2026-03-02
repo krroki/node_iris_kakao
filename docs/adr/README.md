@@ -118,6 +118,8 @@ const IRIS_HOST = process.env.VM_IP || '172.19.x.x';
 | 0044 | 강의 운영 UI를 `/course` 탭으로 통합 | Accepted | RoomCard 강의 운영 입력 제거 + 코스 단위 관리 |
 | 0045 | Welcome 오픈프로필 닫기 안내(첫 이미지 트리거) + 리마인더 제거 | Accepted | 오픈프로필 안내를 첫 이미지 업로드에서만 트리거 + 리마인더 전부 제거 |
 | 0046 | 강의 운영 v2 — 외부 동시접속 CourseOps 웹 콘솔(go.yoorang.kr) | Accepted | ACTIONS 중심 운영 UI |
+| 0054 | Pint Briefing Studio 실전 발신(묶음) 가드 및 운영 경로 | Accepted | 4.pint SSOT + 12.kakao 전송 파이프라인 + UTF-8 invariant |
+| 0055 | Pint Briefing Studio 봇 토큰 동기화(개행/CRLF 혼입 방지) | Accepted | 403(권한 없음) 재발 방지 운영 규칙 |
 | 0047 | CourseOps 메인 카페 홈 지표(글로벌 스냅샷) | Accepted | 메인 카페 요약 지표 업로드/조회 |
 | 0048 | Watchdog Talk-API(talkapi-loco) ensure + heartbeat | Deprecated (→0050) | 실발송 기반 상태 갱신(금지) |
 | 0049 | Talk-API 전송을 Frida/LOCO 기반 로컬로 대체 | Deprecated (→0050) | 계정 리스크로 금지 |
