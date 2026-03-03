@@ -1,0 +1,323 @@
+From d10c22b454786ad343e519491d006e2c38094bd8 Mon Sep 17 00:00:00 2001
+From: jeong yeong rok <glemfkcl@gmail.com>
+Date: Tue, 4 Nov 2025 19:29:24 +0900
+Subject: [PATCH 5/9] feat(ui): SSE status badge and fallback indicators;
+ auto-provision fastapi/uvicorn in serve_ui.sh and run uvicorn in venv; docs:
+ realtime quickstart and ops updated
+
+---
+ docs/ARCHITECTURE.md                    |  7 ++--
+ docs/REFAC_PLAN.md                      | 10 ++---
+ docs/ops/realtime_api.md                | 52 +++++++++++++++++++++++++
+ docs/reference/verification-commands.md |  3 ++
+ docs/runbook_windows_portproxy.md       |  5 ++-
+ docs/sessions/refactor-fastapi-sse.md   | 30 ++++++++++++++
+ docs/setup/realtime_quickstart.md       | 41 +++++++++++++++++++
+ scripts/serve_ui.sh                     | 23 ++++++++++-
+ windows/setup_iris_port.ps1             |  7 +++-
+ 9 files changed, 167 insertions(+), 11 deletions(-)
+ create mode 100644 docs/ops/realtime_api.md
+ create mode 100644 docs/sessions/refactor-fastapi-sse.md
+ create mode 100644 docs/setup/realtime_quickstart.md
+
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 30e9bb87..09ddd24e 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -32,7 +32,8 @@
+   - Server: FastAPI provides
+     - `/logs/stream` (SSE) for incremental updates (tailer + dedup, since/offset support)
+     - `/logs` (HTTP) for snapshots and troubleshooting
+-  - Frontend: Next.js/React subscribes once per page (single EventSource/WebSocket)
++    - `/health` for liveness checks
++  - Frontend: Streamlit(현행) → Next.js(목표) 구독. 현행도 `EventSource`로 1회 연결 (실패 시 `/logs/bulk`로 폴백)
+   - Windows/WSL bridge kept minimal; local-only access preferred; avoid cross-subsystem hops when possible
+ 
+ - Benefits
+@@ -43,7 +44,7 @@
+ ## Migration Notes
+ 
+ - Keep `scripts/log_api.py` as reference for parsing/tailing/filtering semantics
+-- New server lives under `server/` (FastAPI) and exposes SSE and HTTP endpoints
++- New server lives under `server/` (FastAPI) and exposes SSE and HTTP endpoints (default port 8600)
+ - New UI lives under `web/` (Next.js); Streamlit acts only as fallback until parity
+ - Windows `setup_iris_port.ps1` remains for `5050/8510` until ADB/portproxy can be simplified or removed
+-
++  - Updated to also proxy `8600` (Realtime API)
+diff --git a/docs/REFAC_PLAN.md b/docs/REFAC_PLAN.md
+index 7c53c75f..eb6c9826 100644
+--- a/docs/REFAC_PLAN.md
++++ b/docs/REFAC_PLAN.md
+@@ -16,10 +16,10 @@ Branch: `refactor/fastapi-sse` (base: a8867ee)
+ 
+ ### Phase 1 — Server (FastAPI)
+ - Directory: `server/`
+-- Endpoints:
+-  - `GET /health` — for basic checks
+-  - `GET /logs` — snapshot (params: rooms, limit, include/exclude, all, allLimit)
+-  - `GET /logs/stream` — SSE; sends incremental events with roomId, ts, text, sender, roomName
++- Endpoints (implemented):
++  - `GET /health` — basic checks
++  - `GET /logs` — snapshot (params: roomId, limit, include/exclude)
++  - `GET /logs/stream` — SSE; sends snapshot + incremental events with roomId, ts, text, sender, roomName
+ - Internals:
+   - Tailer watches `node-iris-app/data/logs/**.log`
+   - Dedup by `messageId` or (sender,text,time-window), reuse logic from `scripts/log_api.py`
+@@ -35,6 +35,7 @@ Branch: `refactor/fastapi-sse` (base: a8867ee)
+   - Initial snapshot via `GET /logs`
+   - Live updates via `EventSource(/logs/stream)`; reconcile into UI state
+   - Time format: `ko-KR`, `Asia/Seoul`
++  - Streamlit 현행도 `register_log_realtime`로 SSE 적용(폴백 포함)
+ 
+ ### Phase 3 — Cutover & Cleanup
+ - Feature parity checklist (see below)
+@@ -60,4 +61,3 @@ Branch: `refactor/fastapi-sse` (base: a8867ee)
+ ## Notes
+ - Consider WebSocket as an alternative once SSE parity is stable
+ - Tauri/Electron packaging can reuse the same FastAPI server as a local backend later
+-
+diff --git a/docs/ops/realtime_api.md b/docs/ops/realtime_api.md
+new file mode 100644
+index 00000000..d1e02985
+--- /dev/null
++++ b/docs/ops/realtime_api.md
+@@ -0,0 +1,52 @@
++﻿# Realtime API (FastAPI + SSE)
++
++## Overview
++- Purpose: Replace 1s polling with a single server‑push connection per client.
++- Server: FastAPI (`server/app.py`) exposes
++  - `GET /health` → `{ ok: true, rooms: <count> }`
++  - `GET /logs` → snapshot list (compatible with legacy semantics)
++  - `GET /logs/stream` → text/event-stream (SSE) with snapshot + incremental appends
++- Source of truth for log parsing/dedup/filter: `server/log_utils.py`
++
++## Endpoints
++- `GET /logs`
++  - Query: `roomId`, `limit` (default 80, max 500), `include`, `exclude`
++  - Response: `[{ts,roomId,roomName,sender,text,mid}, ...]`
++- `GET /logs/stream`
++  - Query:
++    - `rooms`: comma‑separated roomIds (optional)
++    - `all`: `1|true` to include global feed
++    - `limit`: max items per feed (default 80, max 500)
++    - `include`, `exclude`: space‑separated keywords (lowercase match)
++    - `since`: ms epoch (optional; if omitted, starts from now)
++    - `interval`: server scan interval in ms (default 1000)
++  - Event payloads (SSE):
++    - `{"type":"snapshot","rooms":{rid:[...]},"all":[...]}`
++    - `{"type":"append","rooms":{rid:[...]},"all":[...]}`
++  - Heartbeat: sends `: keep-alive` comments periodically when no data
++
++## Configuration
++- Env vars:
++  - `REALTIME_API_HOST` (default `0.0.0.0`), `REALTIME_API_PORT` (default `8600`)
++  - `IRIS_LOGS_DIR` (default `node-iris-app/data/logs`)
++- Windows portproxy: `windows/setup_iris_port.ps1` configures `127.0.0.1:8600 → <WSL_IP>:8600`
++
++## Run (dev)
++- Pure server
++  - `python3 -m venv server/.venv_api`
++  - `server/.venv_api/bin/pip install fastapi uvicorn`
++  - `IRIS_LOGS_DIR=./node-iris-app/data/logs server/.venv_api/bin/uvicorn server.app:app --host 0.0.0.0 --port 8600`
++- With UI
++  - `PORT=8512 ./scripts/serve_ui.sh`
++  - UI 스크립트가 UI용 venv를 만들고 fastapi/uvicorn을 자동 설치한 뒤 8600에서 SSE 서버를 자동 기동합니다.
++
++## UI Integration
++- `dashboard/ui_node_iris.py`
++  - Uses `register_log_realtime(...)` to open `EventSource(/logs/stream)`
++  - On failure, falls back to legacy `GET /logs/bulk` polling
++  - Time zone: `ko-KR`, `Asia/Seoul`
++
++## Verification
++- `curl http://localhost:8600/health`
++- Browser devtools → Network → `logs/stream` → EventStream frames
++- DOM updates for many rooms occur once per tick without page reruns
+diff --git a/docs/reference/verification-commands.md b/docs/reference/verification-commands.md
+index 40f23f11..54582549 100644
+--- a/docs/reference/verification-commands.md
++++ b/docs/reference/verification-commands.md
+@@ -64,6 +64,9 @@ Redroid(Hyper‑V) 환경 변수 예시(`config/env.example`)
+ | 대시보드 실행 | `streamlit run dashboard/ui_node_iris.py` | `http://localhost:8501` |
+ | 로그 API 연동 실행 | `scripts/serve_ui.sh` | Streamlit + 로그 API 동시 실행 |
+ | 수동 로그 API 실행 | `python scripts/log_api.py` | 로그 엔드포인트만 기동 |
++| Realtime API(FastAPI) 실행 | `scripts/serve_api_fastapi.sh` | SSE `/logs/stream` 기동(uvicorn 필요) |
++| Realtime API 상태 확인 | `curl http://localhost:8600/health` | `{ ok: true }` 응답 |
++| SSE 수신 확인 | 브라우저 devtools Network에서 `logs/stream` 프레임 확인 | 실패 시 자동 폴백(/logs/bulk) |
+ 
+ 대시보드 UI는 SAFE_MODE에서 메시지 발송 차단 여부와 로그 깜빡임(1초 주기)을 확인해야 한다.
+ 
+diff --git a/docs/runbook_windows_portproxy.md b/docs/runbook_windows_portproxy.md
+index d2df9c47..ae925a5b 100644
+--- a/docs/runbook_windows_portproxy.md
++++ b/docs/runbook_windows_portproxy.md
+@@ -21,11 +21,14 @@ cd C:\dev\12.kakao\windows
+ 
+ - Windows: `Invoke-WebRequest http://127.0.0.1:3000/config` → HTTP 200 이어야 함
+ - WSL: `curl -m 2 http://<wsl-host-ip>:3000/config` → HTTP 200 (wsl-host-ip는 `ip route | grep default` 의 gateway)
++- Log API: `Invoke-WebRequest http://127.0.0.1:8510/logs?limit=1`
++- Realtime API: `Invoke-WebRequest http://127.0.0.1:8600/health`
+ 
+ 4) 봇/대시보드 실행
+ 
+ - WSL 봇: `./scripts/start_bot_wsl.sh`
+-- UI: `./scripts/serve_ui.sh` 후 브라우저에서 `http://localhost:8501`
++- UI: `./scripts/serve_ui.sh` 후 브라우저에서 `http://localhost:8512`
++- (선택) Realtime API 단독: `scripts/serve_api_fastapi.sh` (uvicorn 필요)
+ 
+ 문제 해결
+ 
+diff --git a/docs/sessions/refactor-fastapi-sse.md b/docs/sessions/refactor-fastapi-sse.md
+new file mode 100644
+index 00000000..e9cdfe65
+--- /dev/null
++++ b/docs/sessions/refactor-fastapi-sse.md
+@@ -0,0 +1,30 @@
++﻿# Session: refactor/fastapi-sse (2025-11-04)
++
++## Goal
++- Replace per-room polling with single SSE connection per client
++- Keep legacy bulk endpoint as fallback
++- Add template image attachments in UI
++
++## Changes
++- Server
++  - `server/app.py`: FastAPI app with `/health`, `/logs`, `/logs/stream`
++  - `server/log_utils.py`: log tail/parse/filter/dedup helpers
++  - `scripts/serve_api_fastapi.sh`: uvicorn launcher
++- UI
++  - `dashboard/ui_node_iris.py`: add `register_log_realtime(...)` (SSE + polling fallback)
++  - Replace Rooms/Logs usage to realtime function
++  - Template editor: image attachments (assets folder per template, preview)
++- Windows
++  - `windows/setup_iris_port.ps1`: add portproxy 8600 (Realtime API) in addition to 8510
++
++## How to use
++1) Windows(Admin): `windows/setup_iris_port.ps1` → sets 5050/8510/8600
++2) WSL: `IRIS_LOCAL_PORT=5050 ./scripts/start_bot_wsl.sh`
++3) WSL: `PORT=8512 ./scripts/serve_ui.sh` (auto starts uvicorn if available)
++4) Browser: `http://localhost:8512` → realtime updates; fallback if SSE unavailable
++
++## Next
++- Auto‑install uvicorn in UI script (optional)
++- Status badges for SSE connection/fallback in UI
++- E2E test: append log lines → verify DOM updates in 10s
++
+diff --git a/docs/setup/realtime_quickstart.md b/docs/setup/realtime_quickstart.md
+new file mode 100644
+index 00000000..fcd9d1cb
+--- /dev/null
++++ b/docs/setup/realtime_quickstart.md
+@@ -0,0 +1,41 @@
++﻿# Realtime Quickstart (WSL + Windows)
++
++## TL;DR
++1) Windows(관리자 PowerShell)
++```
++powershell -ExecutionPolicy bypass -file "\\wsl$\ubuntu\home\glemfkcl\dev\12.kakao\windows\setup_iris_port.ps1"
++```
++→ 5050(IRIS), 8510(Log API), 8600(Realtime API) 포트프록시/방화벽 설정
++
++2) WSL(Ubuntu)
++```
++IRIS_LOCAL_PORT=5050 ./scripts/start_bot_wsl.sh
++PORT=8512 ./scripts/serve_ui.sh
++```
++
++3) 브라우저: http://localhost:8512
++→ 실시간(SSE) 연결. 실패 시 자동으로 폴링(/logs/bulk)로 폴백.
++
++참고: `serve_ui.sh`는 UI용 가상환경(`dashboard/.venv_ui`)을 자동 생성하고, 필요 패키지(streamlit, pandas, plotly, fastapi, uvicorn)를 자동 설치합니다. uvicorn이 없는 경우에도 자동 설치 후 8600 Realtime API를 기동합니다.
++
++## 세부
++### A. FastAPI 서버만 수동 실행
++```
++python3 -m venv server/.venv_api
++server/.venv_api/bin/pip install fastapi uvicorn
++IRIS_LOGS_DIR=./node-iris-app/data/logs \
++  server/.venv_api/bin/uvicorn server.app:app --host 0.0.0.0 --port 8600
++```
++- 확인: `curl http://127.0.0.1:8600/health`
++- SSE: 브라우저에서 `http://127.0.0.1:8600/logs/stream?all=1&limit=20`
++
++### B. UI와 함께 자동 실행
++```
++PORT=8512 ./scripts/serve_ui.sh
++```
++- uvicorn이 설치되어 있으면 8600 Realtime API가 자동 기동됩니다.
++- UI는 SSE 우선, 실패 시 폴링으로 폴백합니다.
++
++### C. 트러블슈팅
++- Windows 포트프록시 재설정: `windows/setup_iris_port.ps1` 재실행 후 `Invoke-WebRequest http://localhost:8510/logs` 및 `http://localhost:8600/health` 확인
++- 로그 디렉터리 변경: `IRIS_LOGS_DIR` 환경변수로 지정
+diff --git a/scripts/serve_ui.sh b/scripts/serve_ui.sh
+index 5909fea4..366550e1 100755
+--- a/scripts/serve_ui.sh
++++ b/scripts/serve_ui.sh
+@@ -17,11 +17,27 @@ pkill -f "scripts/log_api.py" >/dev/null 2>&1 || true
+ nohup env LOG_API_VERBOSE=0 LOG_API_HOST=0.0.0.0 LOG_API_PORT=8510 \
+   python3 "$ROOT_DIR/scripts/log_api.py" >> "$LOG_DIR/log_api.log" 2>&1 &
+ 
++# (Re)start FastAPI realtime server (8600) if uvicorn available (temporary; will ensure below)
++if command -v uvicorn >/dev/null 2>&1; then
++  pkill -f "uvicorn .*server\.app:app" >/dev/null 2>&1 || true
++  nohup env REALTIME_API_HOST=0.0.0.0 REALTIME_API_PORT=8600 IRIS_LOGS_DIR="$ROOT_DIR/node-iris-app/data/logs" \
++    uvicorn server.app:app --host 0.0.0.0 --port 8600 >> "$LOG_DIR/realtime_api.log" 2>&1 &
++fi
++
+ if [[ ! -x "$PY" ]]; then
+   echo "[ui] venv not found; creating..." | tee -a "$LOG_FILE"
+   python3 -m venv "$VENV"
+   "$PY" -m pip install --upgrade pip wheel setuptools
+-  "$PY" -m pip install streamlit pandas plotly
++  "$PY" -m pip install streamlit pandas plotly fastapi uvicorn
++else
++  # Ensure packages are present
++  "$PY" - << 'PY'
++try:
++    import streamlit, pandas, plotly, fastapi, uvicorn  # noqa: F401
++except Exception:
++    import sys, subprocess
++    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'streamlit', 'pandas', 'plotly', 'fastapi', 'uvicorn'])
++PY
+ fi
+ 
+ # Ensure no stale Streamlit instance on the selected port
+@@ -62,3 +78,8 @@ nohup env NODE_IRIS_APP_DIR="$NODE_IRIS_APP_DIR" \
+   >> "$LOG_FILE" 2>&1 &
+ disown || true
+ echo "[ui] started. tail -f $LOG_FILE" | tee -a "$LOG_FILE"
++
++# Now (re)start Realtime API within this venv to ensure availability
++pkill -f "uvicorn .*server\.app:app" >/dev/null 2>&1 || true
++nohup env REALTIME_API_HOST=0.0.0.0 REALTIME_API_PORT=8600 IRIS_LOGS_DIR="$ROOT_DIR/node-iris-app/data/logs" \
++  "$VENV/bin/uvicorn" server.app:app --host 0.0.0.0 --port 8600 >> "$LOG_DIR/realtime_api.log" 2>&1 &
+diff --git a/windows/setup_iris_port.ps1 b/windows/setup_iris_port.ps1
+index d6104064..7c102f96 100644
+--- a/windows/setup_iris_port.ps1
++++ b/windows/setup_iris_port.ps1
+@@ -144,7 +144,7 @@ foreach ($listen in $listenAddresses) {
+   netsh interface portproxy add v4tov4 listenport=$LocalPort listenaddress=$listen connectport=$LocalPort connectaddress=127.0.0.1 protocol=tcp | Out-Null
+ }
+ 
+-# Also proxy Log API (8510) from Windows to WSL instance so the dashboard JS can hit localhost:8510 reliably
++# Also proxy Log API (8510) and Realtime API (8600) from Windows to WSL instance so the dashboard JS can hit localhost reliably
+ try {
+   # Get first WSL IP without using awk '$1' (which confuses PowerShell variable expander)
+   $wslIpOut = & wsl.exe -e bash -lc "hostname -I | sed -e 's/ .*//'" 2>$null
+@@ -155,6 +155,11 @@ try {
+     netsh interface portproxy add v4tov4 listenport=8510 listenaddress=127.0.0.1 connectport=8510 connectaddress=$wslIp protocol=tcp | Out-Null
+     netsh advfirewall firewall delete rule name="IRIS_LOG_8510" 2>$null | Out-Null
+     netsh advfirewall firewall add rule name="IRIS_LOG_8510" dir=in action=allow protocol=TCP localport=8510 profile=any | Out-Null
++    Write-Host ("[3c/4] Configuring Realtime API proxy 127.0.0.1:8600 -> {0}:8600" -f $wslIp) -ForegroundColor Green
++    netsh interface portproxy delete v4tov4 listenport=8600 listenaddress=127.0.0.1 2>$null | Out-Null
++    netsh interface portproxy add v4tov4 listenport=8600 listenaddress=127.0.0.1 connectport=8600 connectaddress=$wslIp protocol=tcp | Out-Null
++    netsh advfirewall firewall delete rule name="IRIS_REALTIME_8600" 2>$null | Out-Null
++    netsh advfirewall firewall add rule name="IRIS_REALTIME_8600" dir=in action=allow protocol=TCP localport=8600 profile=any | Out-Null
+   } else {
+     Write-Warning "WSL IP detection failed; skipping Log API proxy (8510)."
+   }
+-- 
+2.52.0.windows.1
+

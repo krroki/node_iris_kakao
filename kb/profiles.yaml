@@ -1,0 +1,57 @@
+# KB 프로필 설정 (ADR-0006)
+# 대상 카페: dinohighclass (cafe_id: 30819883)
+# 참조: config/menus_dinohighclass.json
+# 각 프로필은 독립적인 테이블(kb_{profile}_post, kb_{profile}_manual)에 저장됨
+
+profiles:
+  main:
+    description: "통합 KB - 전체 수집 대상 게시판"
+    cafe_id: 30819883  # dinohighclass
+    # config/menus_dinohighclass.json에서 collect=true인 게시판 전체
+    menu_ids: [23, 32, 42, 33, 206, 48, 136, 51, 62, 245]
+    # 23: 무료 특강 신청, 32: 무료 특강 후기, 42: 정규 강의 신청
+    # 33: 자유 게시판, 206: 개인 수익 인증, 48: 주차별 하이라이트
+    # 136: 디하클 회원 꿀팁, 51: 카페 운영자 꿀팁
+    # 62: 디하클 성장일기, 245: 수강생 인터뷰
+
+  free:
+    description: "무료 특강 KB"
+    cafe_id: 30819883
+    # 무료 특강 신청(23), 무료 특강 후기(32)
+    menu_ids: [23, 32]
+
+  paid:
+    description: "정규 강의 KB"
+    cafe_id: 30819883
+    # 정규 강의 신청(42)
+    menu_ids: [42]
+
+  lectures:
+    description: "강의 통합 KB - 무료특강 + 정규강의"
+    cafe_id: 30819883
+    # 무료 특강 신청(23), 무료 특강 후기(32), 정규 강의 신청(42)
+    menu_ids: [23, 32, 42]
+
+  tips:
+    description: "꿀팁 KB"
+    cafe_id: 30819883
+    # 주차별 하이라이트(48), 디하클 회원 꿀팁(136), 카페 운영자 꿀팁(51)
+    menu_ids: [48, 136, 51]
+
+  community:
+    description: "커뮤니티 KB"
+    cafe_id: 30819883
+    # 자유 게시판(33), 개인 수익 인증(206), 디하클 성장일기(62), 수강생 인터뷰(245)
+    menu_ids: [33, 206, 62, 245]
+
+# 백필 설정
+backfill:
+  max_days: 30        # 최대 백필 기간 (일)
+  max_pages: 5        # 최대 백필 페이지 수 (스케줄러용, 가볍게)
+  chunk_size: 100     # 한 번에 처리할 글 수
+  check_on_startup: true  # 서비스 시작 시 자동 체크
+
+# 테이블 네이밍 규칙:
+# - 게시글: kb_{profile}_post (예: kb_main_post, kb_free_post, kb_paid_post)
+# - 매뉴얼: kb_{profile}_manual (예: kb_main_manual, kb_free_manual, kb_paid_manual)
+# - 임베딩: embeddings 단일 테이블, obj_type으로 구분 (예: 'main_post', 'free_manual')

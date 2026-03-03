@@ -9,6 +9,7 @@ import CustomDeleteMemberController from "./controllers/CustomDeleteMemberContro
 import CustomErrorController from "./controllers/CustomErrorController";
 import CustomFeedController from "./controllers/CustomFeedController";
 import CustomMessageController from "./controllers/CustomMessageController";
+import CustomMessageControllerBang from "./controllers/CustomMessageControllerBang";
 import CustomNewMemberController from "./controllers/CustomNewMemberController";
 import CustomUnknownController from "./controllers/CustomUnknownController";
 
@@ -20,6 +21,7 @@ const controllers = [
   CustomNewMemberController,
   CustomDeleteMemberController,
   CustomMessageController,
+  CustomMessageControllerBang,
   CustomFeedController,
   CustomUnknownController,
   CustomErrorController,
@@ -32,6 +34,13 @@ class App {
   private logger: Logger;
 
   constructor() {
+    // NOTE: 로그 저장은 기본적으로 항상 켠다.
+    // SAVE_CHAT_LOGS 가 설정되지 않은 경우 true 로 간주하고,
+    // 명시적으로 "false" 로 설정했을 때만 비활성화한다.
+    const saveChatLogsEnv = process.env.SAVE_CHAT_LOGS;
+    const saveChatLogs =
+      saveChatLogsEnv === undefined ? true : saveChatLogsEnv === "true";
+
     const isMock = process.env.MOCK_IRIS === "true";
     const irisUrl =
       process.env.IRIS_URL || (isMock ? "127.0.0.1:3000" : undefined);
@@ -40,7 +49,7 @@ class App {
     }
     this.logger = new Logger("Bootstrap");
     this.bot = new Bot(appName, irisUrl, {
-      saveChatLogs: process.env.SAVE_CHAT_LOGS === "true",
+      saveChatLogs,
       autoRegisterControllers: false, // Disable auto-registration
       logLevel: (process.env.LOG_LEVEL as LogLevel) || "debug",
       // httpMode: true, //If you want to use webhook mode, uncomment these lines
@@ -48,18 +57,9 @@ class App {
       // webhookPath: "/webhook/message",
     });
 
-    // Register controllers manually (SAFE_MODE일 때 명령어 컨트롤러 비등록)
-    const safeMode = (process.env.SAFE_MODE || "").toLowerCase() === "true";
-    const toRegister = safeMode
-      ? controllers.filter(
-          (c) =>
-            c !== (CustomMessageController as any) &&
-            c !== (CustomNewMemberController as any) &&
-            c !== (CustomBatchController as any) &&
-            c !== (CustomBootstrapController as any)
-        )
-      : controllers;
-    this.bot.registerControllers(toRegister);
+    // Register controllers manually.
+    // SAFE_MODE 여부는 각 컨트롤러 내부의 guard(isSafeMode)에서 처리한다.
+    this.bot.registerControllers(controllers);
   }
 
   public async start(): Promise<void> {

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+if [ -z "$branch" ]; then
+  echo "[GIT-GUARD] ERROR: detached HEAD 상태에서는 push를 차단합니다." >&2
+  exit 1
+fi
+
+if [ "$branch" != "main" ]; then
+  echo "[GIT-GUARD] ERROR: 이 워킹트리에서는 main이 아닌 브랜치 push를 차단합니다." >&2
+  echo "[GIT-GUARD]        현재 브랜치: $branch" >&2
+  exit 1
+fi
+
+exit 0
+

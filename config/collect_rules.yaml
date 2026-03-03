@@ -1,0 +1,17 @@
+boards:
+  # 카페 수집 대상 게시판
+  include: [1, 23, 31, 32, 33, 42, 47, 48, 51, 62, 136, 192, 206, 245]
+
+title:
+  allow: []
+
+body:
+  deny: []
+min_length: 0
+
+link:
+  whitelist: []
+
+image:
+  require_ocr_for: []
+

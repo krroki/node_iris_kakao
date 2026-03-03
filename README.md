@@ -1,22 +1,28 @@
-# 14.kakao
+# 12.kakao
 
-LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 안전모드)의 코드/문서 저장소입니다. UI 대시보드, 실시간 로그(1초), 포트프록시/ADB 설정 스크립트를 포함합니다.
+> ⚠️ **중요 안내**  
+> 이 README는 초기 **WSL + Streamlit 대시보드** 구성을 기준으로 작성된 레거시 문서입니다.  
+> 현재 공식 운영 스택은 **Windows 전용(ADR-0010)** + FastAPI(`/logs/stream`) + Next.js 대시보드(`web/`)이며,  
+> 최신 구조와 실행 방법은 `agents.md`, `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/ops/realtime_api.md`,
+> `docs/runbook_windows_portproxy.md`를 우선 참고해야 합니다.
+
+LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE)의 코드/문서 저장소입니다.  
+UI 대시보드, 실시간 로그(1초), 포트프록시/ADB 설정 스크립트를 포함합니다.
 
 - 작업 전 `agents.md`의 지침을 먼저 확인하세요.
-- 실행/운영 관련 빠른 가이드는 아래 Quick Start를 따르세요.
+- 실행/운영 관련 빠른 가이드는 **Windows 전용 런북** 문서를 따르되, 아래 Quick Start는 레거시 WSL 기준 예시로만 활용하세요.
 
 **중요: 기본은 SAFE_MODE=true로 “메시지 발송 차단” 상태입니다. 수신/로그만 동작합니다.**
 
 **Quick Start**
 - Windows(관리자 PowerShell)
-  - IRIS HTTP 프록시/포트 열기: `windows/setup_iris_port.ps1 -LocalPort 5050`
-  - 정상 확인: `Probe http://127.0.0.1:5050/config -> HTTP 200` 출력
+  - 포트프록시 + ADB 자동 설정: `C:\Users\Public\quickstart_windows_5050.ps1`
+  - 기본값: `Device=172.28.135.200:5555`, `LocalPort=5050`, `RemotePort=3000`
 - WSL(Ubuntu)
-  - 봇 시작(WSL에서 실행): `scripts/start_bot_wsl.sh`
+  - 통합 실행: `./scripts/quickstart_wsl.sh`
+    - 내부에서 `IRIS_LOCAL_PORT=5050 ./scripts/start_bot_wsl.sh`, `./scripts/serve_ui.sh` 호출
     - `.env` 자동 생성: `IRIS_URL=<Windows_IP>:5050`, `SAFE_MODE=true`
-    - 봇 로그: `logs/bot_wsl.log`
-  - 대시보드(UI): `scripts/serve_ui.sh` → 브라우저에서 `http://localhost:8501`
-    - 실시간 로그 API 자동 기동: `127.0.0.1:8510/logs`
+    - 로그: `logs/bot_wsl.log`, UI 로그 `logs/ui_node_iris.log`
 
 **검증 체크리스트**
 - UI 상단 상태: IRIS Connection = “Connected”
@@ -31,12 +37,14 @@ LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 안전모드)의 코
   - 런타임 기능 토글: `node-iris-app/config/runtime.json`
   - 수신 로그: `node-iris-app/data/logs/<roomId>/*.log`
 - 실행 스크립트(WSL):
-  - 봇 시작: `scripts/start_bot_wsl.sh`
-  - UI 시작: `scripts/serve_ui.sh`
+  - 통합 시작: `scripts/quickstart_wsl.sh`
+  - 봇만 시작: `scripts/start_bot_wsl.sh`
+  - UI만 시작: `scripts/serve_ui.sh`
   - 로그 API 단독(선택): `python3 scripts/log_api.py`
 - 실행 스크립트(Windows/Admin PowerShell):
-  - 포트프록시/ADB: `windows/setup_iris_port.ps1 -LocalPort 5050`
+  - 통합 포트 설정: `C:\Users\Public\quickstart_windows_5050.ps1`
   - 상태 점검: `windows/probe_iris.ps1`
+- Redroid + Hyper-V IRIS 재기동: `docs/runbook_redroid_iris.md`
 
 **트러블슈팅**
 - UI 연결 끊김(Disconnected)

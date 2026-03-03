@@ -1,0 +1,175 @@
+# ADR-0045: Welcome 오픈프로필 닫기 안내(첫 이미지 트리거) + 리마인더 제거
+
+## Meta
+
+- **Date**: 2025-12-19
+- **Status**: Accepted
+- **Authors**: PM, Codex CLI
+- **Supersedes**: ADR-0043
+- **Related**: ADR-0022(Welcome 템플릿 세트/기본닉 분기), ADR-0026(Welcome 후속 Reply), ADR-0034(Talk-API 실패 폴백)
+- **Related Session**: `docs/sessions/main.md`
+
+---
+
+## Context (배경)
+
+- 운영 요구가 변경되었다.
+  - Welcome에서 “리마인더(5분 기본닉/미업로드 경고 등)”는 전부 제거한다.
+  - “오픈프로필(오픈채팅 열린 프로필) 닫기” 안내는 **입장 직후가 아니라**, **첫 이미지 업로드(15분 내)** 시점에만 트리거한다.
+  - 오픈프로필 “증명/검증 강화(추가 스텝)”는 후순위로 미룬다. (일단 닫기 안내/확인만)
+- 입장 직후 발신이 겹치면(환영 + 가이드 + 이미지) 대형 방에서 오발신/스팸/깨진 메시지 리스크가 커진다.
+
+---
+
+## Options Considered (고려한 대안)
+
+### Option A: 입장 직후 오픈프로필 안내 유지
+- 장점: 안내가 빠르다.
+- 단점: 입장 이벤트 품질/중복/재연결 영향이 크고, 환영 메시지와 섞여 스팸/오발신 리스크가 커진다.
+
+### Option B: 오픈프로필 안내 자체를 제거
+- 장점: 운영 리스크가 최소화된다.
+- 단점: 운영자의 수동 안내 비용이 그대로 남는다.
+
+### Option C: **첫 이미지 업로드에서만 오픈프로필 안내** (선택)
+- 장점: “실제 참여 행동(이미지 업로드)”이 있는 신규 인원에만 개입하여 스팸/오발신을 줄인다.
+- 단점: 이미지 업로드가 없는 신규 인원에게는 안내가 트리거되지 않는다.
+
+---
+
+## Decision (결정)
+
+**우리는 Option C를 선택했다.**
+
+### 최종 플로우
+
+1) **입장(Welcome)**
+- 텍스트 Welcome + **하트스샷 업로드 방법 가이드 이미지(1장)** 를 발신한다.
+- 오픈프로필(프로필 닫기) 안내는 **입장 직후에는 발신하지 않는다**. (첫 이미지 트리거에서만)
+
+2) **첫 이미지 업로드(Welcome 후속, 15분 내)**
+- 신규 입장자 기준으로 15분 내 “첫 이미지 업로드”가 감지되면 프로필 상태를 IRIS DB로 조회한다.
+- 오픈프로필(닫기 안내 대상)인 경우:
+  - 감사 Reply를 보내지 않는다.
+  - 멘션 텍스트 + 가이드 이미지(1장)를 발신한다.
+  - 이후 닫힘을 폴링으로 감지하면 **즉시 1회** 확인 멘션을 발신한다.
+- 오픈프로필이 아닌 경우:
+  - 비기본닉: 기존 정책대로 “감사합니다 …” Reply를 1회 발신한다.
+  - 기본닉: `welcome.followUp.nicknameChangeAfterImage.enabled=true`면 “감사합니다 …” Reply 대신,
+    “닉네임 변경 요청” Reply(type=26)를 발신하고 요청 시점부터 15분(`confirmWindowMs`) 내 닉변이 확인되면
+    **Reply가 아닌 일반 멘션**으로 `confirmText`를 1회 발신한다.
+    - 닉변 확인은 “요청 발신 이후”의 `feedType=2`(프로필 변경)만 인정한다(요청 이전 캐시 오판 방지).
+
+3) **리마인더 제거**
+- 기본닉 5분 리마인더 제거
+- 15분 미업로드 경고(타임아웃 멘션) 제거
+
+### 오픈프로필 판별(SSOT)
+
+- 판별 기준: IRIS DB `db2.open_chat_member`
+  - `profile_type == 16` → 오픈프로필(오픈채팅 프로필)
+  - **운영 기준**: `profile_link_id != "0"` 이면 “오픈채팅방 열려있음(닫기 안내 대상)”로 본다.
+  - 런타임 설정에서 `match`로 반전 가능하지만, 기본 운영값은 `profileLinkIdNonZero`를 사용한다.
+
+### Invariants (불변식)
+
+1. **SAFE_MODE=true이면 발신 0건** (SSOT는 `runtime.json.safeMode`)
+2. **불확실한 상태에서 폴백 발신 금지**
+   - IRIS 조회 실패/판별 불가 시 안내/확인 발신을 스킵한다.
+3. **오픈프로필 안내는 “첫 이미지 업로드”에서만**
+   - 입장 이벤트만으로는 오픈프로필 안내/이미지 발신이 발생하지 않는다.
+4. **봇(Iris) 자신의 입장 이벤트는 스킵**
+   - 봇이 방에 재입장/재연결되어도 Welcome/후속 Reply가 “자기 자신”에게 발신되는 문제를 방지한다.
+5. **멘션 1회 메시지 최대 15명**
+
+---
+
+## Implementation (구현)
+
+- 코드:
+  - `node-iris-app/src/workers/welcome_worker.ts`
+    - 첫 이미지 업로드 핸들러에서 오픈프로필 체크/가이드 발신
+    - 닫힘 감지 폴링 + 1회 확인 멘션 발신
+    - `senderName=Iris`인 join 이벤트는 무시(봇 self-welcome 방지)
+- 런타임 설정(SSOT):
+  - `node-iris-app/config/runtime.json`
+    - `welcome.openProfileCloseGuide`:
+      - `enabled`, `match`, `text`, `confirmText`, `confirmTextKakaoDefaultNickname`
+        - 닫힘 확인 멘트(`confirmText`) 발신 시점에 **현재 닉네임이 “카카오 기본 닉네임”이면** `confirmTextKakaoDefaultNickname`를 우선 사용한다.
+      - 판별(SSOT): IRIS DB `db2.open_chat_member`
+        - `profile_type == 16` → 오픈프로필(오픈채팅 프로필)
+        - `profile_link_id != 0` → “오픈채팅방 열려있음”(닫기 안내 대상)
+        - 운영값: `match=profileLinkIdNonZero`
+      - `confirmWindowMs`, `confirmCheckIntervalMs`
+      - `images` (1장)
+    - `welcome.followUp`:
+      - `enabled`, `windowMs`, `replies` (오픈프로필이 아닌 경우에만 사용)
+      - `nicknameChangeAfterImage` (기본 OFF):
+        - `enabled`, `requestText`, `confirmText`, `confirmWindowMs`, `confirmCheckIntervalMs`
+        - `confirmWindowMs`는 “닉변 요청 발신 시점부터”의 대기 시간이다.
+- 가이드 이미지(1장):
+  - `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
+  - (오픈프로필 관련 이미지는 위 1장만 유지한다)
+- 하트스샷 가이드 이미지(1장):
+  - `node-iris-app/config/templates/welcome/assets/common/KakaoTalk_20251213_123012048.png`
+- 상태/진단:
+  - `node-iris-app/data/welcome_worker_state.json` (pending confirmations 포함)
+  - `node-iris-app/data/welcome_worker_status.json`
+
+### 운영 보강 (2025-12-21)
+
+- 닫힘 확인 시 닉네임 SSOT: `feedType=2`(프로필 변경) 이벤트의 `member.nickName`을 우선 반영
+  - IRIS `db2.open_chat_member.nickname`가 base64-like 토큰으로 저장되는 케이스가 있어 기본닉 판별/멘션 타겟 매칭이 깨질 수 있음
+- 레이스 보완: `feedType=2` 이벤트가 pending 생성보다 먼저 들어오는 케이스 대비 `roomId:userId` 최근 닉네임 캐시(20분 TTL) 도입
+- 오픈프로필 안내 dedup 키: `roomId:userId` → `roomId:userId:joinedAt` (동일 유저 재입장 시 안내 스킵 방지)
+- 안내/확인 템플릿에 멘션 placeholder가 없으면 `@{entrance} 님`을 자동 prefix해 멘션 누락을 방지
+
+### 운영 보강 (2025-12-22)
+
+- 오픈프로필이 아닌 기본닉: 첫 이미지 Reply에서 닉변 요청을 우선 발신하고, 닉변 완료 시 일반 멘션으로 마무리한다.
+- 레이스 보완: 닉변 확인은 “닉변 요청 발신 이후”의 `feedType=2`만 인정한다(요청 이전 캐시로 오판 방지).
+- Reply(type=26)에서도 “진짜 멘션”이 필요하면 `/send/talkapi/dispatch_raw`의 `mentionees`를 사용한다(attachment.mentions 병합).
+
+### 운영 보강 (2025-12-23)
+
+- 오픈프로필 닫힘 “확인 멘트” 오발송 방지:
+  - 카카오 UI에서 “나갔습니다”처럼 보이는 일부 시스템 이벤트가 `feedType=2`(프로필 변경)로 들어오는 케이스가 있어,
+    퇴장자에게 “프로필 변경 확인” 멘트가 잘못 나가는 문제가 있었다.
+  - 따라서 닫힘 확인 멘트는 **닉네임이 실제로 변경된 경우**에만 발신한다.
+    - 닉네임이 바뀌지 않았으면 pending을 종료하고 **확인 멘트는 스킵**한다.
+  - 파일: `node-iris-app/src/workers/welcome_worker.ts`
+
+### 운영 보강 (2025-12-26)
+
+- 오픈프로필 닫기 안내 가이드 이미지 교체(파일명 유지, 내용 교체):
+  - 파일(SSOT): `node-iris-app/config/templates/welcome/assets/profile_close_guide/KakaoTalk_20251226_open_profile_close_guide.png`
+  - 기대값: bytes=425477, sha256=`E240DB9B6F4B0E27EBB59A2B1FF3A612DA1809CCE6ABA25D56FE26BE640500D2`
+- 원인: 운영 워킹트리에서 해당 PNG가 구버전으로 남아 서버가 구버전 자산을 서빙했고, welcome-worker가 이를 그대로 전송함.
+- 재발 방지: 가이드 이미지 교체 시 (1) bytes/sha 확인 (2) welcome-worker 재기동 (3) git 커밋으로 HEAD 고정.
+- 재발 방지(정리): 미사용 레거시 가이드 이미지 폴더(`node-iris-app/config/templates/welcome/assets/{1,2,a}`)의 PNG를 삭제해 운영 워킹트리에 구버전 자산이 남아 재전송되는 케이스를 차단.
+
+### 운영 보강 (2025-12-27)
+
+- 닫힘 확인/닉변 확인 멘트 중복 발신 방지:
+  - `feedType=2` 이벤트로 “즉시 확인(빠른 폴링)”을 수행하면서, 동시에 주기 tick이 돌면 같은 확인 멘트가 2회 나갈 수 있다.
+  - 해결: confirmation processor에 **in-flight + rerun 요청 가드**를 추가해 동시 실행을 직렬화한다.
+- 이미지 미발신 감지/알림:
+  - Welcome 템플릿 이미지/오픈프로필 안내 이미지 발신 결과를 `welcome_worker_status.json`에 별도 기록한다.
+    - `lastWelcomeImage*`
+    - `lastOpenProfileCloseGuideImage*`
+  - 이미지 발신이 실패하면 **테스트용 오픈채팅방에만**(1시간 dedup) 운영 알림을 남긴다. (멘션/Reply 없이 IRIS 텍스트로만)
+  - 파일: `node-iris-app/src/workers/welcome_worker.ts`
+
+---
+
+## Consequences (결과)
+
+### 긍정적 효과
+
+- 입장 직후 스팸/오발신/깨진 메시지 리스크가 크게 줄어든다.
+- 오픈프로필 안내가 “참여 행동(첫 이미지 업로드)”과 결합되어 운영 체감이 자연스럽다.
+
+### 부정적 효과 / 리스크
+
+- 신규 입장자가 이미지를 올리지 않으면 오픈프로필 안내가 트리거되지 않는다.
+- IRIS `open_chat_member` 갱신이 지연/누락되면 안내/확인이 스킵될 수 있다(불확실 상태 폴백 금지 원칙).

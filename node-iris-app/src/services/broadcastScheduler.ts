@@ -102,6 +102,16 @@ export class BroadcastSchedulerService {
       if (this.isNotFoundError(error)) {
         this.queue = [];
         await this.persist();
+      } else if ((error as NodeJS.ErrnoException).code === "EMFILE") {
+        // 파일 핸들 고갈 시 새 큐로 초기화하고 loaded 플래그를 세워 반복 오류를 막는다.
+        this.queue = [];
+        await this.persist();
+        console.warn(`[broadcastScheduler] EMFILE on ${this.filePath}, queue reset to empty`);
+      } else if (error instanceof SyntaxError) {
+        // 파일이 비어있거나 깨진 JSON이면 큐를 비우고 복구한다.
+        this.queue = [];
+        await this.persist();
+        console.warn(`[broadcastScheduler] invalid JSON on ${this.filePath}, queue reset to empty`);
       } else {
         throw error;
       }

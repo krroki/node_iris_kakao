@@ -1,0 +1,393 @@
+From 4488d15e0b812b8c5efa3330d56bc7af6cc3c396 Mon Sep 17 00:00:00 2001
+From: jeong yeong rok <glemfkcl@gmail.com>
+Date: Tue, 4 Nov 2025 19:03:28 +0900
+Subject: [PATCH 2/9] docs: replace LDPlayer references with Redroid(Hyper-V)
+ or mark as deprecated; update agents/claude, README, env example,
+ verification refs, ADR/journals; fix scripts comments/notes
+
+---
+ README.md                                     |  2 +-
+ agents.md                                     | 27 ++++++++++++++-----
+ docs/adr/0001-adopt-iris-ldplayer.md          |  7 ++---
+ docs/immediate_action_plan.md                 |  4 +--
+ docs/journal/2025-10-27-phase0.md             |  4 +--
+ docs/journal/2025-10-28-bot-integration.md    |  6 ++---
+ .../2025-10-28-install-verification.md        | 14 +++++-----
+ docs/journal/2025-10-28-playwright-refresh.md |  2 +-
+ .../journal/2025-10-28-progress-continuity.md |  6 ++---
+ docs/reference/project-structure.md           |  4 +--
+ docs/reference/verification-commands.md       |  6 ++++-
+ scripts/install_iris.py                       |  4 +--
+ scripts/manage_instances.ps1                  |  7 ++---
+ scripts/run_iris.sh                           |  2 +-
+ 14 files changed, 57 insertions(+), 38 deletions(-)
+ mode change 100755 => 100644 docs/adr/0001-adopt-iris-ldplayer.md
+ mode change 100755 => 100644 docs/journal/2025-10-28-install-verification.md
+ mode change 100755 => 100644 scripts/manage_instances.ps1
+
+diff --git a/README.md b/README.md
+index be72ad86..c76da7b7 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # 14.kakao
+ 
+-LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 안전모드)의 코드/문서 저장소입니다. UI 대시보드, 실시간 로그(1초), 포트프록시/ADB 설정 스크립트를 포함합니다.
++Redroid(Hyper‑V) + IRIS 기반 카카오톡 자동화(수신 전용 안전모드) 코드/문서 저장소입니다. UI 대시보드, 실시간 로그(1초), 포트프록시/ADB 설정 스크립트를 포함합니다.
+ 
+ - 작업 전 `agents.md`의 지침을 먼저 확인하세요.
+ - 실행/운영 관련 빠른 가이드는 아래 Quick Start를 따르세요.
+diff --git a/agents.md b/agents.md
+index 966f387f..fdb338b0 100644
+--- a/agents.md
++++ b/agents.md
+@@ -1,21 +1,23 @@
+ # 12.kakao Agents Handbook
+ 
+ **언어 정책**: 모든 커뮤니케이션과 로그는 한국어로 작성한다.  
+-**프로젝트 요약**: LDPlayer + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE) 운영. Python 봇, TypeScript IRIS 어댑터, Streamlit 대시보드, 운영 스크립트로 구성된다.  
+-**주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), Streamlit, Playwright, PowerShell.
++**프로젝트 요약**: Redroid(Hyper‑V) + IRIS 기반 카카오톡 자동화(수신 전용 SAFE_MODE) 운영. Python 봇, TypeScript IRIS 어댑터, Streamlit 대시보드(전환 예정), 운영 스크립트로 구성된다.  
++**주요 스택**: Python 3.10+, Node.js (TypeScript, Vitest), Streamlit → FastAPI(+SSE)/Next.js 전환, Playwright, PowerShell.
+ 
+ 핵심 문서 링크
+ - `docs/workflow/solo-dev-epic-pr.md` – 브랜치·PR 운영 표준 (Epic Draft PR 프로세스)
+ - `docs/ssot.md`, `docs/prd.md`, `docs/roadmap.md` – 제품/기술 결정의 단일 출처
+ - `docs/reference/project-structure.md` – 저장소 구조 및 책임 구분
+ - `docs/reference/verification-commands.md` – 테스트/스모크/운영 명령어 요약
++- `docs/ARCHITECTURE.md` – 현재→목표 구조 개요 (A안: FastAPI+SSE)
++- `docs/REFAC_PLAN.md` – 리팩토링 실행 계획 및 검증 체크리스트
+ 
+ ---
+ 
+ ## 1. 세션 부팅 시퀀스
+ 1. **현재 위치/브랜치 확인**: `pwd`, `git status -sb`로 작업 디렉터리와 브랜치를 점검.  
+ 2. **워크플로 재확인**: `docs/workflow/solo-dev-epic-pr.md`를 빠르게 훑고 Epic Draft PR 규칙을 상기한다.  
+-3. **컨텍스트 로딩**: `docs/ssot.md`, `docs/prd.md`, `docs/roadmap.md`, 최신 ADR(`docs/adr/*`)을 확인하여 진행 중인 결정과 범위를 머릿속에 로드한다.  
++3. **컨텍스트 로딩**: `docs/ARCHITECTURE.md`, `docs/REFAC_PLAN.md`, `docs/ssot.md`, `docs/prd.md`, `docs/roadmap.md`, 최신 ADR(`docs/adr/*`)을 확인하여 진행 중인 결정과 범위를 로드한다.  
+ 4. **구조 파악**: `docs/reference/project-structure.md`로 현재 디렉터리 책임을 재확인, 필요한 영역의 README/CLAUDE 문서를 찾아본다.  
+ 5. **세션 로그 업데이트**: `docs/sessions/<branch>.md`에 세션 Goal/다음 행동을 기록하고, 완료 시에도 동일 파일을 갱신한다.  
+ 6. **명령어 체크**: 예정된 작업에 맞춰 `docs/reference/verification-commands.md`에서 필요한 테스트/스모크 명령을 미리 확인한다.
+@@ -23,22 +25,26 @@
+ ---
+ 
+ ## 2. 저장소 맵 & 책임
+-- **Python 봇 코어**: `src/`, `tests/`, `scripts/` – LDPlayer/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
++- **Python 봇 코어**: `src/`, `tests/`, `scripts/` – Redroid(Hyper‑V)/IRIS 이벤트 수신, 메시지 저장/조회, 운영 테스트 스크립트.  
+ - **Node IRIS 어댑터**: `node-iris-app/` – TypeScript로 작성된 IRIS 연동 계층, `npm test`/`npm run build` 필수.  
+-- **Streamlit 대시보드**: `dashboard/`, `scripts/log_api.py` – 실시간 로그 UI와 API.  
++- **대시보드/로그 API(현행)**: `dashboard/`, `scripts/log_api.py` – 실시간 로그 UI와 API(폴링 기반, 점진 폐지).  
++- **전환 대상(신규)**: `server/`(FastAPI + SSE), `web/`(Next.js/React) – 실시간 스트림 기반 UI/서버.  
+ - **IRIS 지원 리소스**: `iris_server/`, `infra/iris/`, `windows/` – IRIS DB, PowerShell 포트프록시, 운영 도구.  
+ - **문서 체계**: `docs/` – SSOT/PRD/로드맵, 세션 로그, 설정 가이드, 레퍼런스(본 핸드북 포함).  
+-구조 변경 시 `docs/reference/project-structure.md`를 우선 업데이트한 뒤, 본 문서와 관련 워크플로 문서의 링크를 동기화한다.
++구조 변경 시 `docs/reference/project-structure.md`와 `docs/ARCHITECTURE.md`를 먼저 업데이트한 뒤, 본 문서와 워크플로 문서의 링크를 동기화한다.
+ 
+ ---
+ 
+ ## 3. 브랜치 & PR 운영 원칙
+ - `main`은 직접 푸시 금지. 모든 작업은 `feat/*`, `fix/*`, `chore/*` 브랜치에서 시작한다.
++- 리팩토링/Epic은 `refactor/*` 네이밍을 사용한다. (예: `refactor/fastapi-sse`)
+ - 브랜치를 생성한 즉시 Draft PR을 열어 **Goal / Scope / Invariants / Acceptance Criteria / Docs / Tasks / Decision Log** 섹션을 채운다.
+ - 세션 동안 내린 결정은 PR 코멘트 + `docs/sessions/<branch>.md` + `docs/ssot.md`에 모두 반영한다.
+ - 테스트/스크린샷/로그가 있는 경우 PR 코멘트나 첨부 링크로 남긴다.
+ - Merge 전략은 기본적으로 Merge commit. 필요 시 Rebase/Squash는 PR 성격에 맞게 선택한다.
+ 
++> 리팩토링 Epic(`refactor/fastapi-sse`) 진행 시, `docs/REFAC_PLAN.md` 체크리스트를 기준으로 PR을 주기적으로 동기화한다.
++
+ ---
+ 
+ ## 4. 테스트 & 품질 게이트
+@@ -49,6 +55,11 @@
+ - 문서 전용 변경(`docs/**`, `README*.md`, `**/*.md`)만 포함된 경우 테스트 생략 가능. 그 외에는 `docs/reference/verification-commands.md` 기준으로 관련 영역 검증을 완료해야 한다.
+ - 실패한 테스트를 무시하거나 임시로 주석 처리하지 않는다. 원인을 해결하고 재실행한다.
+ 
++리팩토링(A안) 관련 추가 지침
++- FastAPI 서버 추가 후: `uvicorn server.app:app --reload`로 서버 스모크 (`/health`, `/logs`, `/logs/stream`).
++- UI(Next.js) 추가 후: 개발 서버에서 EventSource(Web SSE) 수신 및 DOM 반영을 10초 이상 관찰.
++- `/logs/bulk`(현행)와 SSE(신규)의 필터링/제한/중복제거 동작을 동등성 기준으로 비교 검증.
++
+ ---
+ 
+ ## 5. 문서 & 기록 관리
+@@ -64,6 +75,7 @@
+ - 기본 모드는 `SAFE_MODE=true` (발송 차단). UI/스크립트 모두 이 전제를 깨어서는 안 된다.  
+ - 환경 변수/토큰은 Git에 커밋 금지. `.env`는 `config/env.example`를 복제하여 세션 범위에서만 사용한다.  
+ - IRIS 포트프록시는 `windows/setup_iris_port.ps1`(관리자 PowerShell) → `scripts/probe_iris.sh` 순으로 점검한다.  
++- `setup_iris_port.ps1`는 5050(IRIS)과 8510(Log API) 모두를 포트프록시/방화벽 규칙에 설정한다. 장애 시 먼저 8510 접근(`http://localhost:8510/logs`)을 확인한다.  
+ - 데이터/로그 파일은 보관 목적일 경우 `data/`, `logs/` 하위에만 저장한다. 외부 경로에는 쓰지 않는다.
+ - 경로 추측 금지: 변경 전 `ls`, `cat`으로 파일 존재를 직접 확인한다.
+ 
+@@ -74,6 +86,7 @@
+ - `UI_VERIFICATION_CHECKLIST.md` – 대시보드 시각 검증 포인트.
+ - `docs/ops/`, `docs/setup/` – 운영, 설치, 복구 절차 모음.
+ - `scripts/` 내 README/주석 – 스크립트별 요구 조건과 사용법.
++- `docs/ARCHITECTURE.md`, `docs/REFAC_PLAN.md` – A안 전환의 단일 출처(SSOT) 문서.
+ - 필요 시 `docs/reference/verification-commands.md`에 새 명령을 추가하고, 위 섹션들과 동기화한다.
+ 
+-본 핸드북과 동일한 내용은 `claude.md`에도 유지하여 AI/자동화 에이전트가 같은 지침을 따르도록 한다.
++본 핸드북과 동일한 내용은 `claude.md`에도 유지하여 AI/자동화 에이전트가 같은 지침을 따르도록 한다. A안 진행 동안 모든 신규 세션은 `docs/ARCHITECTURE.md`/`docs/REFAC_PLAN.md`를 먼저 읽고 브랜치(`refactor/fastapi-sse`) 문맥을 로드해야 한다.
+diff --git a/docs/adr/0001-adopt-iris-ldplayer.md b/docs/adr/0001-adopt-iris-ldplayer.md
+old mode 100755
+new mode 100644
+index 83de9069..c4ba86db
+--- a/docs/adr/0001-adopt-iris-ldplayer.md
++++ b/docs/adr/0001-adopt-iris-ldplayer.md
+@@ -1,9 +1,10 @@
+-﻿# ADR 0001: LDPlayer + IRIS 채택
++# ADR 0001: LDPlayer + IRIS 채택 (Deprecated)
+ 
+ - 상태: 폐기됨 (2025-10-28, ADR 0002로 대체)
+ - 문맥: PC KakaoTalk UI 자동화는 스크롤/OCR 지연과 포커스 문제로 요구사항을 충족하지 못함.
+ 
+ ## 결정
++본 결정은 ADR 0002(루팅 단말/Redroid + Hyper‑V 전환)로 대체되었습니다. 아래 내용은 과거 기록으로만 보존합니다.
+ LDPlayer(안드로이드 에뮬레이터) + IRIS 이벤트 프레임워크를 기반으로 모든 카카오톡 자동화를 구현한다.
+ 
+ ## 근거
+@@ -13,10 +14,10 @@ LDPlayer(안드로이드 에뮬레이터) + IRIS 이벤트 프레임워크를 
+ 
+ ## 결과
+ - PC UIA 접근 금지. 관련 스크립트/코드는 제거 대상.
+-- LDPlayer/IRIS 설치, 버전 관리, 인스턴스 운영 문서를 작성해야 함.
++- (폐기) LDPlayer/IRIS 설치, 버전 관리, 인스턴스 운영 문서를 작성해야 함.
+ - 멀티 인스턴스 전략(필요 시)과 계정 정책 준수 계획을 별도로 수립.
+ 
+ ## 다음 단계
+ - `docs/setup/iris-hyperv.md`에 Hyper-V/루팅 단말 기준 설치 절차를 상세화.
+ - IRIS 이벤트 핸들러를 사용하는 기본 봇 구조 작성.
+-- 카카오 정책 변화 모니터링 및 리스크 대응 계획 수립.
++- 카카오 정책 변화 모니터링 및 리스크 대응 계획 수립.
+diff --git a/docs/immediate_action_plan.md b/docs/immediate_action_plan.md
+index 44b9b905..7a992cd7 100755
+--- a/docs/immediate_action_plan.md
++++ b/docs/immediate_action_plan.md
+@@ -244,7 +244,7 @@ IRIS_HEARTBEAT_INTERVAL=30
+ - 기본적인 환영 메시지 기능
+ 
+ ### 준비 사항
+-- LDPlayer 멀티 인스턴스 설정
++- (폐기) LDPlayer 멀티 인스턴스 설정 → Redroid(Hyper‑V) 기반 단일/복수 VM 운영 가이드로 전환
+ - 다중 IRIS 연동 테스트
+ - 방 관리 UI/CLI 개발
+ 
+@@ -281,4 +281,4 @@ IRIS_HEARTBEAT_INTERVAL=30
+ 
+ *즉시 실행 계획 버전: v1.0*
+ *작성일: 2025-10-27*
+-*적용 기간: 2025-10-27 ~ 2025-11-03*
+\ No newline at end of file
++*적용 기간: 2025-10-27 ~ 2025-11-03*
+diff --git a/docs/journal/2025-10-27-phase0.md b/docs/journal/2025-10-27-phase0.md
+index e140be68..c3b5bd99 100755
+--- a/docs/journal/2025-10-27-phase0.md
++++ b/docs/journal/2025-10-27-phase0.md
+@@ -1,12 +1,12 @@
+ ﻿# 2025-10-27 Phase 0 긴급 작업 로그
+ 
+ ## 작업 체크리스트
+-- [ ] LDPlayer/IRIS 설치 및 연결 검증 (캡처 포함)
++- [ ] (폐기) LDPlayer/IRIS 설치 및 연결 검증 → Redroid/Hyper‑V + IRIS 설치 및 연결 검증으로 대체
+ - [x] IRIS 이벤트 수신 스켈레톤 + 샘플 로그 작성
+ - [x] SSOT/PRD/ADR 싱크 검토 로그 작성
+ 
+ ## 실행 메모
+-- LDPlayer 에뮬레이터는 `adb devices` 기준 `emulator-5554`로 인식, 카카오톡 실행 상태 확인 완료. IRIS HTTP/WS 엔드포인트는 제공받지 못해 최종 연결 검증은 보류.
++- (폐기) LDPlayer 에뮬레이터는 `adb devices` 기준 `emulator-5554`로 인식. 현재는 Redroid/Hyper‑V 기반으로 전환되었음.
+ - `python -m venv .venv` 후 `pip install -r requirements.txt`로 의존성 설치 및 `config/local.env` 생성.
+ - `python -m src.bot.main --dry-run` 실행으로 `logs/1000/2025-10-27.log`에 샘플 이벤트 기록 확인, 메시지/입장/퇴장 핸들러 스켈레톤 구현.
+ - PRD·로드맵·SSOT·TODO에 새 기능/잔여 작업을 반영했으며, Journal 문서를 통해 추적 완료.
+diff --git a/docs/journal/2025-10-28-bot-integration.md b/docs/journal/2025-10-28-bot-integration.md
+index f8cb0d73..e91d32b1 100755
+--- a/docs/journal/2025-10-28-bot-integration.md
++++ b/docs/journal/2025-10-28-bot-integration.md
+@@ -4,14 +4,14 @@
+ - `scripts/iris_board_collector.py`에 iframe/페이지 타임아웃 재시도 옵션을 추가(`NAVER_DETAIL_RETRY`, `NAVER_IFRAME_WAIT_MS`, `NAVER_PAGE_TIMEOUT_MS`, `NAVER_FRAME_WAIT_MS`)하고 실행 요약(`meta.detail_*`)을 기록하도록 수정.
+ - `src/bot/main.py`를 재구성해 명령어 라우터, 환영 핸들러, 브로드캐스트 스케줄러를 통합하고 기본 명령(`!ping`, `!help`, `!rooms`)을 등록.
+ - 브로드캐스트 큐 폴링 워커를 추가하고 IRIS 전송 함수 탐지/로깅 로직 도입.
+-- 문서 동기화: `docs/ops/iris-usage-manual.md`, `docs/ops/feature-design.md`, `docs/ssot.md`, `docs/todo.md`, `docs/setup/ldplayer.md` 업데이트.
++- 문서 동기화: `docs/ops/iris-usage-manual.md`, `docs/ops/feature-design.md`, `docs/ssot.md`, `docs/todo.md`, `docs/setup/iris-hyperv.md` 업데이트.
+ 
+ ## 한계 및 추후 조치
+ - 실제 IRIS 전송 API 연동 및 실계정 방송 테스트는 보류됨 → 실서버 환경에서 `send_text`(또는 대체 함수) 확인 필요.
+ - Playwright 상세 본문 재시도 로직은 코드 레벨에서 강화했으나, 실측 수치 확인을 위해 추가 수집 테스트 & 로그 분석 필요.
+-- LDPlayer/Termux 캡처는 현재 환경에서 확보할 수 없어 캡처 체크리스트만 정리. 운영 장비에서 캡처 획득 후 SSOT/TODO 갱신 필요.
++- (폐기) LDPlayer/Termux 캡처는 현재 환경에서 확보할 수 없어 캡처 체크리스트만 정리 → ADR 0002에 따라 Redroid/Hyper‑V 기준으로 캡처 전환.
+ 
+ ## 후속 TODO
+ 1. 실 IRIS 환경에서 봇 실행 → 브로드캐스트 전송 성공/실패 로그 검증, 재시도 동작 확인.
+ 2. Playwright 수집 스크립트 재실행 후 `meta.detail_success/detail_targets` 값 확인 및 iframe 타임아웃 재현 로그 확보.
+-3. LDPlayer/Termux 캡처 수집 진행 → `artifacts/` 경로에 저장하고 `docs/journal/` 및 SSOT에 반영.
++3. Redroid/Hyper‑V 캡처 수집 진행 → `artifacts/` 경로에 저장하고 `docs/journal/` 및 SSOT에 반영.
+diff --git a/docs/journal/2025-10-28-install-verification.md b/docs/journal/2025-10-28-install-verification.md
+old mode 100755
+new mode 100644
+index 93dc9d50..78faa311
+--- a/docs/journal/2025-10-28-install-verification.md
++++ b/docs/journal/2025-10-28-install-verification.md
+@@ -1,19 +1,19 @@
+-﻿# 2025-10-28 설치 경로 점검 로그
++﻿# 2025-10-28 설치 경로 점검 로그 (정정)
+ 
+ ## 개요
+-- Termux 및 LDPlayer 기반 IRIS 설치 절차를 docs/setup/ldplayer.md에 병합했습니다.
+-- 실제 기기/에뮬레이터 캡처는 현재 환경 제한으로 확보하지 못했으며, 운영 장비에서 별도 검증이 필요합니다.
++- (폐기) Termux 및 LDPlayer 기반 IRIS 설치 절차 → `docs/setup/iris-hyperv.md`로 전환/병합.
++- 실제 기기/에뮬레이터 캡처는 현재 환경 제한으로 확보하지 못했으며, 운영 장비에서 Redroid/Hyper‑V 기준으로 별도 검증이 필요합니다.
+ 
+ ## 점검 항목
+ | 항목 | 수행 여부 | 비고 |
+ | --- | --- | --- |
+-| LDPlayer 최신 버전 설치 및 카카오톡 로그인 | 준비안됨 | 운영 PC에서 수행 예정 |
+-| LDPlayer db connect → IRIS 이벤트 수집 확인 | 준비안됨 | 캡처 및 로그 확보 필요 |
++| (폐기) LDPlayer 최신 버전 설치 및 카카오톡 로그인 | 준비안됨 | ADR 0002에 따라 Redroid/Hyper‑V 기준으로 대체 |
++| (폐기) LDPlayer adb connect → IRIS 이벤트 수집 확인 | 준비안됨 | Redroid/Hyper‑V 기준으로 대체 |
+ | Termux 초기 패키지 설치 (pkg update, pkg install android-tools) | 문서 정리 | 루팅 기기에서 검증 예정 |
+ | iris_control install/start/status 실행 | 문서 정리 | 실제 실행 캡처 필요 |
+ | ADB 127.0.0.1:5555 연결 및 DashBoard 접속 | 문서 정리 | 모바일 환경에서 테스트 예정 |
+ 
+ ## 후속 계획
+-1. 운영 PC에서 LDPlayer 인스턴스를 실행하고 db devices 결과 및 DashBoard 접속 화면 캡처 확보.
++1. 운영 PC에서 Redroid(Hyper‑V) 인스턴스를 실행하고 `adb devices` 결과 및 DashBoard 접속 화면 캡처 확보.
+ 2. 루팅된 테스트 기기에서 Termux 명령 실행 로그를 수집하고 문서에 캡처 추가.
+-3. 검증이 완료되면 TODO 항목 “LDPlayer/모바일 실기 설치 검증”을 완료 처리하고 SSOT에 결과를 기록합니다.
++3. 검증이 완료되면 TODO 항목 “Redroid/모바일 실기 설치 검증”을 완료 처리하고 SSOT에 결과를 기록합니다.
+diff --git a/docs/journal/2025-10-28-playwright-refresh.md b/docs/journal/2025-10-28-playwright-refresh.md
+index f97919c5..b27b3ab2 100755
+--- a/docs/journal/2025-10-28-playwright-refresh.md
++++ b/docs/journal/2025-10-28-playwright-refresh.md
+@@ -14,4 +14,4 @@
+ ## 차기 액션
+ 1. Playwright collector에 iframe 로딩 대기/재시도 옵션 추가 후 상세 본문 15건 이상 확보 검증.
+ 2. `src/bot/main.py`에 `command_router`, `welcome_handler`, `broadcast_scheduler`를 순차적으로 통합하고 통합 테스트 설계.
+-3. Termux·LDPlayer 실기 캡처 확보 후 설치 문서/SSOT/TODO 상태 업데이트.
++3. (폐기) Termux·LDPlayer 실기 캡처 → ADR 0002에 따라 Redroid/Hyper‑V 기준으로 문서 업데이트.
+diff --git a/docs/journal/2025-10-28-progress-continuity.md b/docs/journal/2025-10-28-progress-continuity.md
+index 3ff4edf2..92e55643 100755
+--- a/docs/journal/2025-10-28-progress-continuity.md
++++ b/docs/journal/2025-10-28-progress-continuity.md
+@@ -9,7 +9,7 @@
+   - 기본 명령 `!ping`, `!help`, `!rooms` 등록 및 브로드캐스트 워커/재시도 로직 추가.
+   - 드라이런 모드(`--dry-run`)로 로컬 테스트 가능. 실제 IRIS 서버 연결은 환경 변수/토큰 제공 시 진행 예정.
+ - **문서 및 로그 업데이트**
+-  - `docs/ops/iris-usage-manual.md`, `docs/ops/feature-design.md`, `docs/todo.md`, `docs/setup/ldplayer.md`, `docs/ssot.md`를 최신 코드/상태에 맞게 갱신.
++  - `docs/ops/iris-usage-manual.md`, `docs/ops/feature-design.md`, `docs/todo.md`, `docs/setup/iris-hyperv.md`, `docs/ssot.md`를 최신 코드/상태에 맞게 갱신.
+   - 진행 로그: `docs/journal/2025-10-28-playwright-refresh.md`, `docs/journal/2025-10-28-bot-integration.md`.
+ 
+ ## 2. 실행 가능한 구성 요소
+@@ -24,12 +24,12 @@
+ | 항목 | 차단 사유 | 필요 데이터/권한 |
+ | --- | --- | --- |
+ | IRIS 실서버 연동 및 방송 검증 | IRIS URL/토큰/방 ID 미제공 | IRIS WebSocket/HTTP 주소, 인증 정보, 테스트 방 |
+-| LDPlayer/Termux 캡처 확보 | 장비 원격 접속 권한 없음 | AnyDesk/RDP/ADB 접속 정보 또는 사용자가 캡처 후 공유 |
++| (폐기) LDPlayer/Termux 캡처 확보 | 장비 원격 접속 권한 없음 | ADR 0002에 따라 Redroid/Hyper‑V 기준 캡처로 대체 |
+ | Playwright 상세 본문 100% 확보 | iframe 로딩 변동성, 접근 속도 미확인 | 추가 수집 테스트, 실패 article_id 수동 검증 |
+ 
+ ## 4. TODO/다음 단계 (2025-10-29 이후)
+ 1. IRIS 실서버 접근 정보 수령 → `src/bot/main.py` 실환경 테스트 (`!ping`, 방송 전송, 환영 로그) 후 결과 문서화.
+-2. LDPlayer/Termux 캡처 확보 또는 원격 접속 권한 전달 → `artifacts/` 경로 저장 및 `docs/setup/ldplayer.md` 체크리스트 완료 처리.
++2. (폐기) LDPlayer/Termux 캡처 확보 → Redroid/Hyper‑V 캡처 확보 후 `docs/setup/iris-hyperv.md` 체크리스트 완료 처리.
+ 3. Playwright 수집 재시도 로그 분석 → 실패 아티클 개별 확인 및 `NAVER_*` 파라미터 최적화.
+ 4. `docs/ops/log-format.md`, `docs/ops/status-check.md`, `docs/ops/retry-policy.md` 초안 작성 (IRIS 연동 완료 이후).
+ 
+diff --git a/docs/reference/project-structure.md b/docs/reference/project-structure.md
+index 5ee8f7c2..2408d849 100644
+--- a/docs/reference/project-structure.md
++++ b/docs/reference/project-structure.md
+@@ -22,7 +22,7 @@
+ │  ├─ reference/          # (신규) 구조·명령어 레퍼런스
+ │  └─ *.md                # PRD, SSOT, Roadmap 등 핵심 문서
+ ├─ src/                   # Python 자동화/서비스 엔트리
+-│  ├─ bot/                # LDPlayer/IRIS 이벤트 수신 진입점
++│  ├─ bot/                # Redroid(Hyper‑V)/IRIS 이벤트 수신 진입점
+ │  ├─ bots/               # 봇 시나리오 구현
+ │  ├─ services/           # 공용 서비스/도메인 로직
+ │  └─ utils/              # 범용 유틸리티
+@@ -55,7 +55,7 @@
+ ## 3. 상세 디렉터리 설명
+ 
+ ### 3.1 `src/` – Python 자동화 본체
+-- `bot/main.py`: LDPlayer + IRIS 기반 메시지 수신 진입점.
++- `bot/main.py`: Redroid(Hyper‑V) + IRIS 기반 메시지 수신 진입점.
+ - `bots/`: 대화방별 시나리오 및 제어 로직.
+ - `services/`: 데이터 접근, 메시지 저장/조회, 상태 관리.
+ - `utils/`: 공통 헬퍼 (시간, 포맷, 로깅 등).
+diff --git a/docs/reference/verification-commands.md b/docs/reference/verification-commands.md
+index 0da153fb..40f23f11 100644
+--- a/docs/reference/verification-commands.md
++++ b/docs/reference/verification-commands.md
+@@ -24,7 +24,7 @@
+ 
+ | 시나리오 | 명령 | 설명 |
+ |----------|------|------|
+-| LDPlayer/IRIS 봇 실행 (WSL) | `scripts/start_bot_wsl.sh` | `.env` 자동 생성 후 봇 기동 (`logs/bot_wsl.log` 확인) |
++| IRIS 봇 실행 (WSL) | `scripts/start_bot_wsl.sh` | `.env` 자동 생성 후 봇 기동 (`logs/bot_wsl.log` 확인) |
+ | 봇 중지 | `scripts/stop_bot_wsl.sh` | 프로세스 종료 및 로그 남김 |
+ | 로그 API 단독 실행 | `python scripts/log_api.py` | `http://127.0.0.1:8510/logs` 엔드포인트 확인 |
+ | 메시지 저장소 테스트 | `pytest tests/test_message_store.py` | 핵심 스토리지 로직 단위 테스트 |
+@@ -50,6 +50,10 @@
+ 
+ `node-iris-app/.env.example`을 기반으로 로컬 환경 변수를 구성하고, 변경 시 `config/runtime.json`을 함께 확인한다.
+ 
++Redroid(Hyper‑V) 환경 변수 예시(`config/env.example`)
++- `REDROID_ADB_HOST=127.0.0.1`
++- `REDROID_ADB_PORT=5555`
++
+ ---
+ 
+ ## 4. Streamlit 대시보드 (`dashboard/`)
+diff --git a/scripts/install_iris.py b/scripts/install_iris.py
+index 7b8098ce..4474eaae 100755
+--- a/scripts/install_iris.py
++++ b/scripts/install_iris.py
+@@ -187,7 +187,7 @@ def main():
+     print("\n✅ IRIS 개발 환경 설치 완료!")
+     print("\n📋 다음 단계:")
+     print("1. 실제 IRIS 라이브러리 설치 (카페 참조)")
+-    print("2. LDPlayer 설치 및 설정")
++    print("2. Redroid(Hyper-V) 설치 및 ADB 연결 설정")
+     print("3. 환경변수 설정 확인")
+     print("4. python -m src.bot.main --dry-run 실행")
+ 
+@@ -195,4 +195,4 @@ def main():
+ 
+ if __name__ == "__main__":
+     success = main()
+-    sys.exit(0 if success else 1)
+\ No newline at end of file
++    sys.exit(0 if success else 1)
+diff --git a/scripts/manage_instances.ps1 b/scripts/manage_instances.ps1
+old mode 100755
+new mode 100644
+index e3bd7489..a36dd29e
+--- a/scripts/manage_instances.ps1
++++ b/scripts/manage_instances.ps1
+@@ -1,5 +1,6 @@
+-﻿<#
+-LDPlayer 인스턴스 제어 스크립트 (초안)
++<#
++Redroid(Hyper-V) 인스턴스 제어 스크립트 (초안)
++NOTE: LDPlayer 관련 내용은 ADR-0002에 따라 폐기되었습니다. Hyper-V 상의 Redroid VM 운영을 기준으로 합니다.
+ TODO:
+ - 인스턴스 목록(config/instances.yaml) 읽기
+ - ADB 연결/재시작
+@@ -11,4 +12,4 @@ param(
+     [string]$Action = 'status'
+ )
+ 
+-Write-Host "[TODO] manage_instances.ps1 - Action: $Action" -ForegroundColor Cyan
++Write-Host "[TODO] manage_instances.ps1 - Action: $Action" -ForegroundColor Cyan
+diff --git a/scripts/run_iris.sh b/scripts/run_iris.sh
+index b68aa089..aeab2ec0 100755
+--- a/scripts/run_iris.sh
++++ b/scripts/run_iris.sh
+@@ -1,5 +1,5 @@
+ ﻿#!/usr/bin/env bash
+-# LDPlayer + IRIS 봇 실행 스크립트 (UTF-8)
++# Redroid(Hyper-V) + IRIS 봇 실행 스크립트 (UTF-8)
+ 
+ set -euo pipefail
+ 
+-- 
+2.52.0.windows.1
+

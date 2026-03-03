@@ -25,16 +25,46 @@ logs/
 Downloads/
 *.tmp
 test_logs/
+tmp/
+tmp_*
 
 # LDPlayer / emulator images
 *.vdi
 *.qcow2
 
+# Large local artifacts (do not commit)
+*.apk
+*.dex
+*.pcap
+*.bin
+androguard.db*
+frida-server*
+node_local/
+a3/
+.claude/
+.tools/
+kb/db.sqlite
+
 # Local config
 config/*.env
 config/.env
+config/*.key
 .env
+.env.kb
+.env.local
+.env.*.local
 env.local
+node-iris-app/config/runtime.json
+config/windows/iris_url.txt
+db/pgpass.conf
+
+# JS build artifacts
+**/node_modules/
+**/.next/
+**/.next-prod/
+test-results/
+playwright-report/
+**/tsconfig.tsbuildinfo
 
 # OS files
 Thumbs.db
@@ -42,3 +72,9 @@ Thumbs.db
 
 infra/iris/
 data/
+a3/zeloflow*.json
+node-iris-app/dist/
+tmp/playwright-cafe-profile/
+windows/*.bak
+windows/device_health_cache.json
+docs/cafe_manuals/**/*.pdf

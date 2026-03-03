@@ -1,0 +1,22 @@
+﻿version: "3.9"
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: iris_pg
+    environment:
+      POSTGRES_DB: iris
+      POSTGRES_USER: iris
+      POSTGRES_PASSWORD: iris
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iris -d iris"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+volumes:
+  pgdata:
+

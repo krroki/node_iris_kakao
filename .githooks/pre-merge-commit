@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+# 이 워킹트리는 로컬에서 상시 운영 중인 실행 환경이며, 원격 변경을 끌어오는 작업은 금지한다.
+# - git pull은 (fetch + merge/rebase)로 동작하며, 워킹트리를 흔들 수 있다.
+# - 필요 시 별도 clone/worktree에서 원격 동기화/리뷰/PR 워크플로를 수행한다.
+
+echo "[GIT-GUARD] ERROR: 이 워킹트리에서는 merge/pull을 금지합니다. (main-only + no-pull)" >&2
+echo "[GIT-GUARD]        원격 비교가 필요하면 git fetch만 수행하고, 반영은 별도 clone/worktree에서 하세요." >&2
+exit 1
+

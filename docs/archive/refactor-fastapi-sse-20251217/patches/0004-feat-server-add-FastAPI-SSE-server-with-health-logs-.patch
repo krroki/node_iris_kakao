@@ -1,0 +1,398 @@
+From 92349c1ea4d7e6adebfc93185477bdff6aaeb412 Mon Sep 17 00:00:00 2001
+From: jeong yeong rok <glemfkcl@gmail.com>
+Date: Tue, 4 Nov 2025 19:17:17 +0900
+Subject: [PATCH 4/9] feat(server): add FastAPI SSE server with /health, /logs,
+ /logs/stream; add serve_api_fastapi.sh
+
+---
+ scripts/serve_api_fastapi.sh |  16 ++++
+ server/__init__.py           |   7 ++
+ server/app.py                | 172 +++++++++++++++++++++++++++++++++++
+ server/log_utils.py          | 159 ++++++++++++++++++++++++++++++++
+ 4 files changed, 354 insertions(+)
+ create mode 100755 scripts/serve_api_fastapi.sh
+ create mode 100644 server/__init__.py
+ create mode 100644 server/app.py
+ create mode 100644 server/log_utils.py
+
+diff --git a/scripts/serve_api_fastapi.sh b/scripts/serve_api_fastapi.sh
+new file mode 100755
+index 00000000..d1e933f0
+--- /dev/null
++++ b/scripts/serve_api_fastapi.sh
+@@ -0,0 +1,16 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++PORT="${REALTIME_API_PORT:-8600}"
++HOST="${REALTIME_API_HOST:-0.0.0.0}"
++
++if ! command -v uvicorn >/dev/null 2>&1; then
++  echo "[api] uvicorn not found. Install with: pip install fastapi uvicorn" >&2
++  exit 1
++fi
++
++export IRIS_LOGS_DIR="${IRIS_LOGS_DIR:-$ROOT_DIR/node-iris-app/data/logs}"
++echo "[api] starting FastAPI realtime server at $HOST:$PORT (IRIS_LOGS_DIR=$IRIS_LOGS_DIR)"
++exec uvicorn server.app:app --host "$HOST" --port "$PORT"
++
+diff --git a/server/__init__.py b/server/__init__.py
+new file mode 100644
+index 00000000..ceaade73
+--- /dev/null
++++ b/server/__init__.py
+@@ -0,0 +1,7 @@
++"""FastAPI server package for IRIS dashboard refactor (SSE).
++
++Modules:
++ - app: FastAPI application with /health, /logs, /logs/stream
++ - log_utils: helpers to parse and tail room log files
++"""
++
+diff --git a/server/app.py b/server/app.py
+new file mode 100644
+index 00000000..c3599b54
+--- /dev/null
++++ b/server/app.py
+@@ -0,0 +1,172 @@
++from __future__ import annotations
++
++import asyncio
++import json
++import os
++from datetime import datetime, timezone
++from typing import AsyncGenerator, Dict, List, Optional
++
++from fastapi import FastAPI, Request
++from fastapi.middleware.cors import CORSMiddleware
++from fastapi.responses import JSONResponse, StreamingResponse
++
++from .log_utils import (
++    get_logs_dir,
++    tail_room,
++    tail_all,
++    tail_bulk,
++    apply_keyword_filter,
++    ts_to_ms,
++)
++
++
++app = FastAPI(title="IRIS Realtime API (FastAPI/SSE)")
++
++# CORS: allow localhost/default dev ports
++origins = [
++    "http://localhost",
++    "http://127.0.0.1",
++    "http://localhost:8512",
++    "http://127.0.0.1:8512",
++]
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=origins,
++    allow_credentials=True,
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
++
++
++@app.get("/health")
++async def health():
++    try:
++        rooms = [d.name for d in get_logs_dir().iterdir() if d.is_dir()]
++    except Exception:
++        rooms = []
++    return {"ok": True, "rooms": len(rooms)}
++
++
++@app.get("/logs")
++async def logs(roomId: Optional[str] = None, limit: int = 80, include: str = "", exclude: str = ""):
++    limit = max(1, min(int(limit), 500))
++    inc = [s for s in (include or "").lower().split() if s]
++    exc = [s for s in (exclude or "").lower().split() if s]
++    if roomId:
++        recs = tail_room(roomId, limit * 2)
++    else:
++        recs = tail_all(limit * 2)
++    out = apply_keyword_filter(recs, inc, exc, limit)
++    return JSONResponse(content=out)
++
++
++def _sse_format(data: dict) -> bytes:
++    # SSE: data: <json>\n\n
++    try:
++        payload = json.dumps(data, ensure_ascii=False)
++    except Exception:
++        payload = "{}"
++    return ("data: " + payload + "\n\n").encode("utf-8")
++
++
++async def _stream_generator(request: Request, rooms: List[str], limit: int, include: str, exclude: str, send_all: bool, since_ms: int, interval_ms: int) -> AsyncGenerator[bytes, None]:
++    # Initial snapshot
++    inc = [s for s in (include or "").lower().split() if s]
++    exc = [s for s in (exclude or "").lower().split() if s]
++    payload = {"type": "snapshot"}
++    if rooms:
++        rb = tail_bulk(rooms, limit)
++        payload["rooms"] = {rid: apply_keyword_filter(entries, inc, exc, limit) for rid, entries in rb.items()}
++    if send_all:
++        payload["all"] = apply_keyword_filter(tail_all(limit * 2), inc, exc, limit)
++    yield _sse_format(payload)
++
++    # State: last seen ts per (room) and global
++    last_ts_per_room: Dict[str, int] = {}
++    if since_ms:
++        for rid in rooms:
++            last_ts_per_room[rid] = int(since_ms)
++    else:
++        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
++        for rid in rooms:
++            last_ts_per_room[rid] = now_ms
++    last_all_ms = last_ts_per_room.get("__all__", 0)
++    if not last_all_ms:
++        last_all_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
++
++    # Loop
++    iv = max(200, int(interval_ms)) / 1000.0
++    heartbeat = 0
++    while True:
++        if await request.is_disconnected():
++            break
++        try:
++            batch: Dict[str, List[dict]] = {}
++            # rooms increment
++            for rid in rooms:
++                entries = tail_room(rid, limit * 2)
++                if inc or exc:
++                    entries = apply_keyword_filter(entries, inc, exc, limit * 2)
++                # only new ones
++                cur = []
++                lt = last_ts_per_room.get(rid, 0)
++                for e in entries:
++                    tms = ts_to_ms(e.get("ts") or "")
++                    if tms > lt:
++                        cur.append(e)
++                        if tms > lt:
++                            lt = tms
++                if cur:
++                    batch[rid] = cur[-limit:]
++                    last_ts_per_room[rid] = lt
++            out: Dict[str, Any] = {"type": "append"}
++            if batch:
++                out["rooms"] = batch
++            if send_all:
++                all_entries = tail_all(limit * 2)
++                if inc or exc:
++                    all_entries = apply_keyword_filter(all_entries, inc, exc, limit * 2)
++                cur_all = []
++                for e in all_entries:
++                    tms = ts_to_ms(e.get("ts") or "")
++                    if tms > last_all_ms:
++                        cur_all.append(e)
++                        if tms > last_all_ms:
++                            last_all_ms = tms
++                if cur_all:
++                    out["all"] = cur_all[-limit:]
++            if out.get("rooms") or out.get("all"):
++                yield _sse_format(out)
++            else:
++                # periodic heartbeat comment to keep connection open
++                heartbeat += 1
++                if heartbeat % int(max(1, 15000 / (iv * 1000))) == 0:
++                    yield b": keep-alive\n\n"
++        except Exception:
++            # transient error → emit error event and continue
++            yield _sse_format({"type": "error", "message": "internal_error"})
++        await asyncio.sleep(iv)
++
++
++@app.get("/logs/stream")
++async def logs_stream(request: Request, rooms: Optional[str] = None, limit: int = 80, include: str = "", exclude: str = "", all: int = 0, since: Optional[str] = None, interval: int = 1000):
++    room_ids: List[str] = []
++    if rooms:
++        room_ids = [r for r in rooms.split(',') if r.strip()]
++    try:
++        since_ms = int(since) if since else 0
++    except Exception:
++        since_ms = 0
++    send_all = str(all).lower() in ("1", "true", "yes", "y") or (all == 1)
++    generator = _stream_generator(request, room_ids, max(1, min(limit, 500)), include, exclude, send_all, since_ms, interval)
++    return StreamingResponse(generator, media_type="text/event-stream")
++
++
++# Entry point helper for `uvicorn server.app:app`
++if __name__ == "__main__":
++    import uvicorn
++
++    host = os.environ.get("REALTIME_API_HOST", "0.0.0.0")
++    port = int(os.environ.get("REALTIME_API_PORT", "8600"))
++    uvicorn.run("server.app:app", host=host, port=port, reload=False)
++
+diff --git a/server/log_utils.py b/server/log_utils.py
+new file mode 100644
+index 00000000..45a5fb90
+--- /dev/null
++++ b/server/log_utils.py
+@@ -0,0 +1,159 @@
++from __future__ import annotations
++
++import json
++import os
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any
++
++
++ROOT = Path(__file__).resolve().parents[1]
++APP_BASE = ROOT / "node-iris-app"
++DEFAULT_LOGS_DIR = APP_BASE / "data" / "logs"
++
++
++def get_logs_dir() -> Path:
++    p = os.environ.get("IRIS_LOGS_DIR", "").strip()
++    if p:
++        cand = Path(p)
++        if cand.exists():
++            return cand
++    return DEFAULT_LOGS_DIR
++
++
++def parse_line(line: str):
++    try:
++        obj = json.loads(line)
++        snap = obj.get("snapshot", {})
++        payload = obj.get("payload", {}) if isinstance(obj, dict) else {}
++        sender_name = snap.get("senderName") or str(snap.get("senderId"))
++        text = snap.get("messageText")
++        if not isinstance(text, str):
++            text = ""
++        if text in (None, "", "[object Object]"):
++            ptxt = payload.get("text") if isinstance(payload, dict) else None
++            if isinstance(ptxt, str) and ptxt.strip() and ptxt.strip() != "[object Object]":
++                text = ptxt.strip()
++            elif isinstance(payload.get("raw"), str) and payload.get("raw").strip():
++                text = payload.get("raw").strip()
++            ptype = str(payload.get("type") or "")
++            if ptype in ("join", "leave"):
++                text = f"{ptype.upper()}: {sender_name}".strip()
++        return {
++            "ts": obj.get("timestamp"),
++            "roomId": str(snap.get("roomId")),
++            "roomName": snap.get("roomName") or str(snap.get("roomId")),
++            "sender": sender_name,
++            "text": text,
++            "mid": snap.get("messageId"),
++        }
++    except Exception:
++        return None
++
++
++def ts_to_ms(ts: str) -> int:
++    try:
++        dt = datetime.fromisoformat((ts or '').replace('Z', '+00:00'))
++        return int(dt.timestamp() * 1000)
++    except Exception:
++        return 0
++
++
++def list_room_dirs():
++    logs_dir = get_logs_dir()
++    if logs_dir.exists():
++        return sorted([p for p in logs_dir.iterdir() if p.is_dir()])
++    return []
++
++
++def tail_room(room_id: str, limit: int):
++    logs_dir = get_logs_dir()
++    d = logs_dir / str(room_id)
++    files = sorted(d.glob("*.log"))
++    if not files:
++        return []
++    last = files[-1]
++    try:
++        lines = last.read_text(encoding="utf-8", errors="ignore").splitlines()
++        out = []
++        seen_mid: set[str] = set()
++        last_time_key: dict[tuple[str, str], int] = {}
++        DEDUP_WINDOW_MS = 2000
++        for ln in lines[-max(limit, 1) * 20:]:
++            rec = parse_line(ln)
++            if rec:
++                mid = rec.get('mid')
++                if mid:
++                    if mid in seen_mid:
++                        continue
++                    seen_mid.add(mid)
++                    out.append(rec)
++                    continue
++                sender = str(rec.get('sender'))
++                text = str(rec.get('text'))
++                tms = ts_to_ms(rec.get('ts') or '')
++                lt = last_time_key.get((sender, text))
++                if lt is not None and abs(tms - lt) <= DEDUP_WINDOW_MS:
++                    continue
++                last_time_key[(sender, text)] = tms
++                out.append(rec)
++        return out[-limit:]
++    except Exception:
++        return []
++
++
++def tail_all(limit: int):
++    items = []
++    for d in list_room_dirs():
++        rid = d.name
++        items.extend(tail_room(rid, limit))
++    items.sort(key=lambda o: o.get("ts") or "", reverse=True)
++    # truncate/dedup
++    out = []
++    seen_mid: set[str] = set()
++    last_time_key: dict[tuple[str, str], int] = {}
++    DEDUP_WINDOW_MS = 2000
++    for r in items:
++        mid = r.get('mid')
++        if mid:
++            if mid in seen_mid:
++                continue
++            seen_mid.add(mid)
++            out.append(r)
++            continue
++        sender = str(r.get('sender'))
++        text = str(r.get('text'))
++        tms = ts_to_ms(r.get('ts') or '')
++        lt = last_time_key.get((sender, text))
++        if lt is not None and abs(tms - lt) <= DEDUP_WINDOW_MS:
++            continue
++        last_time_key[(sender, text)] = tms
++        out.append(r)
++        if len(out) >= limit:
++            break
++    return out
++
++
++def apply_keyword_filter(entries: list[dict], inc: list[str], exc: list[str], limit: int) -> list[dict]:
++    out: list[dict] = []
++    for r in entries:
++        blob = (str(r.get('roomName', '')) + ' ' + str(r.get('sender', '')) + ' ' + str(r.get('text', ''))).lower()
++        if inc and not any(k in blob for k in inc):
++            continue
++        if exc and any(k in blob for k in exc):
++            continue
++        out.append(r)
++        if len(out) >= limit:
++            break
++    return out
++
++
++def tail_bulk(room_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
++    result: dict[str, list[dict[str, Any]]] = {}
++    for rid in room_ids:
++        rid_str = str(rid).strip()
++        if not rid_str:
++            continue
++        result[rid_str] = tail_room(rid_str, limit)
++    return result
++
+-- 
+2.52.0.windows.1
+
