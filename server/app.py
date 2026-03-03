@@ -2685,7 +2685,10 @@ async def iris_reply_text(request: Request):
         pint_rid = str(pint_cfg.get("roomId") or "").strip() if isinstance(pint_cfg, dict) else ""
     except Exception:
         pint_rid = ""
-    if pint_rid and rid == pint_rid:
+    pint_service_room_ids = {"18475321871585649"}
+    if pint_rid:
+        pint_service_room_ids.add(pint_rid)
+    if rid in pint_service_room_ids:
         t = text.strip()
         tl = t.lower()
         ops_keywords_hit = (
