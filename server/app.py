@@ -2688,9 +2688,15 @@ async def iris_reply_text(request: Request):
     if pint_rid and rid == pint_rid:
         t = text.strip()
         tl = t.lower()
-        looks_like_ops = (
+        ops_keywords_hit = (
+            ("점검" in t)
+            or ("테스트" in t)
+            or ("폴백" in t)
+            or ("fallback" in tl)
+        )
+        looks_like_ops = ops_keywords_hit and (
             ("발신" in t or "전송" in t)
-            and ("점검" in t or "테스트" in t or "fallback" in tl)
+            or (len(t) <= 160 and t.count("\n") <= 2)
         )
         if looks_like_ops:
             raise HTTPException(status_code=400, detail="OPS_TEXT_BLOCKED_FOR_PINT_ROOM")
