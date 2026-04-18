@@ -3018,14 +3018,222 @@ def _fetch_active_member_counts(room_ids: list[str]) -> dict[str, int]:
     return out
 
 
+def _runtime_get_talk_cfg() -> dict:
+    cfg = load_runtime()
+    talk = cfg.get("talkApi") or {}
+    if not isinstance(talk, dict):
+        talk = {}
+    talk.setdefault("enabled", False)
+    talk.setdefault("baseUrl", "https://talk-api.naijun.dev")
+    talk.setdefault("authHeader", "")
+    talk.setdefault("timeoutMs", 8000)
+    return talk
+
+
+def _make_mention_attachment(message: str, mentionees: list[dict]) -> dict:
+    """Build an attachment object for Kakao mention."""
+
+    def _utf16_len(s: str) -> int:
+        try:
+            return len((s or "").encode("utf-16-le")) // 2
+        except Exception:
+            return len(str(s or ""))
+
+    msg = str(message or "")
+    if not mentionees:
+        return {}
+    if not isinstance(mentionees, list):
+        raise ValueError("mentionees must be a list")
+
+    entries: list[dict] = []
+    for i, m in enumerate(mentionees):
+        if not isinstance(m, dict):
+            raise ValueError(f"mentionees[{i}] must be an object")
+        name = str(m.get("name") or "").strip()
+        uid_raw = str(m.get("userId") or m.get("user_id") or "").strip()
+        if not name or not uid_raw:
+            raise ValueError(f"mentionees[{i}] missing name/userId")
+        if not uid_raw.isdigit():
+            raise ValueError(f"mentionees[{i}].userId must be digits (int64)")
+        token = "@" + name
+        entries.append(
+            {
+                "i": i,
+                "name": name,
+                "uid": int(uid_raw),
+                "token": token,
+                "tlen": len(token),
+            }
+        )
+
+    if len(entries) > 15:
+        raise ValueError(f"too many mentions: {len(entries)} (max 15)")
+
+    queues: dict[str, list[int]] = {}
+    for idx, e in enumerate(entries):
+        queues.setdefault(e["token"], []).append(idx)
+
+    cursor = 0
+    ordered_indices: list[int] = []
+    remaining = sum(len(v) for v in queues.values())
+    while remaining > 0:
+        best = None
+        for token, q in queues.items():
+            if not q:
+                continue
+            pos = msg.find(token, cursor)
+            if pos < 0:
+                continue
+            tlen = len(token)
+            cand = (pos, -tlen, token)
+            if best is None or cand < best:
+                best = cand
+        if best is None:
+            missing = next((t for t, q in queues.items() if q), None)
+            raise ValueError(f"message does not contain required mention token after pos={cursor}: {missing}")
+        pos, _, token = best
+        idx = queues[token].pop(0)
+        ordered_indices.append(idx)
+        cursor = pos + len(token)
+        remaining -= 1
+
+    mentions: list[dict] = []
+    idx_by_uid: dict[int, int] = {}
+    for order, entry_idx in enumerate(ordered_indices, start=1):
+        e = entries[entry_idx]
+        uid = int(e["uid"])
+        name = str(e["name"])
+        if uid in idx_by_uid:
+            mi = idx_by_uid[uid]
+            if mentions[mi]["len"] != _utf16_len(name):
+                raise ValueError(f"same userId mentioned with different name length: {uid}")
+            mentions[mi]["at"].append(order)
+        else:
+            idx_by_uid[uid] = len(mentions)
+            mentions.append({"user_id": uid, "at": [order], "len": _utf16_len(name)})
+
+    return {"mentions": mentions} if mentions else {}
+
+
 @app.post("/send/talkapi/prepare")
 async def talkapi_prepare(request: Request):
-    raise HTTPException(status_code=410, detail="DEPRECATED_TALKAPI_DISABLED")
+    """Return payload for Talk-API send without sending (SAFE)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    rid = str((body or {}).get("roomId") or "").strip()
+    message = str((body or {}).get("message") or "")
+    mentionees = body.get("mentionees") if isinstance(body, dict) else []
+    if not isinstance(mentionees, list):
+        mentionees = []
+    try:
+        att = _make_mention_attachment(message, mentionees)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    payload = {
+        "chatId": int(rid) if rid.isdigit() else rid,
+        "message": message,
+        "attachment": att or {},
+    }
+    return JSONResponse(content={"ok": True, "payload": payload, "note": "payload only; not sent"})
 
 
 @app.post("/send/talkapi/dispatch")
 async def talkapi_dispatch(request: Request):
-    raise HTTPException(status_code=410, detail="DEPRECATED_TALKAPI_DISABLED")
+    """Send via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False."""
+    cfg = load_runtime()
+    if cfg.get("safeMode", True):
+        raise HTTPException(status_code=403, detail="SAFE_MODE")
+    talk = _runtime_get_talk_cfg()
+    if not talk.get("enabled"):
+        raise HTTPException(status_code=400, detail="talkApi disabled")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    rid = str((body or {}).get("roomId") or "").strip()
+    message = str((body or {}).get("message") or "")
+    mentionees = body.get("mentionees") if isinstance(body, dict) else []
+    if not isinstance(mentionees, list):
+        mentionees = []
+    try:
+        att = _make_mention_attachment(message, mentionees)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    payload = {
+        "chatId": int(rid) if rid.isdigit() else rid,
+        "message": message,
+        "attachment": att or {},
+    }
+    if "type" in body:
+        payload["type"] = body.get("type")
+    url = (talk.get("baseUrl") or "").rstrip("/") + "/api/v1/send"
+    headers = {}
+    auth = talk.get("authHeader") or ""
+    if auth:
+        if ":" in auth:
+            k, v = auth.split(":", 1)
+            headers[k.strip()] = v.strip()
+        else:
+            headers["Authorization"] = auth
+    status, txt = _http_post_json(url, payload, headers, timeout=max(1, int(talk.get("timeoutMs", 8000))) / 1000.0)
+    talk_body = None
+    talk_status = None
+    talk_err = None
+    try:
+        talk_body = json.loads(txt) if txt else None
+    except Exception:
+        talk_body = None
+    if isinstance(talk_body, dict):
+        talk_status = talk_body.get("status")
+        talk_err = talk_body.get("errMsg") or talk_body.get("message") or talk_body.get("error")
+    ok = False
+    try:
+        ok = int(talk_status) == 0
+    except Exception:
+        ok = False
+    code = 200 if ok else 502
+    return JSONResponse(
+        status_code=code,
+        content={
+            "ok": ok,
+            "talkApi": {
+                "httpStatus": status,
+                "status": talk_status,
+                "errMsg": talk_err,
+                "body": talk_body,
+                "raw": txt,
+            },
+            "payload": payload,
+        },
+    )
+
+
+def _coerce_int(v: object, field: str) -> int:
+    if isinstance(v, bool):
+        raise HTTPException(status_code=400, detail=f"invalid {field}: bool not allowed")
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        t = v.strip()
+        if t and t.isdigit():
+            return int(t)
+    raise HTTPException(status_code=400, detail=f"invalid {field}: expected int")
+
+
+def _coerce_reply_attachment_types(att: dict) -> dict:
+    required = ("src_logId", "src_userId", "src_linkId", "src_type")
+    missing = [k for k in required if k not in att]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"invalid attachment: missing {', '.join(missing)} for reply(type=26)")
+
+    att["src_userId"] = _coerce_int(att.get("src_userId"), "attachment.src_userId")
+    att["src_linkId"] = _coerce_int(att.get("src_linkId"), "attachment.src_linkId")
+    att["src_type"] = _coerce_int(att.get("src_type"), "attachment.src_type")
+    if "attach_type" in att:
+        att["attach_type"] = _coerce_int(att.get("attach_type"), "attachment.attach_type")
+    return att
 
 
 def _coerce_base64_list(v: object) -> list[str]:
@@ -3079,12 +3287,109 @@ def _coerce_url_list(v: object) -> list[str]:
 
 @app.post("/send/talkapi/prepare_raw")
 async def talkapi_prepare_raw(request: Request):
-    raise HTTPException(status_code=410, detail="DEPRECATED_TALKAPI_DISABLED")
+    """Return payload for Talk-API send without sending (SAFE)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    rid = str((body or {}).get("roomId") or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="roomId required")
+    message = str((body or {}).get("message") or "")
+    mtype = _coerce_int((body or {}).get("type"), "type")
+    attachment = (body or {}).get("attachment")
+    if not isinstance(attachment, dict):
+        raise HTTPException(status_code=400, detail="invalid attachment: expected object")
+    if mtype == 26:
+        attachment = _coerce_reply_attachment_types(attachment)
+    payload = {
+        "chatId": int(rid) if rid.isdigit() else rid,
+        "message": message,
+        "type": mtype,
+        "attachment": attachment,
+    }
+    return JSONResponse(content={"ok": True, "payload": payload, "note": "payload only; not sent"})
 
 
 @app.post("/send/talkapi/dispatch_raw")
 async def talkapi_dispatch_raw(request: Request):
-    raise HTTPException(status_code=410, detail="DEPRECATED_TALKAPI_DISABLED")
+    """Send raw payload via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False."""
+    cfg = load_runtime()
+    if cfg.get("safeMode", True):
+        raise HTTPException(status_code=403, detail="SAFE_MODE")
+    talk = _runtime_get_talk_cfg()
+    if not talk.get("enabled"):
+        raise HTTPException(status_code=400, detail="talkApi disabled")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    rid = str((body or {}).get("roomId") or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="roomId required")
+    message = str((body or {}).get("message") or "")
+    mtype = _coerce_int((body or {}).get("type"), "type")
+    attachment = (body or {}).get("attachment")
+    if not isinstance(attachment, dict):
+        raise HTTPException(status_code=400, detail="invalid attachment: expected object")
+    mentionees = body.get("mentionees") if isinstance(body, dict) else []
+    if not isinstance(mentionees, list):
+        mentionees = []
+    if mentionees:
+        try:
+            att = _make_mention_attachment(message, mentionees)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if isinstance(att, dict) and att:
+            attachment = {**attachment, **att}
+    if mtype == 26:
+        attachment = _coerce_reply_attachment_types(attachment)
+    payload = {
+        "chatId": int(rid) if rid.isdigit() else rid,
+        "message": message,
+        "type": mtype,
+        "attachment": attachment,
+    }
+    url = (talk.get("baseUrl") or "").rstrip("/") + "/api/v1/send"
+    headers = {}
+    auth = talk.get("authHeader") or ""
+    if auth:
+        if ":" in auth:
+            k, v = auth.split(":", 1)
+            headers[k.strip()] = v.strip()
+        else:
+            headers["Authorization"] = auth
+    status, txt = _http_post_json(url, payload, headers, timeout=max(1, int(talk.get("timeoutMs", 8000))) / 1000.0)
+    talk_body = None
+    talk_status = None
+    talk_err = None
+    try:
+        talk_body = json.loads(txt) if txt else None
+    except Exception:
+        talk_body = None
+    if isinstance(talk_body, dict):
+        talk_status = talk_body.get("status")
+        talk_err = talk_body.get("errMsg") or talk_body.get("message") or talk_body.get("error")
+    ok = False
+    try:
+        ok = int(talk_status) == 0
+    except Exception:
+        ok = False
+    code = 200 if ok else 502
+    return JSONResponse(
+        status_code=code,
+        content={
+            "ok": ok,
+            "talkApi": {
+                "httpStatus": status,
+                "status": talk_status,
+                "errMsg": talk_err,
+                "body": talk_body,
+                "raw": txt,
+            },
+            "payload": payload,
+        },
+    )
 
 
 @app.post("/send/iris/reply_text")
