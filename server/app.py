@@ -1308,10 +1308,6 @@ async def upload_avatar(room_id: str, file: UploadFile = File(...)):
 @app.get("/runtime")
 async def get_runtime():
     cfg = load_runtime()
-    # legacy: do not expose Talk-API config/authHeader
-    if isinstance(cfg, dict) and "talkApi" in cfg:
-        cfg = dict(cfg)
-        cfg.pop("talkApi", None)
     # no enforcement here; runtime decides (default True via load_runtime)
     return JSONResponse(content=cfg)
 
@@ -1681,13 +1677,60 @@ async def update_runtime(request: Request):
                 cur["courseOps"] = cur_co
             else:
                 cur.pop("courseOps", None)
-    # talk-api runtime config (legacy; disabled)
+    # talk-api runtime config
     if isinstance(body, dict) and "talkApi" in body:
         talk = body.get("talkApi")
         if talk is None:
             cur.pop("talkApi", None)
+        elif not isinstance(talk, dict):
+            raise HTTPException(status_code=400, detail="talkApi must be an object or null")
         else:
-            raise HTTPException(status_code=410, detail="DEPRECATED_TALKAPI_DISABLED")
+            cur_talk = cur.get("talkApi")
+            if not isinstance(cur_talk, dict):
+                cur_talk = {}
+
+            if "enabled" in talk:
+                v = talk.get("enabled")
+                if v is None:
+                    cur_talk.pop("enabled", None)
+                elif isinstance(v, bool):
+                    cur_talk["enabled"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="talkApi.enabled must be boolean or null")
+
+            if "baseUrl" in talk:
+                v = talk.get("baseUrl")
+                if v is None:
+                    cur_talk.pop("baseUrl", None)
+                elif isinstance(v, str) and v.strip():
+                    cur_talk["baseUrl"] = v.strip()
+                else:
+                    raise HTTPException(status_code=400, detail="talkApi.baseUrl must be non-empty string or null")
+
+            if "authHeader" in talk:
+                v = talk.get("authHeader")
+                if v is None:
+                    cur_talk.pop("authHeader", None)
+                elif isinstance(v, str):
+                    cur_talk["authHeader"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="talkApi.authHeader must be string or null")
+
+            if "timeoutMs" in talk:
+                v = talk.get("timeoutMs")
+                if v is None:
+                    cur_talk.pop("timeoutMs", None)
+                else:
+                    try:
+                        n = int(v)
+                    except Exception:
+                        raise HTTPException(status_code=400, detail="talkApi.timeoutMs must be int or null")
+                    cur_talk["timeoutMs"] = max(1000, min(30000, n))
+
+            if cur_talk:
+                cur["talkApi"] = cur_talk
+            else:
+                cur.pop("talkApi", None)
 
     # Welcome template set config (optional)
     w = body.get("welcome")
@@ -4549,14 +4592,36 @@ async def pint_briefing_bundle(request: Request):
 
 @app.get("/talkapi/health")
 async def talkapi_health():
+    talk = _runtime_get_talk_cfg()
+    enabled = bool(talk.get("enabled"))
+    base = (talk.get("baseUrl") or "").rstrip("/")
+    if not base:
+        base = "https://talk-api.naijun.dev"
+    reachable = False
+    status = None
+    err = None
+    if enabled:
+        try:
+            req = _urlreq.Request(base + "/", method="GET")
+            with _urlreq.urlopen(req, timeout=max(1, int(talk.get("timeoutMs", 8000))) / 1000.0) as resp:
+                status = resp.getcode()
+                reachable = 200 <= status < 300
+        except HTTPError as e:
+            status = e.code
+            err = str(e)
+        except URLError as e:
+            status = 0
+            err = str(e)
+        except Exception as e:
+            status = 0
+            err = str(e)
     return JSONResponse(
         content={
-            "enabled": False,
-            "deprecated": True,
-            "baseUrl": None,
-            "reachable": False,
-            "status": None,
-            "error": "DEPRECATED_TALKAPI_DISABLED",
+            "enabled": enabled,
+            "baseUrl": base,
+            "reachable": reachable,
+            "status": status,
+            "error": err,
         }
     )
 
