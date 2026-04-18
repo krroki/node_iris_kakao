@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -47,16 +48,67 @@ _ROOM_ADMIN_REFRESH_COOLDOWN_SEC_GLOBAL = 3 * 60
 # IRIS /reply_media는 HTTP 200을 반환해도 실제 UI 전송은 비동기/지연/누락될 수 있다.
 # 따라서 서버에서 "MessageStore 로그 에코"를 확인한 뒤에만 ok=true를 반환해,
 # 여러 워커가 동시에 /send/iris/reply_media를 호출해도 IRIS UI 자동화가 겹치지 않도록 직렬화한다.
-IRIS_SENDER_ID = "434886784"
+# NOTE: IRIS /config(bot_id) fetch가 일시 실패하면 이 기본값으로 echo 검증을 한다.
+# 기본값이 레거시 senderId로 남아 있으면(= 계정 교체) "발신은 됐는데 echo가 실패"로 502가 나가며
+# 상위 워커에서 재시도/스팸을 유발할 수 있다. 현재 운영 bot_id를 포함해 둔다.
+_DEFAULT_IRIS_SENDER_IDS = ["437111754", "434886784", "435780965"]
+
+
+def _load_iris_sender_ids_from_env() -> list[str]:
+    raw = str(os.getenv("IRIS_SENDER_IDS") or os.getenv("IRIS_SENDER_ID") or "").strip()
+    ids: list[str] = []
+    if raw:
+        ids = [x.strip() for x in re.split(r"[,\s]+", raw) if x.strip()]
+        ids = [x for x in ids if re.fullmatch(r"\d+", x)]
+    if not ids:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in ids:
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
+IRIS_SENDER_IDS_ENV = _load_iris_sender_ids_from_env()
+IRIS_SENDER_ID_ENV = IRIS_SENDER_IDS_ENV[0] if IRIS_SENDER_IDS_ENV else ""
+IRIS_SENDER_IDS_CACHE_SEC = int(os.getenv("IRIS_SENDER_IDS_CACHE_SEC", "30"))
+_IRIS_SENDER_IDS_CACHE: dict[str, object] = {"at": 0.0, "ids": []}
 IRIS_REPLY_ECHO_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_ECHO_TIMEOUT_MS", "25000"))
+# Text echo verification is optional by default (perf). Enable per-request via echoTimeoutMs.
+IRIS_REPLY_TEXT_ECHO_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_TEXT_ECHO_TIMEOUT_MS", "0"))
+IRIS_REPLY_TEXT_DB_ECHO_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_TEXT_DB_ECHO_TIMEOUT_MS", "8000"))
+IRIS_REPLY_TEXT_DB_ECHO_POLL_MS = int(os.getenv("IRIS_REPLY_TEXT_DB_ECHO_POLL_MS", "400"))
+IRIS_REPLY_TEXT_IMAGE_FALLBACK_ECHO_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_FALLBACK_ECHO_TIMEOUT_MS", "12000"))
+IRIS_REPLY_TEXT_IMAGE_FALLBACK_SENDLOG_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_FALLBACK_SENDLOG_TIMEOUT_MS", "12000"))
+IRIS_REPLY_TEXT_IMAGE_MAX_WIDTH_PX = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_MAX_WIDTH_PX", "980"))
+IRIS_REPLY_TEXT_IMAGE_FONT_SIZE = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_FONT_SIZE", "26"))
+IRIS_REPLY_TEXT_IMAGE_PADDING_PX = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_PADDING_PX", "36"))
+IRIS_REPLY_TEXT_IMAGE_LINE_SPACING_PX = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_LINE_SPACING_PX", "10"))
+IRIS_REPLY_TEXT_IMAGE_MAX_LINES = int(os.getenv("IRIS_REPLY_TEXT_IMAGE_MAX_LINES", "70"))
 IRIS_REPLY_ECHO_POLL_MS = int(os.getenv("IRIS_REPLY_ECHO_POLL_MS", "700"))
 IRIS_REPLY_LOG_SCAN_BYTES = int(os.getenv("IRIS_REPLY_LOG_SCAN_BYTES", str(256 * 1024)))
 IRIS_REPLY_POST_ECHO_DELAY_MS = int(os.getenv("IRIS_REPLY_POST_ECHO_DELAY_MS", "800"))
 IRIS_REPLY_SENDLOG_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_SENDLOG_TIMEOUT_MS", "25000"))
 IRIS_REPLY_SENDLOG_POLL_MS = int(os.getenv("IRIS_REPLY_SENDLOG_POLL_MS", "600"))
+IRIS_REPLY_MEDIA_SENDLOG_START_TIMEOUT_MS = int(os.getenv("IRIS_REPLY_MEDIA_SENDLOG_START_TIMEOUT_MS", "5000"))
 IRIS_REPLY_MAX_RETRIES = int(os.getenv("IRIS_REPLY_MAX_RETRIES", "0"))
 IRIS_REPLY_RETRY_DELAY_MS = int(os.getenv("IRIS_REPLY_RETRY_DELAY_MS", "800"))
 _IRIS_REPLY_LOCK = asyncio.Lock()
+_IRIS_REPLY_ROOM_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _get_iris_reply_room_lock(room_id: str) -> asyncio.Lock:
+    rid = str(room_id or "").strip()
+    if not rid:
+        return _IRIS_REPLY_LOCK
+    lock = _IRIS_REPLY_ROOM_LOCKS.get(rid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _IRIS_REPLY_ROOM_LOCKS[rid] = lock
+    return lock
 
 
 def _repo_root() -> Path:
@@ -64,8 +116,82 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _safe_int0(v: object, default: int = 0) -> int:
+    try:
+        return int(v)  # type: ignore[arg-type]
+    except Exception:
+        return default
+
+
+PINT_BRIEFING_BUNDLE_STATE_PATH = Path(
+    os.getenv("PINT_BRIEFING_BUNDLE_STATE_PATH")
+    or str(_repo_root() / "node-iris-app" / "data" / "pint_briefing_bundle_state.json")
+)
+PINT_BRIEFING_BUNDLE_STATE_TTL_SEC = int(os.getenv("PINT_BRIEFING_BUNDLE_STATE_TTL_SEC", str(7 * 24 * 60 * 60)))
+PINT_BRIEFING_BUNDLE_STATE_MAX_ITEMS = int(os.getenv("PINT_BRIEFING_BUNDLE_STATE_MAX_ITEMS", "500"))
+
+
+def _read_json_dict(path: Path) -> dict | None:
+    try:
+        if not path.exists():
+            return None
+        raw = path.read_text(encoding="utf-8-sig")
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _write_json_atomic(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{int(time.time() * 1000)}")
+    try:
+        tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+
+
+def _prune_pint_briefing_bundle_state_items(items: dict, now_sec: int) -> dict:
+    ttl = max(60, int(PINT_BRIEFING_BUNDLE_STATE_TTL_SEC))
+    max_items = max(50, int(PINT_BRIEFING_BUNDLE_STATE_MAX_ITEMS))
+    keep: list[tuple[str, dict, int]] = []
+    for k, v in (items or {}).items():
+        if not isinstance(k, str) or not k:
+            continue
+        if not isinstance(v, dict):
+            continue
+        ts = _safe_int0(v.get("okAt") or v.get("lastAttemptAt") or v.get("albumOkAt") or 0)
+        if ts <= 0:
+            continue
+        if now_sec - ts > ttl:
+            continue
+        keep.append((k, v, ts))
+
+    keep.sort(key=lambda x: x[2], reverse=True)
+    out: dict[str, dict] = {}
+    for k, v, _ts in keep[:max_items]:
+        out[k] = v
+    return out
+
+
 def _now_ts() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def _guess_image_ext(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    return ".bin"
 
 def _parse_keywords(s: str | None) -> list[str]:
     if not s:
@@ -528,6 +654,12 @@ async def status():
             "ok": False,
             "detail": "상태 확인 중...",
         }
+        if os.getenv("KB_SERVICE_DISABLE") == "1":
+            stage["ok"] = True
+            stage["detail"] = "KB disabled (KB_SERVICE_DISABLE=1)"
+            stage["timestamp"] = datetime.now(timezone.utc).isoformat()
+            stage["extra"] = {"disabled": True}
+            return stage
         url = f"{KB_BASE}/health"
         url_selfcheck = f"{KB_BASE}/health/selfcheck"
         try:
@@ -583,6 +715,11 @@ async def status():
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "extra": {"host": host, "port": port},
         }
+        if os.getenv("KB_SERVICE_DISABLE") == "1":
+            stage["ok"] = True
+            stage["detail"] = "disabled (KB_SERVICE_DISABLE=1)"
+            stage["extra"] = {"host": host, "port": port, "disabled": True}
+            return stage
         try:
             sock = socket.create_connection((host, port), timeout=0.8)
             try:
@@ -876,7 +1013,7 @@ def _fetch_room_admins_from_iris(room_id: str) -> dict:
     if not rid:
         raise HTTPException(status_code=400, detail="roomId required")
 
-    # Host SSOT는 open_link(owner)이며, open_chat_member는 보조(부방장/닉네임 힌트)로 사용한다.
+    # open_chat_member가 비어있을 수 있으므로, 호스트는 open_link로도 보강한다.
     # 1) loadedMembersCount / activeMembersCount
     link_id = _resolve_room_link_id(rid)
     if link_id is not None:
@@ -899,90 +1036,142 @@ def _fetch_room_admins_from_iris(room_id: str) -> dict:
     # 2) 운영진 목록(최신 rowid 기준)
     if link_id is not None:
         rows = _iris_query_strict(
-            "select user_id, nickname, link_member_type from db2.open_chat_member "
-            "where link_id=? and link_member_type in (8,4,1) order by rowid desc limit 3000",
-            [link_id],
+            "select m.user_id, m.nickname, m.link_member_type "
+            "from db2.open_chat_member m "
+            "join ( "
+            "  select x.user_id as user_id, max(x.rowid) as max_rowid "
+            "  from db2.open_chat_member x "
+            "  join (select distinct user_id from db2.open_chat_member where link_id=? and link_member_type in (8,4,1)) a "
+            "    on a.user_id = x.user_id "
+            "  where x.link_id=? "
+            "  group by x.user_id "
+            ") latest on latest.user_id = m.user_id and latest.max_rowid = m.rowid "
+            "where m.link_id=? "
+            "order by m.rowid desc limit 3000",
+            [link_id, link_id, link_id],
             timeout_sec=8.0,
         )
     else:
         rows = _iris_query_strict(
-            "select user_id, nickname, link_member_type from db2.open_chat_member "
-            "where involved_chat_id=? and link_member_type in (8,4,1) order by rowid desc limit 3000",
-            [rid],
+            "select m.user_id, m.nickname, m.link_member_type "
+            "from db2.open_chat_member m "
+            "join ( "
+            "  select x.user_id as user_id, max(x.rowid) as max_rowid "
+            "  from db2.open_chat_member x "
+            "  join (select distinct user_id from db2.open_chat_member where involved_chat_id=? and link_member_type in (8,4,1)) a "
+            "    on a.user_id = x.user_id "
+            "  where x.involved_chat_id=? "
+            "  group by x.user_id "
+            ") latest on latest.user_id = m.user_id and latest.max_rowid = m.rowid "
+            "where m.involved_chat_id=? "
+            "order by m.rowid desc limit 3000",
+            [rid, rid, rid],
             timeout_sec=8.0,
         )
 
-    # Host SSOT: chat_rooms.link_id -> db2.open_link.user_id(owner)
+    # 2.1) 방장(Host) SSOT: chat_rooms ↔ open_link 조인(owner user_id)
+    # - open_chat_member.link_member_type=8이 "오픈채팅봇" 등으로 드리프트하는 케이스가 있어
+    #   대시보드 표시에 혼선을 줄 수 있다.
+    member_host_uid: str | None = None
+    member_host_nick: str | None = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        t = _safe_int(row.get("link_member_type"))
+        if t != 8:
+            continue
+        uid0 = str(row.get("user_id") or "").strip()
+        if uid0:
+            member_host_uid = uid0
+            member_host_nick = str(row.get("nickname") or "").strip() or None
+            break
+
     owner_uid: str | None = None
+    owner_nick: str | None = None
     try:
-        owner_rows = _iris_query_strict(
-            "select ol.user_id as user_id from chat_rooms cr join db2.open_link ol on cr.link_id=ol.id where cr.id=? limit 1",
-            [rid],
-            timeout_sec=6.0,
-        )
+        if link_id is not None:
+            owner_rows = _iris_query_strict(
+                "select user_id as user_id from db2.open_link where id=? limit 1",
+                [link_id],
+                timeout_sec=6.0,
+            )
+        else:
+            owner_rows = _iris_query_strict(
+                "select ol.user_id as user_id from chat_rooms cr join db2.open_link ol on cr.link_id=ol.id where cr.id=? limit 1",
+                [rid],
+                timeout_sec=6.0,
+            )
         if owner_rows and isinstance(owner_rows[0], dict):
-            v = str(owner_rows[0].get("user_id") or "").strip()
-            owner_uid = v or None
+            owner_uid = str(owner_rows[0].get("user_id") or "").strip() or None
     except Exception as e:
         logger.warning("[rooms/admins] owner lookup failed: %s", str(e))
 
-    host_uid: str | None = owner_uid
-    host_nick: str | None = None
+    if owner_uid:
+        # 닉네임은 open_chat_member에 있으면 같이 내려준다(복호화/보강은 agent가 담당).
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("user_id") or "").strip() == owner_uid:
+                owner_nick = str(row.get("nickname") or "").strip() or None
+                break
 
+        if not owner_nick:
+            try:
+                if link_id is not None:
+                    nick_rows = _iris_query_strict(
+                        "select nickname from db2.open_chat_member where link_id=? and user_id=? order by rowid desc limit 1",
+                        [link_id, owner_uid],
+                        timeout_sec=6.0,
+                    )
+                else:
+                    nick_rows = _iris_query_strict(
+                        "select nickname from db2.open_chat_member where involved_chat_id=? and user_id=? order by rowid desc limit 1",
+                        [rid, owner_uid],
+                        timeout_sec=6.0,
+                    )
+                if nick_rows and isinstance(nick_rows[0], dict):
+                    owner_nick = str(nick_rows[0].get("nickname") or "").strip() or None
+            except Exception as e:
+                logger.warning("[rooms/admins] owner nickname lookup failed: %s", str(e))
+
+    # 방장(Host) SSOT: open_link.user_id (링크 오너)
+    # - open_chat_member.link_member_type=8은 "오픈채팅봇/방장봇" 등으로 드리프트하는 케이스가 있어
+    #   운영 화면에서 혼선을 크게 만든다.
+    host_uid: str | None = owner_uid or member_host_uid
+    host_nick: str | None = owner_nick if host_uid and host_uid == owner_uid else member_host_nick
+
+    seen: set[str] = set()
+    host: list[dict] = []
     subhosts: list[dict] = []
-    seen_sub: set[str] = set()
+    admins: list[dict] = []
 
     for row in rows:
         if not isinstance(row, dict):
             continue
         uid = str(row.get("user_id") or "").strip()
-        if not uid:
+        if not uid or uid in seen:
             continue
+        seen.add(uid)
         nick = str(row.get("nickname") or "").strip() or None
         t = _safe_int(row.get("link_member_type"))
-
+        # 방장은 1명(host_uid)만 내려준다.
         if host_uid and uid == host_uid:
-            if not host_nick and nick:
-                host_nick = nick
+            admins.append({"userId": uid, "nickname": nick})
             continue
-
         if t in (4, 1):
-            if uid in seen_sub:
-                continue
-            seen_sub.add(uid)
             subhosts.append({"userId": uid, "nickname": nick})
-
-    # Fallback host: first link_member_type=8
-    if not host_uid:
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            uid = str(row.get("user_id") or "").strip()
-            if not uid:
-                continue
-            t = _safe_int(row.get("link_member_type"))
-            if t == 8:
-                host_uid = uid
-                host_nick = str(row.get("nickname") or "").strip() or None
-                break
-
-    host: list[dict] = []
-    admins: list[dict] = []
-    seen_admin: set[str] = set()
+            admins.append({"userId": uid, "nickname": nick})
+        elif t == 8:
+            # host는 위에서 1명(host_uid)만 선택해 내려준다.
+            continue
 
     if host_uid:
         host = [{"userId": host_uid, "nickname": host_nick}]
-        admins.append({"userId": host_uid, "nickname": host_nick})
-        seen_admin.add(host_uid)
-
-    for e in subhosts:
-        uid = str(e.get("userId") or "").strip()
-        if not uid:
-            continue
-        if uid in seen_admin:
-            continue
-        seen_admin.add(uid)
-        admins.append(e)
+        if host_uid not in {a.get("userId") for a in admins}:
+            admins.append({"userId": host_uid, "nickname": host_nick})
+        subhosts = [x for x in subhosts if str((x or {}).get("userId") or "").strip() != host_uid]
+    else:
+        host = []
 
     hint = None
     if loaded_cnt == 0:
@@ -1158,12 +1347,16 @@ async def update_runtime(request: Request):
 
             allowed_nr_keys = {
                 "enabled",
+                "dryRun",
                 "tickSec",
                 "perRoomMinSendIntervalSec",
                 "maxMentionsPerMessage",
                 "betweenMessagesDelayMs",
                 "memberLoadWaitMs",
                 "memberLoadScrolls",
+                "dailyAt",
+                "dailyWindowMin",
+                "messageText",
                 "warningSchedule",
                 "warningMessageByLevel",
             }
@@ -1191,6 +1384,37 @@ async def update_runtime(request: Request):
                 else:
                     raise HTTPException(status_code=400, detail="nicknameReminder.enabled must be boolean or null")
 
+            if "dryRun" in nickname_reminder:
+                v = nickname_reminder.get("dryRun")
+                if v is None:
+                    cur_nr.pop("dryRun", None)
+                elif isinstance(v, bool):
+                    cur_nr["dryRun"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="nicknameReminder.dryRun must be boolean or null")
+
+            if "dailyAt" in nickname_reminder:
+                v = nickname_reminder.get("dailyAt")
+                if v is None:
+                    cur_nr.pop("dailyAt", None)
+                elif not isinstance(v, str):
+                    raise HTTPException(status_code=400, detail="nicknameReminder.dailyAt must be string or null")
+                else:
+                    parts = [p.strip() for p in re.split(r"[,\n]+", v) if p and str(p).strip()]
+                    times = set()
+                    for p in parts:
+                        m = re.match(r"^\s*(\d{1,2})\s*:\s*(\d{1,2})\s*$", p)
+                        if not m:
+                            raise HTTPException(status_code=400, detail="nicknameReminder.dailyAt must be like 'HH:MM,HH:MM' (24h)")
+                        hh = int(m.group(1))
+                        mm = int(m.group(2))
+                        if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                            raise HTTPException(status_code=400, detail="nicknameReminder.dailyAt time out of range (00:00..23:59)")
+                        times.add(f"{hh:02d}:{mm:02d}")
+                    if not times:
+                        raise HTTPException(status_code=400, detail="nicknameReminder.dailyAt must include at least 1 time")
+                    cur_nr["dailyAt"] = ",".join(sorted(times))
+
             if "tickSec" in nickname_reminder:
                 _set_int_field(cur_nr, "tickSec", nickname_reminder.get("tickSec"), 10, 3600)
             if "perRoomMinSendIntervalSec" in nickname_reminder:
@@ -1203,6 +1427,23 @@ async def update_runtime(request: Request):
                 _set_int_field(cur_nr, "memberLoadWaitMs", nickname_reminder.get("memberLoadWaitMs"), 0, 10 * 60 * 1000)
             if "memberLoadScrolls" in nickname_reminder:
                 _set_int_field(cur_nr, "memberLoadScrolls", nickname_reminder.get("memberLoadScrolls"), 50, 1200)
+            if "dailyWindowMin" in nickname_reminder:
+                _set_int_field(cur_nr, "dailyWindowMin", nickname_reminder.get("dailyWindowMin"), 0, 180)
+
+            if "messageText" in nickname_reminder:
+                v = nickname_reminder.get("messageText")
+                if v is None:
+                    cur_nr.pop("messageText", None)
+                elif not isinstance(v, str):
+                    raise HTTPException(status_code=400, detail="nicknameReminder.messageText must be string or null")
+                else:
+                    s = v.strip()
+                    if not s:
+                        cur_nr.pop("messageText", None)
+                    elif len(s) > 600:
+                        raise HTTPException(status_code=400, detail="nicknameReminder.messageText too long (max 600 chars)")
+                    else:
+                        cur_nr["messageText"] = s
 
             if "warningMessageByLevel" in nickname_reminder:
                 wmb = nickname_reminder.get("warningMessageByLevel")
@@ -1436,16 +1677,60 @@ async def update_runtime(request: Request):
                 cur["courseOps"] = cur_co
             else:
                 cur.pop("courseOps", None)
-    # talk-api runtime config (optional)
-    talk = body.get("talkApi")
-    if isinstance(talk, dict):
-        cur.setdefault("talkApi", {})
-        cur["talkApi"].update({
-            "enabled": bool(talk.get("enabled", cur.get("talkApi",{}).get("enabled", False))),
-            "baseUrl": str(talk.get("baseUrl", cur.get("talkApi",{}).get("baseUrl", "https://talk-api.naijun.dev"))),
-            "authHeader": str(talk.get("authHeader", cur.get("talkApi",{}).get("authHeader", ""))),
-            "timeoutMs": int(talk.get("timeoutMs", cur.get("talkApi",{}).get("timeoutMs", 8000))),
-        })
+    # talk-api runtime config
+    if isinstance(body, dict) and "talkApi" in body:
+        talk = body.get("talkApi")
+        if talk is None:
+            cur.pop("talkApi", None)
+        elif not isinstance(talk, dict):
+            raise HTTPException(status_code=400, detail="talkApi must be an object or null")
+        else:
+            cur_talk = cur.get("talkApi")
+            if not isinstance(cur_talk, dict):
+                cur_talk = {}
+
+            if "enabled" in talk:
+                v = talk.get("enabled")
+                if v is None:
+                    cur_talk.pop("enabled", None)
+                elif isinstance(v, bool):
+                    cur_talk["enabled"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="talkApi.enabled must be boolean or null")
+
+            if "baseUrl" in talk:
+                v = talk.get("baseUrl")
+                if v is None:
+                    cur_talk.pop("baseUrl", None)
+                elif isinstance(v, str) and v.strip():
+                    cur_talk["baseUrl"] = v.strip()
+                else:
+                    raise HTTPException(status_code=400, detail="talkApi.baseUrl must be non-empty string or null")
+
+            if "authHeader" in talk:
+                v = talk.get("authHeader")
+                if v is None:
+                    cur_talk.pop("authHeader", None)
+                elif isinstance(v, str):
+                    cur_talk["authHeader"] = v
+                else:
+                    raise HTTPException(status_code=400, detail="talkApi.authHeader must be string or null")
+
+            if "timeoutMs" in talk:
+                v = talk.get("timeoutMs")
+                if v is None:
+                    cur_talk.pop("timeoutMs", None)
+                else:
+                    try:
+                        n = int(v)
+                    except Exception:
+                        raise HTTPException(status_code=400, detail="talkApi.timeoutMs must be int or null")
+                    cur_talk["timeoutMs"] = max(1000, min(30000, n))
+
+            if cur_talk:
+                cur["talkApi"] = cur_talk
+            else:
+                cur.pop("talkApi", None)
 
     # Welcome template set config (optional)
     w = body.get("welcome")
@@ -1698,37 +1983,32 @@ async def template_asset(category: str, name: str, rest: str):
     return Response(content=p.read_bytes(), media_type=ctype)
 
 
-def _render_template_text(content: str, ctx: dict) -> tuple[str, list[str]]:
-    """Render template text with variables and extract mention targets.
+def _render_template_text(content: str, ctx: dict) -> str:
+    """Render template text with variables.
+
     Supported:
       - {{var}} → ctx[var]
-      - @{var}  → "@" + ctx[var] and collect as mention target
+      - @{var}  → ctx[var]  (레거시 "멘션 토큰"이지만, 이제는 @를 붙이지 않는다)
+      - {var}   → ctx[var]  (legacy)
+
     Korean aliases allowed, e.g., '입장인원변수' can be used as var name.
     """
     text = content or ""
-    mentions: list[str] = []
 
-    # mention tokens: @{var}
+    # legacy mention tokens: @{var} -> plain text name (no '@')
     def rep_mention(m: re.Match) -> str:
-        key = (m.group(1) or '').strip()
-        # common aliases
+        key = (m.group(1) or "").strip()
         aliases = [key]
-        if key in ('입장인원변수','입장자','입장닉네임'):
-            aliases += ['entrant', 'entrance', 'entrantName', 'username', 'userName', 'joinUser']
-        elif key in ('entrant','entrance','username','userName','joinUser','entrantName'):
-            aliases += ['입장인원변수','입장자']
+        if key in ("입장인원변수", "입장자", "입장닉네임"):
+            aliases += ["entrant", "entrance", "entrantName", "username", "userName", "joinUser"]
+        elif key in ("entrant", "entrance", "username", "userName", "joinUser", "entrantName"):
+            aliases += ["입장인원변수", "입장자"]
         val = None
         for k in aliases:
             if k in ctx and str(ctx[k]).strip():
                 val = str(ctx[k]).strip()
                 break
-        if val:
-            if val not in mentions:
-                mentions.append(val)
-            return '@' + val
-        return m.group(0)  # leave as is
-
-    text = re.sub(r"@\{([^}]+)\}", rep_mention, text)
+        return val if val else m.group(0)  # leave as is
 
     # simple {{var}} replacement (no escaping)
     def rep_var(m: re.Match) -> str:
@@ -1742,6 +2022,9 @@ def _render_template_text(content: str, ctx: dict) -> tuple[str, list[str]]:
 
     text = re.sub(r"\{\{\s*([^}]+?)\s*\}\}", rep_var, text)
 
+    # legacy mention tokens: @{var} -> plain text name (no '@')
+    text = re.sub(r"@\{([^}]+)\}", rep_mention, text)
+
     # legacy-style {var} replacement (kept for compatibility with existing templates)
     def rep_var1(m: re.Match) -> str:
         key = (m.group(1) or '').strip()
@@ -1753,41 +2036,7 @@ def _render_template_text(content: str, ctx: dict) -> tuple[str, list[str]]:
         return m.group(0)
 
     text = re.sub(r"\{([^}]+)\}", rep_var1, text)
-    return text, mentions
-
-
-def _map_names_to_ids(room_id: str, names: list[str]) -> list[dict]:
-    """Best-effort mapping: use recent logs in this room to map senderName -> senderId.
-    Returns list of { name, userId } for names we could map.
-    """
-    try:
-        from .log_utils import get_logs_dir
-        names_set = {str(n).strip() for n in names if str(n).strip()}
-        out = []
-        d = get_logs_dir() / str(room_id)
-        files = sorted(d.glob('*.log'))
-        seen = set()
-        for p in reversed(files[-3:]):
-            try:
-                lines = p.read_text(encoding='utf-8', errors='ignore').splitlines()
-            except Exception:
-                continue
-            for ln in reversed(lines[-800:]):
-                try:
-                    o = json.loads(ln)
-                except Exception:
-                    continue
-                snap = o.get('snapshot', {}) if isinstance(o, dict) else {}
-                nm = str(snap.get('senderName') or '').strip()
-                uid = str(snap.get('senderId') or '').strip()
-                if nm and uid and nm in names_set and nm not in seen:
-                    out.append({ 'name': nm, 'userId': uid })
-                    seen.add(nm)
-                if names_set.issubset(seen):
-                    break
-        return out
-    except Exception:
-        return []
+    return text
 
 
 @app.post("/templates/{category}/{name}/render")
@@ -1808,142 +2057,43 @@ async def template_render(category: str, name: str, request: Request):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="not found")
     content = str(tpl.get('content') or '')
-    rendered, mention_targets = _render_template_text(content, ctx)
+    rendered = _render_template_text(content, ctx)
     imgs = list(tpl.get('images') or [])
     safe = load_runtime().get('safeMode', True)
     return JSONResponse(content={
         "content": rendered,
-        "mentions": mention_targets,
+        "mentions": [],
         "images": imgs,
         "safeMode": bool(safe),
     })
 
 
-# --- Talk-API integration (prepare + optional send) ---
-
-def _runtime_get_talk_cfg() -> dict:
-    cfg = load_runtime()
-    talk = cfg.get("talkApi") or {}
-    if not isinstance(talk, dict):
-        talk = {}
-    talk.setdefault("enabled", False)
-    talk.setdefault("baseUrl", "https://talk-api.naijun.dev")
-    talk.setdefault("authHeader", "")
-    talk.setdefault("timeoutMs", 8000)
-    return talk
-
-
-def _make_mention_attachment(message: str, mentionees: list[dict]) -> dict:
-    """Build an attachment object for Kakao mention.
-
-    LOCO-style mention struct:
-      attachment.mentions: [{ user_id: <int64>, at: [1,2,...], len: <name_len_utf16> }]
-
-    Notes (aligned with storycraft/node-kakao MentionStruct):
-    - `at` is NOT a character offset. It is a 1-based mention order index list.
-      (e.g., first mention -> at=[1], second -> at=[2], ...; same user can have multiple at entries)
-    - `len` is the display name length excluding '@', measured in UTF-16 code units
-      (matches JS/Kotlin String.length behavior; important for emoji).
-    - `user_id` should be int64 (we accept string input but validate/convert to int).
-    """
-    def _utf16_len(s: str) -> int:
-        # JS/Kotlin String.length == UTF-16 code units
-        try:
-            return len((s or "").encode("utf-16-le")) // 2
-        except Exception:
-            return len(str(s or ""))
-
-    msg = str(message or "")
-    if not mentionees:
-        return {}
-    if not isinstance(mentionees, list):
-        raise ValueError("mentionees must be a list")
-
-    entries: list[dict] = []
-    for i, m in enumerate(mentionees):
-        if not isinstance(m, dict):
-            raise ValueError(f"mentionees[{i}] must be an object")
-        name = str(m.get("name") or "").strip()
-        uid_raw = str(m.get("userId") or m.get("user_id") or "").strip()
-        if not name or not uid_raw:
-            raise ValueError(f"mentionees[{i}] missing name/userId")
-        if not uid_raw.isdigit():
-            raise ValueError(f"mentionees[{i}].userId must be digits (int64)")
-        token = "@" + name
-        entries.append({
-            "i": i,
-            "name": name,
-            "uid": int(uid_raw),
-            "token": token,
-            "tlen": len(token),
-        })
-
-    # Enforce Kakao server side limit (commonly 15 mentions per message).
-    if len(entries) > 15:
-        raise ValueError(f"too many mentions: {len(entries)} (max 15)")
-
-    # Assign each mentionee to a distinct token occurrence, scanning message left-to-right.
-    # This avoids ambiguous duplicates (same name or same user mentioned multiple times).
-    queues: dict[str, list[int]] = {}
-    for idx, e in enumerate(entries):
-        queues.setdefault(e["token"], []).append(idx)
-
-    cursor = 0
-    ordered_indices: list[int] = []
-    remaining = sum(len(v) for v in queues.values())
-    while remaining > 0:
-        best = None  # (pos, -tlen, token)
-        for token, q in queues.items():
-            if not q:
-                continue
-            pos = msg.find(token, cursor)
-            if pos < 0:
-                continue
-            tlen = len(token)
-            cand = (pos, -tlen, token)
-            if best is None or cand < best:
-                best = cand
-        if best is None:
-            # Find one missing token for a clearer error message.
-            missing = next((t for t, q in queues.items() if q), None)
-            raise ValueError(f"message does not contain required mention token after pos={cursor}: {missing}")
-        pos, _, token = best
-        idx = queues[token].pop(0)
-        ordered_indices.append(idx)
-        cursor = pos + len(token)
-        remaining -= 1
-
-    # Build MentionStruct list grouped by user_id with at indices.
-    mentions: list[dict] = []
-    idx_by_uid: dict[int, int] = {}
-    for order, entry_idx in enumerate(ordered_indices, start=1):
-        e = entries[entry_idx]
-        uid = int(e["uid"])
-        name = str(e["name"])
-        if uid in idx_by_uid:
-            mi = idx_by_uid[uid]
-            # Same user can be mentioned multiple times; at is a list.
-            if mentions[mi]["len"] != _utf16_len(name):
-                raise ValueError(f"same userId mentioned with different name length: {uid}")
-            mentions[mi]["at"].append(order)
-        else:
-            idx_by_uid[uid] = len(mentions)
-            mentions.append({
-                "user_id": uid,
-                "at": [order],
-                "len": _utf16_len(name),
-            })
-
-    return {"mentions": mentions} if mentions else {}
+# NOTE(legacy): Talk-API/authHeader/“진짜 멘션(@ attachment)”/Reply(type=26) 헬퍼는
+# `server/legacy/talkapi_mentions_reply_reference.py` 로 이동했다. (ADR-0053)
 
 
 def _http_post_json(url: str, data: dict, headers: dict, timeout: float) -> tuple[int, str]:
     req = _urlreq.Request(url, method='POST')
     body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+    has_ua = False
+    has_ct = False
     for k, v in (headers or {}).items():
         req.add_header(k, v)
-    if 'Content-Type' not in req.headers:
-        req.add_header('Content-Type', 'application/json')
+        lk = str(k).strip().lower()
+        if lk == 'user-agent':
+            has_ua = True
+        if lk == 'content-type':
+            has_ct = True
+    if not has_ct:
+        # Some IRIS builds mis-decode JSON bodies when charset is omitted.
+        # Be explicit to keep Hangul/emoji intact end-to-end.
+        req.add_header('Content-Type', 'application/json; charset=utf-8')
+    # NOTE: talk-api.naijun.dev is fronted by Cloudflare and blocks Python-urllib UA (error code: 1010).
+    if not has_ua:
+        req.add_header(
+            'User-Agent',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        )
     try:
         with _urlreq.urlopen(req, data=body, timeout=timeout) as resp:
             status = resp.getcode()
@@ -1961,6 +2111,87 @@ def _http_post_json(url: str, data: dict, headers: dict, timeout: float) -> tupl
         # FastAPI 500으로 터지는 것을 방지한다.
         return 0, str(e)
 
+def _http_get_text(url: str, headers: dict, timeout: float) -> tuple[int, str]:
+    req = _urlreq.Request(url, method="GET")
+    has_ua = False
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+        if str(k).strip().lower() == "user-agent":
+            has_ua = True
+    # NOTE: keep UA consistent with _http_post_json (some proxies block urllib default UA).
+    if not has_ua:
+        req.add_header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            status = resp.getcode()
+            txt = resp.read().decode("utf-8", errors="ignore")
+            return status, txt
+    except HTTPError as e:
+        try:
+            return e.code, e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            return e.code, str(e)
+    except URLError as e:
+        return 0, str(e)
+    except Exception as e:
+        return 0, str(e)
+
+
+def _load_iris_sender_ids_from_iris_config() -> list[str]:
+    # IRIS /config -> bot_id 를 사용한다.
+    # (env로 강제하지 않으면, 계정 교체 시 기본값(레거시 senderId) 불일치로 echo 검증이 항상 실패할 수 있다.)
+    try:
+        url = _iris_base() + "/config"
+        status, txt = _http_get_text(url, headers={}, timeout=2.0)
+        if status != 200:
+            return []
+        try:
+            obj = json.loads(txt) if txt else {}
+        except Exception:
+            obj = {}
+        if not isinstance(obj, dict):
+            return []
+        bid = str(obj.get("bot_id") or obj.get("botId") or "").strip()
+        if bid and re.fullmatch(r"\d+", bid):
+            return [bid]
+        return []
+    except Exception:
+        return []
+
+
+def _get_iris_sender_ids() -> list[str]:
+    # 우선순위: env(IRIS_SENDER_IDS/IRIS_SENDER_ID) > IRIS /config(bot_id) > 레거시 기본값
+    if IRIS_SENDER_IDS_ENV:
+        return list(IRIS_SENDER_IDS_ENV)
+
+    now = time.time()
+    ttl = max(1, int(IRIS_SENDER_IDS_CACHE_SEC or 0))
+    try:
+        cached_at = float(_IRIS_SENDER_IDS_CACHE.get("at") or 0.0)
+    except Exception:
+        cached_at = 0.0
+    cached_ids = _IRIS_SENDER_IDS_CACHE.get("ids")
+    cached_list = [str(x).strip() for x in cached_ids if str(x).strip()] if isinstance(cached_ids, list) else []
+    if cached_list and (now - cached_at) < ttl:
+        return list(cached_list)
+
+    ids = _load_iris_sender_ids_from_iris_config()
+    if not ids:
+        # IRIS /config 일시 실패 시에도, 마지막으로 학습한 senderId는 유지한다(기본값으로 되돌아가면 echo 검증이 깨질 수 있음).
+        if cached_list:
+            _IRIS_SENDER_IDS_CACHE["at"] = now
+            _IRIS_SENDER_IDS_CACHE["ids"] = list(cached_list)
+            return list(cached_list)
+        ids = list(_DEFAULT_IRIS_SENDER_IDS)
+
+    _IRIS_SENDER_IDS_CACHE["at"] = now
+    _IRIS_SENDER_IDS_CACHE["ids"] = ids
+    return list(ids)
+
+
 # ---- IRIS reply echo check (MessageStore) ----
 def _is_image_message_type(raw_type: object) -> bool:
     try:
@@ -1970,6 +2201,158 @@ def _is_image_message_type(raw_type: object) -> bool:
     # Kakao messageType may include flag 16384 in some cases.
     base = n - 16384 if n >= 16384 else n
     return base in (2, 27, 71)
+
+
+def _is_text_message_type(raw_type: object) -> bool:
+    try:
+        n = int(raw_type)  # may be str/float
+    except Exception:
+        return False
+    # Kakao messageType may include flag 16384 in some cases.
+    base = n - 16384 if n >= 16384 else n
+    return base in (1,)
+
+
+def _normalize_echo_text(raw: object) -> str:
+    try:
+        s = str(raw or "")
+    except Exception:
+        return ""
+    return s.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _has_iris_text_echo_since(room_id: str, since_ms: int, expected_text: str) -> bool:
+    exp = _normalize_echo_text(expected_text)
+    if not exp:
+        return False
+
+    p = _find_latest_room_log_path(room_id)
+    if not p:
+        return False
+    try:
+        st = p.stat()
+    except Exception:
+        return False
+    try:
+        if not p.is_file() or st.st_size <= 0:
+            return False
+    except Exception:
+        return False
+
+    try:
+        # Fast path: if log file hasn't been updated since before since_ms, skip reading.
+        mtime_ms = int(st.st_mtime * 1000)
+        if mtime_ms + 2000 < int(since_ms):
+            return False
+    except Exception:
+        pass
+
+    try:
+        size = int(st.st_size)
+        start = max(0, size - max(1024, IRIS_REPLY_LOG_SCAN_BYTES))
+        with p.open("rb") as f:
+            f.seek(start)
+            data = f.read()
+        txt = data.decode("utf-8", errors="ignore")
+        lines = txt.splitlines()
+        sender_ids = _get_iris_sender_ids()
+        def _matches_line(ln: str, require_sender_match: bool, allow_openchatbot_fallback: bool) -> bool:
+            if not ln:
+                return False
+            if require_sender_match and sender_ids and not any(sid0 in ln for sid0 in sender_ids):
+                return False
+            if "\"messageType\"" not in ln:
+                return False
+            try:
+                obj = json.loads(ln)
+            except Exception:
+                return False
+            snap = obj.get("snapshot") if isinstance(obj, dict) else None
+            payload = obj.get("payload") if isinstance(obj, dict) else None
+
+            sid = None
+            try:
+                sid = str((snap or {}).get("senderId") or (obj.get("senderId") if isinstance(obj, dict) else "")).strip()
+            except Exception:
+                sid = None
+            if require_sender_match and sender_ids and sid not in sender_ids:
+                return False
+
+            ts = ""
+            try:
+                ts = str(obj.get("timestamp") or obj.get("ts") or "").strip()
+            except Exception:
+                ts = ""
+            tms = ts_to_ms(ts) if ts else 0
+            if not tms:
+                return False
+            # allow slight skew
+            if tms + 1500 < int(since_ms):
+                return False
+
+            mt = None
+            try:
+                mt = (payload or {}).get("messageType")
+            except Exception:
+                mt = None
+            if allow_openchatbot_fallback:
+                try:
+                    n = int(mt)  # type: ignore[arg-type]
+                except Exception:
+                    return False
+                base = n - 16384 if n >= 16384 else n
+                if base != 71:
+                    return False
+                sender_name = ""
+                try:
+                    sender_name = str((snap or {}).get("senderName") or "").strip()
+                except Exception:
+                    sender_name = ""
+                sid_tag = ""
+                try:
+                    sid_tag = str((((payload or {}).get("attachment") or {}).get("P") or {}).get("SID") or "").strip()
+                except Exception:
+                    sid_tag = ""
+                if sender_name != "오픈채팅봇" and sid_tag != "chatbot":
+                    return False
+            elif not _is_text_message_type(mt):
+                return False
+
+            msg = None
+            try:
+                msg = (snap or {}).get("messageText")
+            except Exception:
+                msg = None
+            return _normalize_echo_text(msg) == exp
+
+        for ln in reversed(lines):
+            if _matches_line(ln, True, False):
+                return True
+        if sender_ids:
+            for ln in reversed(lines):
+                if _matches_line(ln, False, True):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+async def _wait_for_iris_text_echo(room_id: str, since_ms: int, expected_text: str, timeout_ms: int) -> bool:
+    s = int(since_ms or 0)
+    if s <= 0:
+        return False
+    exp = _normalize_echo_text(expected_text)
+    if not exp:
+        return False
+    timeout = max(0, int(timeout_ms or 0))
+    deadline = int(time.time() * 1000) + timeout
+    while True:
+        now = int(time.time() * 1000)
+        if now > deadline:
+            return False
+        if _has_iris_text_echo_since(room_id, s, exp):
+            return True
+        await asyncio.sleep(max(0.05, min(1.0, IRIS_REPLY_ECHO_POLL_MS / 1000.0)))
 
 
 def _find_latest_room_log_path(room_id: str) -> Path | None:
@@ -2035,10 +2418,11 @@ def _has_iris_image_echo_since(room_id: str, since_ms: int) -> bool:
             data = f.read()
         txt = data.decode("utf-8", errors="ignore")
         lines = txt.splitlines()
+        sender_ids = _get_iris_sender_ids()
         for ln in reversed(lines):
             if not ln:
                 continue
-            if IRIS_SENDER_ID not in ln:
+            if sender_ids and not any(sid0 in ln for sid0 in sender_ids):
                 continue
             if "\"messageType\"" not in ln:
                 continue
@@ -2053,7 +2437,7 @@ def _has_iris_image_echo_since(room_id: str, since_ms: int) -> bool:
                 sid = str((snap or {}).get("senderId") or (obj.get("senderId") if isinstance(obj, dict) else "")).strip()
             except Exception:
                 sid = None
-            if sid != IRIS_SENDER_ID:
+            if sender_ids and sid not in sender_ids:
                 continue
             ts = ""
             try:
@@ -2124,14 +2508,17 @@ def _count_iris_sending_logs_since(room_id: str, since_sec: int, send_type: int)
 
 
 async def _wait_for_iris_sending_log_cleared(
-    room_id: str, since_sec: int, send_type: int, timeout_ms: int
+    room_id: str, since_sec: int, send_type: int, timeout_ms: int, start_timeout_ms: int = 0
 ) -> bool:
     s = int(since_sec or 0)
     if s <= 0:
         return False
     timeout = max(0, int(timeout_ms or 0))
     deadline = int(time.time() * 1000) + timeout
+    start_timeout = max(0, int(start_timeout_ms or 0))
+    start_deadline = int(time.time() * 1000) + min(timeout, start_timeout) if start_timeout > 0 else 0
 
+    saw_positive = False
     stable_zero = 0
     while True:
         now = int(time.time() * 1000)
@@ -2139,14 +2526,302 @@ async def _wait_for_iris_sending_log_cleared(
             return False
 
         cnt = _count_iris_sending_logs_since(room_id, s, send_type)
-        if cnt <= 0:
+        if cnt > 0:
+            saw_positive = True
+            stable_zero = 0
+        elif saw_positive:
             stable_zero += 1
             if stable_zero >= 2:
                 return True
-        else:
-            stable_zero = 0
+        elif start_deadline and now > start_deadline:
+            return False
 
         await asyncio.sleep(max(0.05, min(1.0, IRIS_REPLY_SENDLOG_POLL_MS / 1000.0)))
+
+
+def _safe_bool(v: object) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    return s in ("1", "true", "t", "yes", "y", "on")
+
+
+def _coerce_sender_ids_for_db(sender_ids: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in sender_ids or []:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        if not re.fullmatch(r"\d+", s):
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _try_select_chatlog_max_id(room_id: str, sender_ids: list[str]) -> tuple[bool, int, str | None]:
+    rid = str(room_id or "").strip()
+    if not rid:
+        return False, 0, "roomId required"
+
+    sids = _coerce_sender_ids_for_db(sender_ids)
+    if not sids:
+        return False, 0, "senderIds unavailable"
+
+    try:
+        placeholders = ",".join(["?"] * len(sids))
+        q = f"select max(_id) as max_id from chat_logs where chat_id=? and user_id in ({placeholders})"
+        rows = _iris_query_strict(q, [rid, *sids], timeout_sec=6.0)
+        if rows and isinstance(rows[0], dict):
+            return True, _safe_int(rows[0].get("max_id")) or 0, None
+        return True, 0, None
+    except HTTPException as e:
+        return False, 0, str(e.detail)
+    except Exception as e:
+        return False, 0, str(e)
+
+def _try_select_chatlog_type_by_rowid(row_id: int) -> tuple[bool, int, str | None]:
+    rid = int(row_id or 0)
+    if rid <= 0:
+        return False, 0, "rowId required"
+    try:
+        rows = _iris_query_strict("select type from chat_logs where _id=? limit 1", [rid], timeout_sec=6.0)
+        if rows and isinstance(rows[0], dict):
+            return True, _safe_int(rows[0].get("type")) or 0, None
+        return True, 0, None
+    except HTTPException as e:
+        return False, 0, str(e.detail)
+    except Exception as e:
+        return False, 0, str(e)
+
+def _try_find_recent_image_chatlog_type(
+    room_id: str,
+    sender_ids: list[str],
+    before_id: int,
+    after_id: int,
+    limit: int = 12,
+) -> tuple[bool, int, str | None]:
+    """Best-effort fallback for image echo verification.
+
+    IRIS may write multiple rows for a single "album" send, and other bot messages
+    (text/ops) can race within the same room. If the latest rowId isn't an image,
+    scan a small window of recent rows to find any image-type message.
+    """
+    rid = str(room_id or "").strip()
+    if not rid:
+        return False, 0, "roomId required"
+
+    sids = _coerce_sender_ids_for_db(sender_ids)
+    if not sids:
+        return False, 0, "senderIds unavailable"
+
+    b = int(before_id or 0)
+    a = int(after_id or 0)
+    if a <= 0:
+        return False, 0, "afterId required"
+    if b < 0:
+        b = 0
+
+    lim = int(limit or 0)
+    lim = max(1, min(lim, 50))
+
+    try:
+        placeholders = ",".join(["?"] * len(sids))
+        q = (
+            f"select _id, type from chat_logs "
+            f"where chat_id=? and user_id in ({placeholders}) and _id>? and _id<=? "
+            f"order by _id desc limit ?"
+        )
+        rows = _iris_query_strict(q, [rid, *sids, b, a, lim], timeout_sec=6.0)
+        if not rows:
+            return False, 0, "no_recent_rows"
+
+        last_type = 0
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            t = _safe_int(r.get("type")) or 0
+            last_type = t or last_type
+            if _is_image_message_type(int(t or 0)):
+                return True, int(t or 0), None
+
+        return False, int(last_type or 0), f"type_mismatch_recent:{last_type}"
+    except HTTPException as e:
+        return False, 0, str(e.detail)
+    except Exception as e:
+        return False, 0, str(e)
+
+
+async def _wait_for_iris_chatlog_advance(
+    room_id: str,
+    sender_ids: list[str],
+    before_id: int,
+    timeout_ms: int,
+) -> tuple[bool, int, str | None]:
+    timeout = max(0, int(timeout_ms or 0))
+    if timeout <= 0:
+        return True, int(before_id or 0), None
+
+    deadline = int(time.time() * 1000) + timeout
+    last_id = int(before_id or 0)
+    last_err: str | None = None
+    while True:
+        now = int(time.time() * 1000)
+        if now > deadline:
+            return False, last_id, last_err
+
+        ok, cur, err = _try_select_chatlog_max_id(room_id, sender_ids)
+        if ok:
+            last_id = cur
+            if cur > int(before_id or 0):
+                return True, cur, None
+        else:
+            last_err = err or last_err
+
+        await asyncio.sleep(max(0.05, min(1.0, IRIS_REPLY_TEXT_DB_ECHO_POLL_MS / 1000.0)))
+
+
+def _load_text_image_font(size: int):
+    try:
+        from PIL import ImageFont  # type: ignore
+    except Exception:
+        return None
+
+    sz = int(size or 0)
+    if sz <= 0:
+        sz = 26
+
+    candidates: list[str] = []
+    env_path = str(os.getenv("IRIS_TEXT_IMAGE_FONT_PATH") or "").strip()
+    if env_path:
+        candidates.append(env_path)
+    # Windows (Korean)
+    candidates += [
+        r"C:\Windows\Fonts\malgun.ttf",
+        r"C:\Windows\Fonts\malgunbd.ttf",
+        r"C:\Windows\Fonts\gulim.ttc",
+        r"C:\Windows\Fonts\batang.ttc",
+    ]
+    for p in candidates:
+        try:
+            if p and os.path.exists(p):
+                return ImageFont.truetype(p, size=sz)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _measure_text_width(draw, text: str, font) -> float:
+    try:
+        return float(draw.textlength(text, font=font))
+    except Exception:
+        try:
+            box = draw.textbbox((0, 0), text, font=font)
+            return float(box[2] - box[0])
+        except Exception:
+            return float(len(text) * 10)
+
+
+def _wrap_text_lines_for_image(text: str, max_width_px: int, font, line_spacing_px: int) -> list[str]:
+    raw = str(text or "")
+    if not raw:
+        return [""]
+
+    maxw = int(max_width_px or 0)
+    if maxw <= 200:
+        maxw = 980
+
+    dummy = None
+    try:
+        from PIL import Image, ImageDraw  # type: ignore
+
+        dummy = Image.new("RGB", (10, 10), color=(255, 255, 255))
+        draw = ImageDraw.Draw(dummy)
+    except Exception:
+        # fallback: do not wrap
+        return raw.splitlines() or [raw]
+
+    out: list[str] = []
+    for ln in raw.splitlines() or [""]:
+        s = str(ln or "")
+        if not s:
+            out.append("")
+            continue
+        cur = ""
+        for ch in s:
+            nxt = cur + ch
+            if _measure_text_width(draw, nxt, font) <= maxw:
+                cur = nxt
+                continue
+            if cur:
+                out.append(cur)
+                cur = ch
+            else:
+                # extreme case: single char wider than max width
+                out.append(nxt)
+                cur = ""
+        if cur:
+            out.append(cur)
+
+    max_lines = max(10, min(int(IRIS_REPLY_TEXT_IMAGE_MAX_LINES or 0), 200))
+    if len(out) > max_lines:
+        clipped = out[:max_lines]
+        clipped.append("… (일부 생략)")
+        return clipped
+    return out
+
+
+def _render_text_as_png_base64(text: str) -> tuple[bool, str, str | None]:
+    try:
+        from PIL import Image, ImageDraw  # type: ignore
+    except Exception as e:
+        return False, "", f"PIL_NOT_AVAILABLE: {e}"
+
+    font = _load_text_image_font(int(IRIS_REPLY_TEXT_IMAGE_FONT_SIZE))
+    if font is None:
+        return False, "", "FONT_LOAD_FAILED"
+
+    pad = max(12, min(int(IRIS_REPLY_TEXT_IMAGE_PADDING_PX or 0), 120))
+    line_spacing = max(4, min(int(IRIS_REPLY_TEXT_IMAGE_LINE_SPACING_PX or 0), 40))
+    maxw = max(320, min(int(IRIS_REPLY_TEXT_IMAGE_MAX_WIDTH_PX or 0), 1400))
+    lines = _wrap_text_lines_for_image(text, maxw, font, line_spacing)
+    wrapped = "\n".join(lines)
+
+    dummy = Image.new("RGB", (10, 10), color=(255, 255, 255))
+    d0 = ImageDraw.Draw(dummy)
+    try:
+        box = d0.multiline_textbbox((0, 0), wrapped, font=font, spacing=line_spacing)
+        tw = int(box[2] - box[0])
+        th = int(box[3] - box[1])
+    except Exception:
+        tw = maxw
+        th = max(200, 28 * len(lines))
+
+    w = max(360, min(tw + pad * 2, 1600))
+    h = max(180, min(th + pad * 2, 4000))
+
+    img = Image.new("RGB", (w, h), color=(255, 255, 255))
+    d = ImageDraw.Draw(img)
+    try:
+        d.multiline_text((pad, pad), wrapped, fill=(0, 0, 0), font=font, spacing=line_spacing)
+    except Exception as e:
+        return False, "", f"DRAW_FAILED: {e}"
+
+    try:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return True, b64, None
+    except Exception as e:
+        return False, "", f"ENCODE_FAILED: {e}"
 
 
 # ---- Avatar auto-resolve (Kakao open_link icon_url) ----
@@ -2386,18 +3061,113 @@ def _fetch_active_member_counts(room_ids: list[str]) -> dict[str, int]:
     return out
 
 
+def _runtime_get_talk_cfg() -> dict:
+    cfg = load_runtime()
+    talk = cfg.get("talkApi") or {}
+    if not isinstance(talk, dict):
+        talk = {}
+    talk.setdefault("enabled", False)
+    talk.setdefault("baseUrl", "https://talk-api.naijun.dev")
+    talk.setdefault("authHeader", "")
+    talk.setdefault("timeoutMs", 8000)
+    return talk
+
+
+def _make_mention_attachment(message: str, mentionees: list[dict]) -> dict:
+    """Build an attachment object for Kakao mention."""
+
+    def _utf16_len(s: str) -> int:
+        try:
+            return len((s or "").encode("utf-16-le")) // 2
+        except Exception:
+            return len(str(s or ""))
+
+    msg = str(message or "")
+    if not mentionees:
+        return {}
+    if not isinstance(mentionees, list):
+        raise ValueError("mentionees must be a list")
+
+    entries: list[dict] = []
+    for i, m in enumerate(mentionees):
+        if not isinstance(m, dict):
+            raise ValueError(f"mentionees[{i}] must be an object")
+        name = str(m.get("name") or "").strip()
+        uid_raw = str(m.get("userId") or m.get("user_id") or "").strip()
+        if not name or not uid_raw:
+            raise ValueError(f"mentionees[{i}] missing name/userId")
+        if not uid_raw.isdigit():
+            raise ValueError(f"mentionees[{i}].userId must be digits (int64)")
+        token = "@" + name
+        entries.append(
+            {
+                "i": i,
+                "name": name,
+                "uid": int(uid_raw),
+                "token": token,
+                "tlen": len(token),
+            }
+        )
+
+    if len(entries) > 15:
+        raise ValueError(f"too many mentions: {len(entries)} (max 15)")
+
+    queues: dict[str, list[int]] = {}
+    for idx, e in enumerate(entries):
+        queues.setdefault(e["token"], []).append(idx)
+
+    cursor = 0
+    ordered_indices: list[int] = []
+    remaining = sum(len(v) for v in queues.values())
+    while remaining > 0:
+        best = None
+        for token, q in queues.items():
+            if not q:
+                continue
+            pos = msg.find(token, cursor)
+            if pos < 0:
+                continue
+            tlen = len(token)
+            cand = (pos, -tlen, token)
+            if best is None or cand < best:
+                best = cand
+        if best is None:
+            missing = next((t for t, q in queues.items() if q), None)
+            raise ValueError(f"message does not contain required mention token after pos={cursor}: {missing}")
+        pos, _, token = best
+        idx = queues[token].pop(0)
+        ordered_indices.append(idx)
+        cursor = pos + len(token)
+        remaining -= 1
+
+    mentions: list[dict] = []
+    idx_by_uid: dict[int, int] = {}
+    for order, entry_idx in enumerate(ordered_indices, start=1):
+        e = entries[entry_idx]
+        uid = int(e["uid"])
+        name = str(e["name"])
+        if uid in idx_by_uid:
+            mi = idx_by_uid[uid]
+            if mentions[mi]["len"] != _utf16_len(name):
+                raise ValueError(f"same userId mentioned with different name length: {uid}")
+            mentions[mi]["at"].append(order)
+        else:
+            idx_by_uid[uid] = len(mentions)
+            mentions.append({"user_id": uid, "at": [order], "len": _utf16_len(name)})
+
+    return {"mentions": mentions} if mentions else {}
+
+
 @app.post("/send/talkapi/prepare")
 async def talkapi_prepare(request: Request):
-    """Return payload for Talk-API send without sending (SAFE). Body:
-    { roomId, message, mentionees:[{name,userId}] }
-    """
+    """Return payload for Talk-API send without sending (SAFE)."""
     try:
         body = await request.json()
     except Exception:
         body = {}
-    rid = str((body or {}).get('roomId') or '').strip()
-    message = str((body or {}).get('message') or '')
-    mentionees = body.get('mentionees') if isinstance(body, dict) else []
+    rid = str((body or {}).get("roomId") or "").strip()
+    message = str((body or {}).get("message") or "")
+    mentionees = body.get("mentionees") if isinstance(body, dict) else []
     if not isinstance(mentionees, list):
         mentionees = []
     try:
@@ -2414,22 +3184,20 @@ async def talkapi_prepare(request: Request):
 
 @app.post("/send/talkapi/dispatch")
 async def talkapi_dispatch(request: Request):
-    """Send via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False.
-    Body: { roomId, message, mentionees:[{name,userId}], type?: int }
-    """
+    """Send via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False."""
     cfg = load_runtime()
-    if cfg.get('safeMode', True):
-        raise HTTPException(status_code=403, detail='SAFE_MODE')
+    if cfg.get("safeMode", True):
+        raise HTTPException(status_code=403, detail="SAFE_MODE")
     talk = _runtime_get_talk_cfg()
-    if not talk.get('enabled'):
-        raise HTTPException(status_code=400, detail='talkApi disabled')
+    if not talk.get("enabled"):
+        raise HTTPException(status_code=400, detail="talkApi disabled")
     try:
         body = await request.json()
     except Exception:
         body = {}
-    rid = str((body or {}).get('roomId') or '').strip()
-    message = str((body or {}).get('message') or '')
-    mentionees = body.get('mentionees') if isinstance(body, dict) else []
+    rid = str((body or {}).get("roomId") or "").strip()
+    message = str((body or {}).get("message") or "")
+    mentionees = body.get("mentionees") if isinstance(body, dict) else []
     if not isinstance(mentionees, list):
         mentionees = []
     try:
@@ -2441,18 +3209,18 @@ async def talkapi_dispatch(request: Request):
         "message": message,
         "attachment": att or {},
     }
-    if 'type' in body:
-        payload['type'] = body.get('type')
-    url = (talk.get('baseUrl') or '').rstrip('/') + '/api/v1/send'
+    if "type" in body:
+        payload["type"] = body.get("type")
+    url = (talk.get("baseUrl") or "").rstrip("/") + "/api/v1/send"
     headers = {}
-    auth = talk.get('authHeader') or ''
+    auth = talk.get("authHeader") or ""
     if auth:
-        if ':' in auth:
-            k, v = auth.split(':', 1)
+        if ":" in auth:
+            k, v = auth.split(":", 1)
             headers[k.strip()] = v.strip()
         else:
-            headers['Authorization'] = auth
-    status, txt = _http_post_json(url, payload, headers, timeout=max(1, int(talk.get('timeoutMs', 8000))) / 1000.0)
+            headers["Authorization"] = auth
+    status, txt = _http_post_json(url, payload, headers, timeout=max(1, int(talk.get("timeoutMs", 8000))) / 1000.0)
     talk_body = None
     talk_status = None
     talk_err = None
@@ -2461,14 +3229,13 @@ async def talkapi_dispatch(request: Request):
     except Exception:
         talk_body = None
     if isinstance(talk_body, dict):
-        talk_status = talk_body.get('status')
-        talk_err = talk_body.get('errMsg') or talk_body.get('message') or talk_body.get('error')
+        talk_status = talk_body.get("status")
+        talk_err = talk_body.get("errMsg") or talk_body.get("message") or talk_body.get("error")
     ok = False
     try:
-        ok = (int(talk_status) == 0)
+        ok = int(talk_status) == 0
     except Exception:
         ok = False
-    # Talk-API often returns HTTP 200 even when send fails; use body.status as source of truth.
     code = 200 if ok else 502
     return JSONResponse(
         status_code=code,
@@ -2499,8 +3266,6 @@ def _coerce_int(v: object, field: str) -> int:
 
 
 def _coerce_reply_attachment_types(att: dict) -> dict:
-    # Talk-API reply(type=26)는 attachment의 일부 필드를 number로 요구한다.
-    # (특히 src_userId/src_linkId/src_type이 string이면 INVALID_ARGUMENT(-203)로 실패하는 케이스 확인)
     required = ("src_logId", "src_userId", "src_linkId", "src_type")
     missing = [k for k in required if k not in att]
     if missing:
@@ -2542,23 +3307,42 @@ def _coerce_base64_list(v: object) -> list[str]:
     return out
 
 
+def _coerce_url_list(v: object) -> list[str]:
+    if not isinstance(v, list):
+        raise HTTPException(status_code=400, detail="imageUrls must be a list")
+    if not v:
+        raise HTTPException(status_code=400, detail="imageUrls must not be empty")
+    if len(v) > 6:
+        raise HTTPException(status_code=400, detail="too many imageUrls (max 6)")
+
+    out: list[str] = []
+    for i, raw in enumerate(v):
+        if not isinstance(raw, str):
+            raise HTTPException(status_code=400, detail=f"invalid imageUrls[{i}]: expected string")
+        s = raw.strip()
+        if not s:
+            raise HTTPException(status_code=400, detail=f"invalid imageUrls[{i}]: empty")
+        if len(s) > 4096:
+            raise HTTPException(status_code=400, detail=f"invalid imageUrls[{i}]: too long")
+        out.append(s)
+    return out
+
+
 @app.post("/send/talkapi/prepare_raw")
 async def talkapi_prepare_raw(request: Request):
-    """Return payload for Talk-API send without sending (SAFE). Body:
-    { roomId, message, type, attachment }
-    """
+    """Return payload for Talk-API send without sending (SAFE)."""
     try:
         body = await request.json()
     except Exception:
         body = {}
-    rid = str((body or {}).get('roomId') or '').strip()
+    rid = str((body or {}).get("roomId") or "").strip()
     if not rid:
-        raise HTTPException(status_code=400, detail='roomId required')
-    message = str((body or {}).get('message') or '')
-    mtype = _coerce_int((body or {}).get('type'), 'type')
-    attachment = (body or {}).get('attachment')
+        raise HTTPException(status_code=400, detail="roomId required")
+    message = str((body or {}).get("message") or "")
+    mtype = _coerce_int((body or {}).get("type"), "type")
+    attachment = (body or {}).get("attachment")
     if not isinstance(attachment, dict):
-        raise HTTPException(status_code=400, detail='invalid attachment: expected object')
+        raise HTTPException(status_code=400, detail="invalid attachment: expected object")
     if mtype == 26:
         attachment = _coerce_reply_attachment_types(attachment)
     payload = {
@@ -2572,28 +3356,26 @@ async def talkapi_prepare_raw(request: Request):
 
 @app.post("/send/talkapi/dispatch_raw")
 async def talkapi_dispatch_raw(request: Request):
-    """Send raw payload via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False.
-    Body: { roomId, message, type, attachment, mentionees?:[{name,userId}] }
-    """
+    """Send raw payload via Talk-API if runtime.talkApi.enabled and SAFE_MODE is False."""
     cfg = load_runtime()
-    if cfg.get('safeMode', True):
-        raise HTTPException(status_code=403, detail='SAFE_MODE')
+    if cfg.get("safeMode", True):
+        raise HTTPException(status_code=403, detail="SAFE_MODE")
     talk = _runtime_get_talk_cfg()
-    if not talk.get('enabled'):
-        raise HTTPException(status_code=400, detail='talkApi disabled')
+    if not talk.get("enabled"):
+        raise HTTPException(status_code=400, detail="talkApi disabled")
     try:
         body = await request.json()
     except Exception:
         body = {}
-    rid = str((body or {}).get('roomId') or '').strip()
+    rid = str((body or {}).get("roomId") or "").strip()
     if not rid:
-        raise HTTPException(status_code=400, detail='roomId required')
-    message = str((body or {}).get('message') or '')
-    mtype = _coerce_int((body or {}).get('type'), 'type')
-    attachment = (body or {}).get('attachment')
+        raise HTTPException(status_code=400, detail="roomId required")
+    message = str((body or {}).get("message") or "")
+    mtype = _coerce_int((body or {}).get("type"), "type")
+    attachment = (body or {}).get("attachment")
     if not isinstance(attachment, dict):
-        raise HTTPException(status_code=400, detail='invalid attachment: expected object')
-    mentionees = body.get('mentionees') if isinstance(body, dict) else []
+        raise HTTPException(status_code=400, detail="invalid attachment: expected object")
+    mentionees = body.get("mentionees") if isinstance(body, dict) else []
     if not isinstance(mentionees, list):
         mentionees = []
     if mentionees:
@@ -2602,7 +3384,6 @@ async def talkapi_dispatch_raw(request: Request):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         if isinstance(att, dict) and att:
-            # Merge mention struct into attachment (for reply(type=26) we must keep src_* fields).
             attachment = {**attachment, **att}
     if mtype == 26:
         attachment = _coerce_reply_attachment_types(attachment)
@@ -2612,16 +3393,16 @@ async def talkapi_dispatch_raw(request: Request):
         "type": mtype,
         "attachment": attachment,
     }
-    url = (talk.get('baseUrl') or '').rstrip('/') + '/api/v1/send'
+    url = (talk.get("baseUrl") or "").rstrip("/") + "/api/v1/send"
     headers = {}
-    auth = talk.get('authHeader') or ''
+    auth = talk.get("authHeader") or ""
     if auth:
-        if ':' in auth:
-            k, v = auth.split(':', 1)
+        if ":" in auth:
+            k, v = auth.split(":", 1)
             headers[k.strip()] = v.strip()
         else:
-            headers['Authorization'] = auth
-    status, txt = _http_post_json(url, payload, headers, timeout=max(1, int(talk.get('timeoutMs', 8000))) / 1000.0)
+            headers["Authorization"] = auth
+    status, txt = _http_post_json(url, payload, headers, timeout=max(1, int(talk.get("timeoutMs", 8000))) / 1000.0)
     talk_body = None
     talk_status = None
     talk_err = None
@@ -2630,14 +3411,13 @@ async def talkapi_dispatch_raw(request: Request):
     except Exception:
         talk_body = None
     if isinstance(talk_body, dict):
-        talk_status = talk_body.get('status')
-        talk_err = talk_body.get('errMsg') or talk_body.get('message') or talk_body.get('error')
+        talk_status = talk_body.get("status")
+        talk_err = talk_body.get("errMsg") or talk_body.get("message") or talk_body.get("error")
     ok = False
     try:
-        ok = (int(talk_status) == 0)
+        ok = int(talk_status) == 0
     except Exception:
         ok = False
-    # Talk-API often returns HTTP 200 even when send fails; use body.status as source of truth.
     code = 200 if ok else 502
     return JSONResponse(
         status_code=code,
@@ -2675,29 +3455,99 @@ async def iris_reply_text(request: Request):
     if not text:
         raise HTTPException(status_code=400, detail="text required")
 
+    # 운영/테스트성 텍스트는 테스트 방으로만 보낸다.
+    pint_cfg = cfg.get("pintBriefing")
+    if not isinstance(pint_cfg, dict):
+        pint_cfg = {}
+    test_rid = str(pint_cfg.get("testRoomId") or "18475752914588021").strip()
+    if _looks_like_ops_test_text(text) and rid != test_rid:
+        raise HTTPException(status_code=400, detail="OPS_TEXT_BLOCKED_FOR_NON_TEST_ROOM")
+
     payload = {
         "type": "text",
         "room": rid,
         "data": text,
     }
     max_retries = max(0, int(IRIS_REPLY_MAX_RETRIES))
+    retry_delay_ms = int(IRIS_REPLY_RETRY_DELAY_MS)
+    echo_timeout_ms = int(IRIS_REPLY_TEXT_ECHO_TIMEOUT_MS)
+    db_echo_timeout_ms = int(IRIS_REPLY_TEXT_DB_ECHO_TIMEOUT_MS)
+    sendlog_timeout_ms = int(IRIS_REPLY_SENDLOG_TIMEOUT_MS)
+    fallback_to_image = False
+    fallback_echo_timeout_ms = int(IRIS_REPLY_TEXT_IMAGE_FALLBACK_ECHO_TIMEOUT_MS)
+    fallback_sendlog_timeout_ms = int(IRIS_REPLY_TEXT_IMAGE_FALLBACK_SENDLOG_TIMEOUT_MS)
+    if isinstance(body, dict):
+        mr = _safe_int(body.get("maxRetries"))
+        if mr is not None:
+            max_retries = max(0, min(int(mr), 5))
+        rd = _safe_int(body.get("retryDelayMs"))
+        if rd is not None:
+            retry_delay_ms = max(0, min(int(rd), 10_000))
+        et = _safe_int(body.get("echoTimeoutMs") or body.get("echo_timeout_ms"))
+        if et is not None:
+            echo_timeout_ms = max(0, min(int(et), 60_000))
+        de = _safe_int(body.get("dbEchoTimeoutMs") or body.get("db_echo_timeout_ms"))
+        if de is not None:
+            db_echo_timeout_ms = max(0, min(int(de), 60_000))
+        sl = _safe_int(body.get("sendlogTimeoutMs") or body.get("sendlog_timeout_ms"))
+        if sl is not None:
+            sendlog_timeout_ms = max(500, min(int(sl), 180_000))
+        fb = body.get("fallbackToImage") if isinstance(body, dict) else None
+        if fb is None and isinstance(body, dict):
+            fb = body.get("fallback_to_image")
+        if fb is not None:
+            fallback_to_image = _safe_bool(fb)
+        fe = _safe_int(body.get("fallbackEchoTimeoutMs") or body.get("fallback_echo_timeout_ms"))
+        if fe is not None:
+            fallback_echo_timeout_ms = max(500, min(int(fe), 180_000))
+        fs = _safe_int(body.get("fallbackSendlogTimeoutMs") or body.get("fallback_sendlog_timeout_ms"))
+        if fs is not None:
+            fallback_sendlog_timeout_ms = max(500, min(int(fs), 180_000))
 
-    async with _IRIS_REPLY_LOCK:
+    async with _get_iris_reply_room_lock(rid):
+        sender_ids = _get_iris_sender_ids()
         attempt = 0
         last_status = 0
         last_txt = ""
         last_iris_body = None
+        last_echo_ok = False
+        last_echo_wait_ms = 0
+        last_db_ok = False
+        last_db_wait_ms = 0
+        last_db_err = None
+        last_db_before_id = 0
+        last_db_after_id = 0
         last_sendlog_ok = False
         last_sendlog_wait_ms = 0
         last_sendlog_err = None
 
         while True:
             attempt += 1
-            call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
-            call_started_sec = max(0, int(call_started_ms / 1000) - 1)
-
-            url = _iris_base() + "/reply"
-            status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
+            sendlog_ok = False
+            sendlog_wait_ms = 0
+            sendlog_err = None
+            db_ok = False
+            db_wait_ms = 0
+            db_err = None
+            db_after_id = 0
+            echo_ok = False
+            echo_wait_ms = 0
+            async with _IRIS_REPLY_LOCK:
+                call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+                call_started_sec = max(0, int(call_started_ms / 1000) - 1)
+                before_ok, before_id, before_err = _try_select_chatlog_max_id(rid, sender_ids)
+                last_db_before_id = before_id
+                url = _iris_base() + "/reply"
+                status, txt = _http_post_json(url, payload, headers={}, timeout=15.0)
+                if status == 200:
+                    if echo_timeout_ms > 0:
+                        try:
+                            t0 = int(time.time() * 1000)
+                            echo_ok = await _wait_for_iris_text_echo(rid, call_started_ms, text, echo_timeout_ms)
+                            echo_wait_ms = max(0, int(time.time() * 1000) - t0)
+                        except Exception:
+                            echo_ok = False
+                            echo_wait_ms = 0
             last_status = status
             last_txt = txt
             try:
@@ -2706,15 +3556,11 @@ async def iris_reply_text(request: Request):
                 last_iris_body = None
 
             iris_ok = status == 200
-            sendlog_ok = False
-            sendlog_wait_ms = 0
-            sendlog_err = None
-
-            if iris_ok:
+            if iris_ok and not echo_ok:
                 try:
                     t1 = int(time.time() * 1000)
                     sendlog_ok = await _wait_for_iris_sending_log_cleared(
-                        rid, call_started_sec, 1, IRIS_REPLY_SENDLOG_TIMEOUT_MS
+                        rid, call_started_sec, 1, sendlog_timeout_ms
                     )
                     sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
                 except HTTPException as e:
@@ -2723,18 +3569,41 @@ async def iris_reply_text(request: Request):
                 except Exception as e:
                     sendlog_ok = False
                     sendlog_err = str(e)
+                if sendlog_ok:
+                    if db_echo_timeout_ms <= 0:
+                        db_ok = True
+                        db_after_id = before_id
+                    elif before_ok:
+                        try:
+                            t2 = int(time.time() * 1000)
+                            db_ok, db_after_id, db_err = await _wait_for_iris_chatlog_advance(
+                                rid, sender_ids, before_id, db_echo_timeout_ms
+                            )
+                            db_wait_ms = max(0, int(time.time() * 1000) - t2)
+                        except Exception as e:
+                            db_ok = False
+                            db_err = str(e)
+                    else:
+                        db_ok = False
+                        db_after_id = before_id
+                        db_err = before_err or "chatlog_before_failed"
+            text_verified_ok = echo_ok or (sendlog_ok and db_ok)
 
+            last_echo_ok = echo_ok
+            last_echo_wait_ms = echo_wait_ms
+            last_db_ok = db_ok
+            last_db_wait_ms = db_wait_ms
+            last_db_err = db_err
+            last_db_after_id = db_after_id
             last_sendlog_ok = sendlog_ok
             last_sendlog_wait_ms = sendlog_wait_ms
             last_sendlog_err = sendlog_err
 
-            ok = iris_ok and sendlog_ok
+            ok = iris_ok and (text_verified_ok if echo_timeout_ms > 0 else (sendlog_ok and db_ok))
             if ok or attempt > max_retries:
-                code = 200 if ok else 502
-                return JSONResponse(
-                    status_code=code,
-                    content={
-                        "ok": ok,
+                if ok:
+                    content = {
+                        "ok": True,
                         "attempt": attempt,
                         "iris": {
                             "httpStatus": last_status,
@@ -2743,16 +3612,123 @@ async def iris_reply_text(request: Request):
                         },
                         "sendlog": {
                             "ok": last_sendlog_ok,
-                            "timeoutMs": IRIS_REPLY_SENDLOG_TIMEOUT_MS,
+                            "timeoutMs": sendlog_timeout_ms,
                             "waitMs": last_sendlog_wait_ms,
                             "error": last_sendlog_err,
                         },
+                        "dbEcho": {
+                            "ok": last_db_ok,
+                            "timeoutMs": db_echo_timeout_ms,
+                            "waitMs": last_db_wait_ms,
+                            "beforeId": last_db_before_id,
+                            "afterId": last_db_after_id,
+                            "error": last_db_err,
+                        },
                         "sent": {"roomId": rid, "len": len(text), "type": payload["type"]},
-                    },
-                )
+                    }
+                    if echo_timeout_ms > 0:
+                        content["echo"] = {
+                            "ok": last_echo_ok,
+                            "timeoutMs": echo_timeout_ms,
+                            "waitMs": last_echo_wait_ms,
+                        }
+                        content["verification"] = {
+                            "basis": "echo" if last_echo_ok else "sendlog+dbEcho",
+                        }
+                    return JSONResponse(status_code=200, content=content)
 
-            if IRIS_REPLY_RETRY_DELAY_MS > 0:
-                await asyncio.sleep(max(0.0, IRIS_REPLY_RETRY_DELAY_MS / 1000.0))
+                # 실패 + fallback 옵션이면 텍스트를 이미지로 렌더링해 발신한다.
+                fallback_used = False
+                fallback_ok = False
+                fallback_detail: dict = {}
+                if fallback_to_image:
+                    fallback_used = True
+                    ok_img, img_b64, render_err = _render_text_as_png_base64(text)
+                    if not ok_img:
+                        fallback_ok = False
+                        fallback_detail = {"used": True, "ok": False, "mode": "image", "renderError": render_err}
+                    else:
+                        img_payload = {"type": "image", "room": rid, "data": img_b64}
+                        async with _IRIS_REPLY_LOCK:
+                            fb_call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+                            fb_call_started_sec = max(0, int(fb_call_started_ms / 1000) - 1)
+                            fb_status, fb_txt = _http_post_json(
+                                _iris_base() + "/reply", img_payload, headers={}, timeout=30.0
+                            )
+                        fb_body = None
+                        try:
+                            fb_body = json.loads(fb_txt) if fb_txt else None
+                        except Exception:
+                            fb_body = None
+                        fb_iris_ok = fb_status == 200
+                        fb_echo_ok = False
+                        fb_echo_wait_ms = 0
+                        fb_sendlog_ok = False
+                        fb_sendlog_wait_ms = 0
+                        fb_sendlog_err = None
+                        if fb_iris_ok:
+                            t0 = int(time.time() * 1000)
+                            fb_echo_ok = await _wait_for_iris_image_echo(rid, fb_call_started_ms, fallback_echo_timeout_ms)
+                            fb_echo_wait_ms = max(0, int(time.time() * 1000) - t0)
+                            if fb_echo_ok and IRIS_REPLY_POST_ECHO_DELAY_MS > 0:
+                                await asyncio.sleep(max(0.0, IRIS_REPLY_POST_ECHO_DELAY_MS / 1000.0))
+                            if fb_echo_ok:
+                                try:
+                                    t1 = int(time.time() * 1000)
+                                    fb_sendlog_ok = await _wait_for_iris_sending_log_cleared(
+                                        rid, fb_call_started_sec, 2, fallback_sendlog_timeout_ms
+                                    )
+                                    fb_sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
+                                except HTTPException as e:
+                                    fb_sendlog_ok = False
+                                    fb_sendlog_err = str(e.detail)
+                                except Exception as e:
+                                    fb_sendlog_ok = False
+                                    fb_sendlog_err = str(e)
+                        fallback_ok = fb_iris_ok and fb_echo_ok and fb_sendlog_ok
+                        fallback_detail = {
+                            "used": True,
+                            "ok": fallback_ok,
+                            "mode": "image",
+                            "iris": {"httpStatus": fb_status, "body": fb_body, "raw": fb_txt},
+                            "echo": {"ok": fb_echo_ok, "timeoutMs": fallback_echo_timeout_ms, "waitMs": fb_echo_wait_ms},
+                            "sendlog": {
+                                "ok": fb_sendlog_ok,
+                                "timeoutMs": fallback_sendlog_timeout_ms,
+                                "waitMs": fb_sendlog_wait_ms,
+                                "error": fb_sendlog_err,
+                            },
+                        }
+
+                code = 200 if fallback_ok else 502
+                content = {
+                    "ok": bool(fallback_ok),
+                    "attempt": attempt,
+                    "iris": {"httpStatus": last_status, "body": last_iris_body, "raw": last_txt},
+                    "sendlog": {
+                        "ok": last_sendlog_ok,
+                        "timeoutMs": sendlog_timeout_ms,
+                        "waitMs": last_sendlog_wait_ms,
+                        "error": last_sendlog_err,
+                    },
+                    "dbEcho": {
+                        "ok": last_db_ok,
+                        "timeoutMs": db_echo_timeout_ms,
+                        "waitMs": last_db_wait_ms,
+                        "beforeId": last_db_before_id,
+                        "afterId": last_db_after_id,
+                        "error": last_db_err,
+                    },
+                    "sent": {"roomId": rid, "len": len(text), "type": payload["type"]},
+                }
+                if echo_timeout_ms > 0:
+                    content["echo"] = {"ok": last_echo_ok, "timeoutMs": echo_timeout_ms, "waitMs": last_echo_wait_ms}
+                if fallback_used:
+                    content["fallback"] = fallback_detail
+                return JSONResponse(status_code=code, content=content)
+
+            if retry_delay_ms > 0:
+                await asyncio.sleep(max(0.0, retry_delay_ms / 1000.0))
 
 
 @app.get("/rooms/{room_id}/admins")
@@ -2880,25 +3856,72 @@ async def iris_reply_media(request: Request):
         "data": imgs[0] if len(imgs) == 1 else imgs,
     }
     max_retries = max(0, int(IRIS_REPLY_MAX_RETRIES))
+    retry_delay_ms = int(IRIS_REPLY_RETRY_DELAY_MS)
+    echo_timeout_ms = int(IRIS_REPLY_ECHO_TIMEOUT_MS)
+    sendlog_timeout_ms = int(IRIS_REPLY_SENDLOG_TIMEOUT_MS)
+    if isinstance(body, dict):
+        mr = _safe_int(body.get("maxRetries"))
+        if mr is not None:
+            max_retries = max(0, min(int(mr), 5))
+        rd = _safe_int(body.get("retryDelayMs"))
+        if rd is not None:
+            retry_delay_ms = max(0, min(int(rd), 10_000))
+        et = _safe_int(body.get("echoTimeoutMs") or body.get("echo_timeout_ms"))
+        if et is not None:
+            echo_timeout_ms = max(500, min(int(et), 180_000))
+        sl = _safe_int(body.get("sendlogTimeoutMs") or body.get("sendlog_timeout_ms"))
+        if sl is not None:
+            sendlog_timeout_ms = max(500, min(int(sl), 180_000))
 
-    async with _IRIS_REPLY_LOCK:
+    async with _get_iris_reply_room_lock(rid):
+        sender_ids = _get_iris_sender_ids()
         attempt = 0
         last_status = 0
         last_txt = ""
         last_iris_body = None
         last_echo_ok = False
         last_echo_wait_ms = 0
+        last_db_ok = False
+        last_db_wait_ms = 0
+        last_db_before_id = 0
+        last_db_after_id = 0
+        last_db_err = None
+        last_db_type = 0
         last_sendlog_ok = False
         last_sendlog_wait_ms = 0
         last_sendlog_err = None
+        last_file_echo_ok = False
+        last_file_echo_wait_ms = 0
 
         while True:
             attempt += 1
-            call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
-            call_started_sec = max(0, int(call_started_ms / 1000) - 1)
-
-            url = _iris_base() + "/reply"
-            status, txt = _http_post_json(url, payload, headers={}, timeout=30.0)
+            sendlog_ok = False
+            sendlog_wait_ms = 0
+            sendlog_err = None
+            async with _IRIS_REPLY_LOCK:
+                call_started_ms = int(time.time() * 1000) - 1500  # allow slight skew
+                call_started_sec = max(0, int(call_started_ms / 1000) - 1)
+                before_ok, before_id, before_err = _try_select_chatlog_max_id(rid, sender_ids)
+                last_db_before_id = before_id
+                url = _iris_base() + "/reply"
+                status, txt = _http_post_json(url, payload, headers={}, timeout=30.0)
+                if status == 200:
+                    try:
+                        t1 = int(time.time() * 1000)
+                        sendlog_ok = await _wait_for_iris_sending_log_cleared(
+                            rid,
+                            call_started_sec,
+                            2,
+                            sendlog_timeout_ms,
+                            IRIS_REPLY_MEDIA_SENDLOG_START_TIMEOUT_MS,
+                        )
+                        sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
+                    except HTTPException as e:
+                        sendlog_ok = False
+                        sendlog_err = str(e.detail)
+                    except Exception as e:
+                        sendlog_ok = False
+                        sendlog_err = str(e)
             last_status = status
             last_txt = txt
             try:
@@ -2909,39 +3932,69 @@ async def iris_reply_media(request: Request):
             iris_ok = status == 200
             echo_ok = False
             echo_wait_ms = 0
-            sendlog_ok = False
-            sendlog_wait_ms = 0
-            sendlog_err = None
+            db_ok = False
+            db_wait_ms = 0
+            db_after_id = before_id
+            db_err = before_err
+            db_type = 0
+            file_echo_ok = False
+            file_echo_wait_ms = 0
 
             if iris_ok:
-                t0 = int(time.time() * 1000)
-                echo_ok = await _wait_for_iris_image_echo(rid, call_started_ms, IRIS_REPLY_ECHO_TIMEOUT_MS)
-                echo_wait_ms = max(0, int(time.time() * 1000) - t0)
-
-                if echo_ok and IRIS_REPLY_POST_ECHO_DELAY_MS > 0:
-                    await asyncio.sleep(max(0.0, IRIS_REPLY_POST_ECHO_DELAY_MS / 1000.0))
-
-                if echo_ok:
-                    try:
-                        t1 = int(time.time() * 1000)
-                        sendlog_ok = await _wait_for_iris_sending_log_cleared(
-                            rid, call_started_sec, 2, IRIS_REPLY_SENDLOG_TIMEOUT_MS
-                        )
-                        sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
-                    except HTTPException as e:
-                        sendlog_ok = False
-                        sendlog_err = str(e.detail)
-                    except Exception as e:
-                        sendlog_ok = False
-                        sendlog_err = str(e)
+                if sendlog_ok:
+                    if before_ok:
+                        t0 = int(time.time() * 1000)
+                        db_ok, db_after_id, db_err = await _wait_for_iris_chatlog_advance(rid, sender_ids, before_id, echo_timeout_ms)
+                        db_wait_ms = max(0, int(time.time() * 1000) - t0)
+                        if db_ok:
+                            t_ok, t_val, t_err = _try_select_chatlog_type_by_rowid(db_after_id)
+                            if t_ok:
+                                db_type = int(t_val or 0)
+                                if _is_image_message_type(db_type):
+                                    echo_ok = True
+                                    echo_wait_ms = db_wait_ms
+                                else:
+                                    # Fallback: race-proof scan. If any recent row within this send window
+                                    # is an image, treat echo as OK to avoid false negatives.
+                                    f_ok, f_type, f_err = _try_find_recent_image_chatlog_type(
+                                        rid, sender_ids, before_id, db_after_id
+                                    )
+                                    if f_ok:
+                                        db_type = int(f_type or db_type)
+                                        echo_ok = True
+                                        echo_wait_ms = db_wait_ms
+                                    else:
+                                        db_ok = False
+                                        db_err = f_err or f"type_mismatch:{db_type}"
+                            else:
+                                db_ok = False
+                                db_err = t_err or "type_lookup_failed"
+                    else:
+                        db_ok = False
+                        db_err = before_err or "dbEcho unavailable"
 
             last_echo_ok = echo_ok
             last_echo_wait_ms = echo_wait_ms
+            last_db_ok = db_ok
+            last_db_wait_ms = db_wait_ms
+            last_db_after_id = db_after_id
+            last_db_err = db_err
+            last_db_type = db_type
             last_sendlog_ok = sendlog_ok
             last_sendlog_wait_ms = sendlog_wait_ms
             last_sendlog_err = sendlog_err
+            if iris_ok and not (echo_ok and sendlog_ok and db_ok):
+                try:
+                    tfe = int(time.time() * 1000)
+                    file_echo_ok = await _wait_for_iris_image_echo(rid, call_started_ms, echo_timeout_ms)
+                    file_echo_wait_ms = max(0, int(time.time() * 1000) - tfe)
+                except Exception:
+                    file_echo_ok = False
+                    file_echo_wait_ms = 0
+            last_file_echo_ok = file_echo_ok
+            last_file_echo_wait_ms = file_echo_wait_ms
 
-            ok = iris_ok and echo_ok and sendlog_ok
+            ok = iris_ok and ((echo_ok and sendlog_ok and db_ok) or file_echo_ok)
             if ok or attempt > max_retries:
                 code = 200 if ok else 502
                 return JSONResponse(
@@ -2956,39 +4009,603 @@ async def iris_reply_media(request: Request):
                         },
                         "echo": {
                             "ok": last_echo_ok,
-                            "timeoutMs": IRIS_REPLY_ECHO_TIMEOUT_MS,
+                            "timeoutMs": echo_timeout_ms,
                             "waitMs": last_echo_wait_ms,
+                        },
+                        "dbEcho": {
+                            "ok": last_db_ok,
+                            "timeoutMs": echo_timeout_ms,
+                            "waitMs": last_db_wait_ms,
+                            "beforeId": last_db_before_id,
+                            "afterId": last_db_after_id,
+                            "type": last_db_type,
+                            "error": last_db_err,
                         },
                         "sendlog": {
                             "ok": last_sendlog_ok,
-                            "timeoutMs": IRIS_REPLY_SENDLOG_TIMEOUT_MS,
+                            "timeoutMs": sendlog_timeout_ms,
                             "waitMs": last_sendlog_wait_ms,
                             "error": last_sendlog_err,
                         },
+                        "fileEcho": {
+                            "ok": last_file_echo_ok,
+                            "timeoutMs": echo_timeout_ms,
+                            "waitMs": last_file_echo_wait_ms,
+                        },
                         "sent": {"roomId": rid, "count": len(imgs), "type": payload["type"]},
+                        "verification": {
+                            "basis": "sendlog+dbEcho" if (last_echo_ok and last_sendlog_ok and last_db_ok) else ("fileEcho" if last_file_echo_ok else ""),
+                        },
                     },
                 )
 
-            if IRIS_REPLY_RETRY_DELAY_MS > 0:
-                await asyncio.sleep(max(0.0, IRIS_REPLY_RETRY_DELAY_MS / 1000.0))
+            if retry_delay_ms > 0:
+                await asyncio.sleep(max(0.0, retry_delay_ms / 1000.0))
+
+
+def _looks_like_ops_test_text(text: str | None) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return False
+    sl = s.lower()
+    korean_terms = (
+        "테스트",
+        "점검",
+        "검증",
+        "디버그",
+        "스모크",
+        "운영 발신",
+        "운영 확인",
+        "전송 점검",
+        "발송 테스트",
+        "테스트 발신",
+        "확인용",
+        "리허설",
+        "헬스체크",
+    )
+    if any(term in s for term in korean_terms):
+        return True
+    english_terms = (
+        "test",
+        "debug",
+        "smoke",
+        "verify",
+        "verification",
+        "check",
+        "ops",
+        "fallback",
+        "qa",
+        "dry run",
+        "staging",
+    )
+    return any(term in sl for term in english_terms)
+
+
+@app.post("/send/pint/briefing_bundle")
+async def pint_briefing_bundle(request: Request):
+    """Send a Pint briefing as:
+    1) image_multiple (Kakao album) 2) text detail.
+
+    Body:
+      - target: "test" | "prod"
+      - imagesBase64?: [base64|dataUrl, ...] (max 6, min 1)
+      - imageUrls?: [url, ...] (max 6, min 1 after download)
+      - text: str
+      - delayMs?: int (between album and text)
+      - echoTimeoutMs?, sendlogTimeoutMs? (for album)
+      - dbEchoTimeoutMs?, sendlogTimeoutMs? (for text)
+
+    NOTE: This endpoint intentionally does NOT accept arbitrary roomId to prevent mis-sends.
+    """
+    cfg = load_runtime()
+    if cfg.get("safeMode", True):
+        raise HTTPException(status_code=403, detail="SAFE_MODE")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if not isinstance(body, dict):
+        body = {}
+
+    pint_cfg = cfg.get("pintBriefing")
+    if not isinstance(pint_cfg, dict):
+        pint_cfg = {}
+
+    target = str(body.get("target") or body.get("room") or "test").strip().lower()
+    test_rid = str(pint_cfg.get("testRoomId") or "18475752914588021").strip()
+    prod_rid = str(pint_cfg.get("roomId") or "").strip()
+    allow_prod = _safe_bool(pint_cfg.get("allowProdSend"))
+
+    is_test_target = target in ("test", "test_open_chat", "test-open-chat")
+    is_prod_target = target in ("prod", "pint", "production")
+
+    if is_test_target:
+        rid = test_rid
+    elif is_prod_target:
+        if not allow_prod:
+            raise HTTPException(status_code=403, detail="PROD_SEND_DISABLED")
+        if not prod_rid:
+            raise HTTPException(status_code=400, detail="pintBriefing.roomId required for prod send")
+        rid = prod_rid
+    else:
+        raise HTTPException(status_code=400, detail="invalid target (use 'test' or 'prod')")
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if is_prod_target and _looks_like_ops_test_text(text):
+        raise HTTPException(status_code=400, detail="OPS_TEXT_BLOCKED_FOR_PROD_BRIEFING")
+
+    req_job_id = str(body.get("jobId") or "").strip()
+    req_template_label = str(body.get("templateLabel") or "").strip()
+
+    imgs: list[str] = []
+    image_urls_for_debug: list[str] = []
+    download_failed: list[str] | None = None
+    if "imagesBase64" in body and body.get("imagesBase64") is not None:
+        imgs = _coerce_base64_list(body.get("imagesBase64"))
+    elif "imageUrls" in body and body.get("imageUrls") is not None:
+        urls = _coerce_url_list(body.get("imageUrls"))
+        image_urls_for_debug = list(urls)
+
+        def _download_url_as_base64(url: str) -> str | None:
+            req0 = _urlreq.Request(url, method="GET")
+            # Keep UA consistent with other helpers.
+            req0.add_header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            try:
+                with _urlreq.urlopen(req0, timeout=20.0) as resp:
+                    status = resp.getcode()
+                    if status != 200:
+                        return None
+                    ct = str(getattr(resp, "headers", {}).get("Content-Type") or "").lower()
+                    if ct and not ct.startswith("image/"):
+                        return None
+                    data = resp.read(8 * 1024 * 1024 + 1)
+                    if len(data) > 8 * 1024 * 1024:
+                        return None
+                    return base64.b64encode(data).decode("ascii")
+            except Exception:
+                return None
+
+        failed: list[str] = []
+        for u in urls:
+            b64 = _download_url_as_base64(u)
+            if not b64:
+                failed.append(u)
+                continue
+            imgs.append(b64)
+
+        if failed:
+            # Keep response helpful for the caller (admin UI), without leaking to user chat.
+            download_failed = list(failed)
+    else:
+        raise HTTPException(status_code=400, detail="imagesBase64 or imageUrls required")
+
+    if len(imgs) < 1:
+        raise HTTPException(status_code=400, detail="need at least 1 image")
+
+    debug_save = _safe_bool(body.get("debugSave")) or _safe_bool(pint_cfg.get("debugSaveImages"))
+    if debug_save and target == "test":
+        try:
+            from pathlib import Path as _Path
+
+            base_dir_raw = str(pint_cfg.get("debugSaveDir") or "").strip()
+            base_dir = _Path(base_dir_raw) if base_dir_raw else (_repo_root() / "out" / "pint_briefing_bundle_debug")
+            base_dir.mkdir(parents=True, exist_ok=True)
+
+            job_id = str(body.get("jobId") or "").strip()
+            slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", job_id)[:80] if job_id else ""
+            out_dir_name = f"{_now_ts()}{'_' + slug if slug else ''}"
+            out_dir = base_dir / out_dir_name
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            meta = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "target": target,
+                "jobId": str(body.get("jobId") or "").strip() or None,
+                "templateLabel": str(body.get("templateLabel") or "").strip() or None,
+                "imageUrls": image_urls_for_debug,
+                "downloadFailed": download_failed,
+                "textPreview": (text[:240] + "…") if len(text) > 240 else text,
+                "sizes": [],
+            }
+
+            for idx, b64 in enumerate(imgs[:6], start=1):
+                data = base64.b64decode(b64, validate=False)
+                ext = _guess_image_ext(data)
+                p = out_dir / f"{idx:02d}{ext}"
+                p.write_bytes(data)
+                meta["sizes"].append({"i": idx, "bytes": len(data), "ext": ext})
+
+            (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("[pint] saved briefing bundle debug images", extra={"dir": str(out_dir)})
+        except Exception:
+            logger.warning("[pint] failed to save briefing bundle debug images", exc_info=True)
+
+    delay_ms = _safe_int(body.get("delayMs") or body.get("delay_ms"))
+    if delay_ms is None:
+        delay_ms = 700
+    delay_ms = max(0, min(int(delay_ms), 10_000))
+
+    media_echo_timeout_ms = int(IRIS_REPLY_ECHO_TIMEOUT_MS)
+    media_sendlog_timeout_ms = int(IRIS_REPLY_SENDLOG_TIMEOUT_MS)
+    text_db_echo_timeout_ms = int(IRIS_REPLY_TEXT_DB_ECHO_TIMEOUT_MS)
+    text_sendlog_timeout_ms = int(IRIS_REPLY_SENDLOG_TIMEOUT_MS)
+    if isinstance(body, dict):
+        et = _safe_int(body.get("echoTimeoutMs") or body.get("echo_timeout_ms"))
+        if et is not None:
+            media_echo_timeout_ms = max(500, min(int(et), 180_000))
+        sl = _safe_int(body.get("sendlogTimeoutMs") or body.get("sendlog_timeout_ms"))
+        if sl is not None:
+            media_sendlog_timeout_ms = max(500, min(int(sl), 180_000))
+            text_sendlog_timeout_ms = max(500, min(int(sl), 180_000))
+        de = _safe_int(body.get("dbEchoTimeoutMs") or body.get("db_echo_timeout_ms"))
+        if de is not None:
+            text_db_echo_timeout_ms = max(0, min(int(de), 60_000))
+
+    async with _get_iris_reply_room_lock(rid):
+        now_sec = int(time.time())
+
+        # Idempotency + resume (prod only): jobId 기준으로 중복/부분성공 재발송을 막는다.
+        pint_state_key = ""
+        pint_state: dict | None = None
+        pint_items: dict | None = None
+        pint_item: dict | None = None
+        skip_album = False
+        if target == "prod" and req_job_id:
+            try:
+                pint_state_key = f"{target}:{req_job_id}"
+                pint_state = _read_json_dict(PINT_BRIEFING_BUNDLE_STATE_PATH) or {}
+                pint_items0 = pint_state.get("items")
+                pint_items = pint_items0 if isinstance(pint_items0, dict) else {}
+                pint_items = _prune_pint_briefing_bundle_state_items(pint_items, now_sec)
+
+                prev0 = pint_items.get(pint_state_key)
+                pint_item = prev0 if isinstance(prev0, dict) else None
+                ok_at = _safe_int0((pint_item or {}).get("okAt") or 0)
+                if ok_at > 0 and now_sec - ok_at <= int(PINT_BRIEFING_BUNDLE_STATE_TTL_SEC):
+                    return JSONResponse(status_code=200, content={"ok": True, "dedup": {"target": target}})
+
+                album_ok_at = _safe_int0((pint_item or {}).get("albumOkAt") or 0)
+                if album_ok_at > 0:
+                    skip_album = True
+
+                attempts = _safe_int0((pint_item or {}).get("attempts") or 0) + 1
+                new_item = dict(pint_item or {})
+                new_item.update(
+                    {
+                        "jobId": req_job_id,
+                        "target": target,
+                        "templateLabel": req_template_label or None,
+                        "attempts": attempts,
+                        "lastAttemptAt": now_sec,
+                    }
+                )
+                if ok_at > 0:
+                    new_item["okAt"] = ok_at
+                if album_ok_at > 0:
+                    new_item["albumOkAt"] = album_ok_at
+                pint_items[pint_state_key] = new_item
+                pint_state = {"updatedAt": datetime.now(timezone.utc).isoformat(), "items": pint_items}
+                _write_json_atomic(PINT_BRIEFING_BUNDLE_STATE_PATH, pint_state)
+                pint_item = new_item
+            except Exception:
+                pint_state_key = ""
+                pint_state = None
+                pint_items = None
+                pint_item = None
+                skip_album = False
+
+        started_ms = int(time.time() * 1000)
+
+        # 1) Image/Album (image or image_multiple)
+        sender_ids = _get_iris_sender_ids()
+        media_imgs = imgs[:6]
+        media_is_single = len(media_imgs) == 1
+        media_payload = {
+            "type": "image" if media_is_single else "image_multiple",
+            "room": rid,
+            "data": media_imgs[0] if media_is_single else media_imgs,
+        }
+        media_sent_count = 1 if media_is_single else len(media_imgs)
+        media_call_started_ms = int(time.time() * 1000) - 1500
+        media_call_started_sec = max(0, int(media_call_started_ms / 1000) - 1)
+
+        album_skipped = False
+        media_status = 0
+        media_txt = ""
+        media_body = None
+        media_ok = False
+        media_echo_ok = False
+        media_echo_wait_ms = 0
+        media_db_ok = False
+        media_db_wait_ms = 0
+        media_db_after_id = 0
+        media_db_err = None
+        media_db_type = 0
+        media_sendlog_ok = False
+        media_sendlog_wait_ms = 0
+        media_sendlog_err = None
+        media_file_echo_ok = False
+        media_file_echo_wait_ms = 0
+
+        if skip_album:
+            album_skipped = True
+            media_ok = True
+            media_sendlog_ok = True
+            media_db_ok = True
+            media_echo_ok = True
+            media_status = 200
+            media_txt = "{\"ok\":true,\"skipped\":true}"
+            media_body = {"ok": True, "skipped": True}
+        else:
+            media_http_timeout_sec = max(30.0, min(90.0, float(media_echo_timeout_ms) / 1000.0))
+            media_sendlog_ok = False
+            media_sendlog_wait_ms = 0
+            media_sendlog_err = None
+            async with _IRIS_REPLY_LOCK:
+                media_before_ok, media_before_id, media_before_err = _try_select_chatlog_max_id(rid, sender_ids)
+                media_db_after_id = media_before_id
+                media_db_err = media_before_err
+                media_call_started_ms = int(time.time() * 1000) - 1500
+                media_call_started_sec = max(0, int(media_call_started_ms / 1000) - 1)
+                media_status, media_txt = _http_post_json(
+                    _iris_base() + "/reply", media_payload, headers={}, timeout=media_http_timeout_sec
+                )
+                if media_status == 200:
+                    try:
+                        t1 = int(time.time() * 1000)
+                        media_sendlog_ok = await _wait_for_iris_sending_log_cleared(
+                            rid, media_call_started_sec, 2, media_sendlog_timeout_ms
+                        )
+                        media_sendlog_wait_ms = max(0, int(time.time() * 1000) - t1)
+                    except HTTPException as e:
+                        media_sendlog_ok = False
+                        media_sendlog_err = str(e.detail)
+                    except Exception as e:
+                        media_sendlog_ok = False
+                        media_sendlog_err = str(e)
+            try:
+                media_body = json.loads(media_txt) if media_txt else None
+            except Exception:
+                media_body = None
+
+            media_ok = media_status == 200
+            if media_ok:
+                if media_sendlog_ok:
+                    if media_before_ok:
+                        t0 = int(time.time() * 1000)
+                        media_db_ok, media_db_after_id, media_db_err = await _wait_for_iris_chatlog_advance(
+                            rid, sender_ids, media_before_id, media_echo_timeout_ms
+                        )
+                        media_db_wait_ms = max(0, int(time.time() * 1000) - t0)
+                        if media_db_ok:
+                            t_ok, t_val, t_err = _try_select_chatlog_type_by_rowid(media_db_after_id)
+                            if t_ok:
+                                media_db_type = int(t_val or 0)
+                                if _is_image_message_type(media_db_type):
+                                    media_echo_ok = True
+                                    media_echo_wait_ms = media_db_wait_ms
+                                else:
+                                    # Fallback: race-proof scan. If any recent row within this send window
+                                    # is an image, treat echo as OK to avoid false negatives.
+                                    f_ok, f_type, f_err = _try_find_recent_image_chatlog_type(
+                                        rid, sender_ids, media_before_id, media_db_after_id
+                                    )
+                                    if f_ok:
+                                        media_db_type = int(f_type or media_db_type)
+                                        media_echo_ok = True
+                                        media_echo_wait_ms = media_db_wait_ms
+                                    else:
+                                        media_db_ok = False
+                                        media_db_err = f_err or f"type_mismatch:{media_db_type}"
+                            else:
+                                media_db_ok = False
+                                media_db_err = t_err or "type_lookup_failed"
+                    else:
+                        media_db_ok = False
+                        media_db_err = media_before_err or "dbEcho unavailable"
+
+        album_ok = bool(media_ok and media_echo_ok and media_sendlog_ok and media_db_ok)
+        if not album_ok:
+            try:
+                tfe = int(time.time() * 1000)
+                media_file_echo_ok = await _wait_for_iris_image_echo(rid, media_call_started_ms, media_echo_timeout_ms)
+                media_file_echo_wait_ms = max(0, int(time.time() * 1000) - tfe)
+            except Exception:
+                media_file_echo_ok = False
+            album_ok = bool(album_ok or media_file_echo_ok)
+
+        if not album_ok:
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "ok": False,
+                    "stage": "album",
+                    "iris": {"httpStatus": media_status, "body": media_body, "raw": media_txt},
+                    "echo": {"ok": media_echo_ok, "timeoutMs": media_echo_timeout_ms, "waitMs": media_echo_wait_ms},
+                    "fileEcho": {"ok": media_file_echo_ok, "timeoutMs": media_echo_timeout_ms, "waitMs": media_file_echo_wait_ms},
+                    "dbEcho": {
+                        "ok": media_db_ok,
+                        "timeoutMs": media_echo_timeout_ms,
+                        "waitMs": media_db_wait_ms,
+                        "afterId": media_db_after_id,
+                        "type": media_db_type,
+                        "error": media_db_err,
+                    },
+                    "sendlog": {
+                        "ok": media_sendlog_ok,
+                        "timeoutMs": media_sendlog_timeout_ms,
+                        "waitMs": media_sendlog_wait_ms,
+                        "error": media_sendlog_err,
+                    },
+                    "sent": {"target": target, "count": media_sent_count, "type": media_payload["type"]},
+                },
+            )
+
+        if pint_state_key and pint_items is not None and isinstance(pint_item, dict) and not pint_item.get("albumOkAt"):
+            try:
+                pint_item["albumOkAt"] = now_sec
+                pint_items[pint_state_key] = pint_item
+                _write_json_atomic(PINT_BRIEFING_BUNDLE_STATE_PATH, {"updatedAt": datetime.now(timezone.utc).isoformat(), "items": pint_items})
+            except Exception:
+                pass
+
+        if delay_ms > 0 and not album_skipped:
+            await asyncio.sleep(max(0.0, delay_ms / 1000.0))
+
+        # 2) Text detail
+        text_payload = {"type": "text", "room": rid, "data": text}
+        text_http_timeout_sec = max(15.0, min(30.0, float(text_sendlog_timeout_ms) / 1000.0))
+        text_sendlog_ok = False
+        text_sendlog_wait_ms = 0
+        text_sendlog_err = None
+        async with _IRIS_REPLY_LOCK:
+            before_ok, before_id, before_err = _try_select_chatlog_max_id(rid, sender_ids)
+            text_call_started_ms = int(time.time() * 1000) - 1500
+            text_call_started_sec = max(0, int(text_call_started_ms / 1000) - 1)
+            text_status, text_txt = _http_post_json(
+                _iris_base() + "/reply", text_payload, headers={}, timeout=text_http_timeout_sec
+            )
+            if text_status == 200:
+                try:
+                    t2 = int(time.time() * 1000)
+                    text_sendlog_ok = await _wait_for_iris_sending_log_cleared(
+                        rid, text_call_started_sec, 1, text_sendlog_timeout_ms
+                    )
+                    text_sendlog_wait_ms = max(0, int(time.time() * 1000) - t2)
+                except HTTPException as e:
+                    text_sendlog_ok = False
+                    text_sendlog_err = str(e.detail)
+                except Exception as e:
+                    text_sendlog_ok = False
+                    text_sendlog_err = str(e)
+        text_body = None
+        try:
+            text_body = json.loads(text_txt) if text_txt else None
+        except Exception:
+            text_body = None
+
+        text_ok = text_status == 200
+        text_db_ok = False
+        text_db_wait_ms = 0
+        text_db_after_id = before_id
+        text_db_err = before_err
+        text_file_echo_ok = False
+        text_file_echo_wait_ms = 0
+
+        if text_ok:
+            if text_sendlog_ok:
+                if text_db_echo_timeout_ms <= 0:
+                    text_db_ok = True
+                elif before_ok:
+                    t3 = int(time.time() * 1000)
+                    text_db_ok, text_db_after_id, text_db_err = await _wait_for_iris_chatlog_advance(
+                        rid, sender_ids, before_id, text_db_echo_timeout_ms
+                    )
+                    text_db_wait_ms = max(0, int(time.time() * 1000) - t3)
+                else:
+                    # DB echo unavailable → do not claim success.
+                    text_db_ok = False
+
+        text_ok_final = bool(text_ok and text_sendlog_ok and text_db_ok)
+        if not text_ok_final:
+            try:
+                tfe2 = int(time.time() * 1000)
+                # file echo는 "실제 메시지가 방 로그에 남았는지"로 확인한다(쿼리/네트워크 레이스 완화).
+                text_file_echo_ok = await _wait_for_iris_text_echo(
+                    rid, text_call_started_ms, text, max(2500, min(60_000, int(text_sendlog_timeout_ms)))
+                )
+                text_file_echo_wait_ms = max(0, int(time.time() * 1000) - tfe2)
+            except Exception:
+                text_file_echo_ok = False
+            text_ok_final = bool(text_ok_final or text_file_echo_ok)
+
+        ok = bool(album_ok and text_ok_final)
+        stage = None if ok else ("text" if album_ok else "album")
+        code = 200 if ok else 502
+
+        if ok and pint_state_key and pint_items is not None and isinstance(pint_item, dict):
+            try:
+                pint_item["textOkAt"] = now_sec
+                pint_item["okAt"] = now_sec
+                pint_items[pint_state_key] = pint_item
+                _write_json_atomic(PINT_BRIEFING_BUNDLE_STATE_PATH, {"updatedAt": datetime.now(timezone.utc).isoformat(), "items": pint_items})
+            except Exception:
+                pass
+
+        return JSONResponse(
+            status_code=code,
+            content={
+                "ok": ok,
+                "stage": stage,
+                "ms": max(0, int(time.time() * 1000) - started_ms),
+                "sent": {"target": target, "images": media_sent_count, "textLen": len(text)},
+                "download": {"failed": download_failed} if download_failed else None,
+                "album": {
+                    "ok": bool(album_ok),
+                    "skipped": bool(album_skipped),
+                    "iris": {"httpStatus": media_status, "body": media_body, "raw": media_txt},
+                    "echo": {"ok": media_echo_ok, "timeoutMs": media_echo_timeout_ms, "waitMs": media_echo_wait_ms},
+                    "fileEcho": {"ok": media_file_echo_ok, "timeoutMs": media_echo_timeout_ms, "waitMs": media_file_echo_wait_ms},
+                    "sendlog": {
+                        "ok": media_sendlog_ok,
+                        "timeoutMs": media_sendlog_timeout_ms,
+                        "waitMs": media_sendlog_wait_ms,
+                        "error": media_sendlog_err,
+                    },
+                    "dbEcho": {
+                        "ok": media_db_ok,
+                        "timeoutMs": media_echo_timeout_ms,
+                        "waitMs": media_db_wait_ms,
+                        "afterId": media_db_after_id,
+                        "type": media_db_type,
+                        "error": media_db_err,
+                    },
+                },
+                "text": {
+                    "ok": bool(text_ok_final),
+                    "iris": {"httpStatus": text_status, "body": text_body, "raw": text_txt},
+                    "sendlog": {
+                        "ok": text_sendlog_ok,
+                        "timeoutMs": text_sendlog_timeout_ms,
+                        "waitMs": text_sendlog_wait_ms,
+                        "error": text_sendlog_err,
+                    },
+                    "fileEcho": {"ok": text_file_echo_ok, "timeoutMs": text_sendlog_timeout_ms, "waitMs": text_file_echo_wait_ms},
+                    "dbEcho": {
+                        "ok": text_db_ok,
+                        "timeoutMs": text_db_echo_timeout_ms,
+                        "waitMs": text_db_wait_ms,
+                        "beforeId": before_id,
+                        "afterId": text_db_after_id,
+                        "error": text_db_err,
+                    },
+                },
+            },
+        )
 
 
 @app.get("/talkapi/health")
 async def talkapi_health():
     talk = _runtime_get_talk_cfg()
-    enabled = bool(talk.get('enabled'))
-    base = (talk.get('baseUrl') or '').rstrip('/')
+    enabled = bool(talk.get("enabled"))
+    base = (talk.get("baseUrl") or "").rstrip("/")
     if not base:
-        base = 'https://talk-api.naijun.dev'
+        base = "https://talk-api.naijun.dev"
     reachable = False
     status = None
     err = None
     if enabled:
         try:
-            req = _urlreq.Request(base + '/', method='GET')
-            with _urlreq.urlopen(req, timeout=max(1, int(talk.get('timeoutMs', 8000))) / 1000.0) as resp:
+            req = _urlreq.Request(base + "/", method="GET")
+            with _urlreq.urlopen(req, timeout=max(1, int(talk.get("timeoutMs", 8000))) / 1000.0) as resp:
                 status = resp.getcode()
-                reachable = (200 <= status < 300)
+                reachable = 200 <= status < 300
         except HTTPError as e:
             status = e.code
             err = str(e)
@@ -2998,13 +4615,15 @@ async def talkapi_health():
         except Exception as e:
             status = 0
             err = str(e)
-    return JSONResponse(content={
-        'enabled': enabled,
-        'baseUrl': base,
-        'reachable': reachable,
-        'status': status,
-        'error': err,
-    })
+    return JSONResponse(
+        content={
+            "enabled": enabled,
+            "baseUrl": base,
+            "reachable": reachable,
+            "status": status,
+            "error": err,
+        }
+    )
 
 
 @app.post("/templates/{category}/{name}/prepareSend")
@@ -3026,14 +4645,13 @@ async def template_prepare_send(category: str, name: str, request: Request):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="not found")
     content = str(tpl.get('content') or '')
-    rendered, mention_targets = _render_template_text(content, ctx)
+    rendered = _render_template_text(content, ctx)
     imgs = list(tpl.get('images') or [])
     safe = load_runtime().get('safeMode', True)
-    mentionees = _map_names_to_ids(room_id, mention_targets) if room_id else []
     return JSONResponse(content={
         "content": rendered,
-        "mentions": mention_targets,
-        "mentionees": mentionees,
+        "mentions": [],
+        "mentionees": [],
         "images": imgs,
         "safeMode": bool(safe),
     })

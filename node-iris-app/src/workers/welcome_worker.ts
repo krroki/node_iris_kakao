@@ -3,12 +3,23 @@ import { randomInt } from "crypto";
 import { promises as fs } from "fs";
 import path from "path";
 
-import { resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
-import { tryServerTalkApiDispatch, tryServerTalkApiDispatchRaw } from "../utils/talkapi";
+import { resolveKakaoDefaultNicknameRegexesFromRuntime, resolveWelcomeTemplateSelection } from "../utils/welcomeTemplatePolicy";
+import {
+  PINT_SERVICE_ROOM_WELCOME_TEMPLATE,
+  buildPintServiceRoomWelcomeMessage,
+  isPintServiceRoomWelcomeOnlyEnabled,
+} from "../utils/pintServiceRoomWelcome";
+import {
+  buildRecentWelcomeSendKey,
+  filterRecentlyWelcomedEntrants,
+  pruneRecentWelcomeSends,
+  resolveStartupBackfillSince,
+} from "../utils/welcomeRecovery";
 import { tryServerIrisReplyMedia, tryServerIrisReplyText } from "../utils/iris";
+import { stripUtf8Bom } from "../utils/json";
 import { APP_ROOT } from "../utils/paths";
 import { resolveTemplateImageUrls } from "../utils/sender";
-import { stripAtMentionsForFallback } from "../utils/mentions";
+import { getOpsLogRoomId } from "../utils/testRoom";
 import DedupCache from "../services/dedupCache";
 
 type WelcomeEntrant = { name: string; senderId: string; joinedAt: number };
@@ -93,10 +104,6 @@ type PendingNicknameChangeAfterImageConfirmation = {
   nextCheckAt: number;
   expiresAt: number;
   attempts: number;
-  srcLogId: string;
-  srcType: number;
-  srcMessage: string;
-  srcLinkId?: string;
 };
 
 type WorkerState = {
@@ -104,6 +111,7 @@ type WorkerState = {
   pending: PendingFollowUp[];
   pendingOpenProfileCloseConfirmations?: PendingOpenProfileCloseConfirmation[];
   pendingNicknameChangeAfterImageConfirmations?: PendingNicknameChangeAfterImageConfirmation[];
+  recentWelcomeSends?: Record<string, number>;
   roomLinkIds?: Record<string, { linkId: string; at: number }>;
   updatedAt: string;
 };
@@ -118,7 +126,7 @@ const LOCK_PATH = path.join(APP_ROOT, "data", "locks", "welcome_worker.lock");
 const EVENT_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 const PHOTO_DEDUP = new DedupCache(10 * 60 * 1000); // 10분
 // 운영 알림은 테스트용 오픈채팅방에만 발신한다(스팸 방지: dedup 적용).
-const OPS_LOG_ROOM_ID = "18462226881291012";
+const OPS_LOG_ROOM_ID = getOpsLogRoomId();
 const OPS_ALERT_DEDUP = new DedupCache(60 * 60 * 1000); // 1시간
 // join 이벤트 중복 방지:
 // - 일부 방에서는 member_joined(payloadType) 이벤트가 누락되고, feedType=4가 "message(messageType=0)"로만 들어오는 경우가 있다.
@@ -152,7 +160,7 @@ let nicknameChangeAfterImageConfirmationsRerunRequested = false;
 const profileNickByUser = new Map<string, { nickName: string; at: number }>();
 const PROFILE_NICK_CACHE_MS = 20 * 60 * 1000;
 
-// roomId -> linkId cache (reply attachment requires src_linkId)
+// roomId -> open linkId cache (open_chat_member 조회 fallback에 사용)
 const linkIdByRoom = new Map<string, { linkId: string; at: number }>();
 const LINK_ID_CACHE_MS = 30 * 60 * 1000;
 const LINK_ID_QUERY_TIMEOUT_MS = 15_000;
@@ -161,11 +169,91 @@ const LINK_ID_LOG_SCAN_BYTES = 512 * 1024;
 let runtimeCache: { at: number; data: RuntimeConfig } | null = null;
 const RUNTIME_CACHE_MS = 1500;
 const STREAM_TTL_MS = Number.parseInt(String(process.env.WELCOME_WORKER_STREAM_TTL_MS || "").trim(), 10) || 60_000;
+const STARTUP_BACKFILL_MAX_AGE_MS =
+  Number.parseInt(String(process.env.WELCOME_WORKER_STARTUP_BACKFILL_MAX_AGE_MS || "").trim(), 10) || 120_000;
+const STARTUP_BACKFILL_LIMIT =
+  Number.parseInt(String(process.env.WELCOME_WORKER_STARTUP_BACKFILL_LIMIT || "").trim(), 10) || 200;
+const RECENT_WELCOME_SEND_TTL_MS = 30 * 60 * 1000;
+const RECENT_WELCOME_SEND_MAX = 4000;
+const recentWelcomeSendAtByKey = new Map<string, number>();
+let currentLastSeenMsRef: { v: number } | null = null;
+let stateSaveTimer: NodeJS.Timeout | null = null;
+let stateSaveInFlight = false;
+
+// NOTE: IRIS /reply_text can return HTTP 200 even when the message is not actually delivered.
+// Keep server-side verification so image-only welcome does not slip through, but bound the request
+// to a single verified attempt so burst joins do not spill past the worker fetch timeout.
+const IRIS_REPLY_TEXT_TIMEOUT_MS = 60_000;
+const IRIS_REPLY_TEXT_VERIFY = {
+  echoTimeoutMs: 8000,
+  sendlogTimeoutMs: 12_000,
+  maxRetries: 0,
+  retryDelayMs: 1200,
+} as const;
+const IRIS_REPLY_MEDIA_TIMEOUT_MS = 120_000;
+const IRIS_REPLY_MEDIA_VERIFY = {
+  echoTimeoutMs: 18_000,
+  sendlogTimeoutMs: 25_000,
+  maxRetries: 1,
+  retryDelayMs: 1200,
+} as const;
+const WELCOME_MEDIA_AFTER_TEXT_DELAY_MS = 400;
 
 function safeString(v: unknown): string {
   if (typeof v === "bigint") return v.toString();
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
   return String(v ?? "").trim();
+}
+
+function parseIgnoreList(raw: string | undefined): string[] {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  return s
+    .split(",")
+    .map((x) => String(x).trim())
+    .filter(Boolean);
+}
+
+const WELCOME_IGNORE_CACHE_MS = 10_000;
+let ignoreCache: { at: number; ids: Set<string>; namesLower: Set<string> } | null = null;
+function getWelcomeIgnoreList(): { ids: Set<string>; namesLower: Set<string> } {
+  const now = Date.now();
+  if (ignoreCache && now - ignoreCache.at < WELCOME_IGNORE_CACHE_MS) return ignoreCache;
+
+  // Prevent self-welcome/loops for bot/system accounts.
+  // - 434886784: IRIS(봇) 계정(senderId)로 관측되는 값(루프 방지용)
+  // - 435780965: 발신 계정(senderId)로 관측되는 값(봇 입장 시 self-welcome 방지)
+  const defaultIgnoreIds = ["434886784", "435780965"];
+  const defaultIgnoreNames = ["Iris"];
+
+  const ids = new Set(
+    parseIgnoreList(process.env.WELCOME_IGNORE_SENDER_IDS)
+      .concat(defaultIgnoreIds)
+      .map((x) => safeString(x))
+      .filter(Boolean),
+  );
+  const namesLower = new Set(
+    parseIgnoreList(process.env.WELCOME_IGNORE_SENDER_NAMES)
+      .concat(defaultIgnoreNames)
+      .map((x) => safeString(x).toLowerCase())
+      .filter(Boolean),
+  );
+
+  ignoreCache = { at: now, ids, namesLower };
+  return ignoreCache;
+}
+
+function isIgnoredWelcomeIdentity(senderId: string, name: string): boolean {
+  const sid = safeString(senderId);
+  const nm = safeString(name).toLowerCase();
+  const { ids, namesLower } = getWelcomeIgnoreList();
+  if (sid && ids.has(sid)) return true;
+  if (nm && namesLower.has(nm)) return true;
+  return false;
+}
+
+function filterIgnoredEntrants(entrants: WelcomeEntrant[]): WelcomeEntrant[] {
+  return (entrants || []).filter((e) => !isIgnoredWelcomeIdentity(safeString(e?.senderId), safeString(e?.name)));
 }
 
 function cleanupProfileNickCache(now: number): void {
@@ -316,6 +404,10 @@ function tsToMs(ts: string | undefined): number {
   }
 }
 
+function resolveDefaultNicknameRegexesForClassification(runtime: RuntimeConfig): RegExp[] {
+  return resolveKakaoDefaultNicknameRegexesFromRuntime(runtime);
+}
+
 async function loadRuntime(): Promise<RuntimeConfig> {
   const now = Date.now();
   if (runtimeCache && now - runtimeCache.at < RUNTIME_CACHE_MS) {
@@ -323,13 +415,21 @@ async function loadRuntime(): Promise<RuntimeConfig> {
   }
   try {
     const raw = await fs.readFile(RUNTIME_PATH, "utf8");
-    const parsed = JSON.parse(raw) as RuntimeConfig;
-    runtimeCache = { at: now, data: parsed && typeof parsed === "object" ? parsed : {} };
+    const parsed = JSON.parse(stripUtf8Bom(raw)) as RuntimeConfig;
+    const data = parsed && typeof parsed === "object" ? parsed : {};
+    runtimeCache = { at: now, data };
     return runtimeCache.data;
   } catch (e) {
+    // runtime.json 저장/스크립트 반영 시점의 순간적인 read/parse 레이스로
+    // SAFE_MODE가 튀어(발신 스킵) 보이는 케이스를 막기 위해 마지막 정상 값을 유지한다.
+    if (runtimeCache?.data && Object.keys(runtimeCache.data).length > 0) {
+      logger.warn("[runtime] load failed; keep last good", { err: String(e) });
+      runtimeCache = { at: now, data: runtimeCache.data };
+      return runtimeCache.data;
+    }
     runtimeCache = { at: now, data: {} };
     logger.warn("[runtime] load failed; treat as empty", { err: String(e) });
-    return {};
+    return runtimeCache.data;
   }
 }
 
@@ -568,16 +668,21 @@ async function loadState(): Promise<WorkerState> {
     const pendingNicknameChangeAfterImageConfirmations = Array.isArray(parsed.pendingNicknameChangeAfterImageConfirmations)
       ? (parsed.pendingNicknameChangeAfterImageConfirmations as PendingNicknameChangeAfterImageConfirmation[])
       : [];
+    const recentWelcomeSends =
+      parsed.recentWelcomeSends && typeof parsed.recentWelcomeSends === "object"
+        ? (parsed.recentWelcomeSends as Record<string, number>)
+        : undefined;
     const roomLinkIds =
       parsed.roomLinkIds && typeof parsed.roomLinkIds === "object" ? (parsed.roomLinkIds as Record<string, { linkId: string; at: number }>) : undefined;
     const updatedAt = typeof parsed.updatedAt === "string" && parsed.updatedAt ? parsed.updatedAt : new Date().toISOString();
-    return { lastSeenMs, pending, pendingOpenProfileCloseConfirmations, pendingNicknameChangeAfterImageConfirmations, roomLinkIds, updatedAt };
+    return { lastSeenMs, pending, pendingOpenProfileCloseConfirmations, pendingNicknameChangeAfterImageConfirmations, recentWelcomeSends, roomLinkIds, updatedAt };
   } catch {
     return {
       lastSeenMs: 0,
       pending: [],
       pendingOpenProfileCloseConfirmations: [],
       pendingNicknameChangeAfterImageConfirmations: [],
+      recentWelcomeSends: {},
       updatedAt: new Date().toISOString(),
     };
   }
@@ -585,6 +690,70 @@ async function loadState(): Promise<WorkerState> {
 
 async function saveState(state: WorkerState): Promise<void> {
   await writeJsonAtomic(STATE_PATH, state);
+}
+
+function snapshotRecentWelcomeSends(now = Date.now()): Record<string, number> {
+  const raw: Record<string, number> = {};
+  for (const [key, sentAt] of recentWelcomeSendAtByKey.entries()) {
+    raw[key] = sentAt;
+  }
+  return pruneRecentWelcomeSends(raw, now, RECENT_WELCOME_SEND_TTL_MS, RECENT_WELCOME_SEND_MAX);
+}
+
+function restoreRecentWelcomeSends(recent: Record<string, number> | undefined, now = Date.now()): void {
+  recentWelcomeSendAtByKey.clear();
+  const pruned = pruneRecentWelcomeSends(recent, now, RECENT_WELCOME_SEND_TTL_MS, RECENT_WELCOME_SEND_MAX);
+  for (const [key, sentAt] of Object.entries(pruned)) {
+    recentWelcomeSendAtByKey.set(key, sentAt);
+  }
+}
+
+function markRecentWelcomeSend(roomId: string, userId: string, joinedAt: number, sentAt = Date.now()): void {
+  const key = buildRecentWelcomeSendKey(roomId, userId, joinedAt);
+  if (!key) return;
+  recentWelcomeSendAtByKey.set(key, Math.floor(sentAt));
+  const pruned = snapshotRecentWelcomeSends(sentAt);
+  recentWelcomeSendAtByKey.clear();
+  for (const [k, v] of Object.entries(pruned)) {
+    recentWelcomeSendAtByKey.set(k, v);
+  }
+}
+
+function buildStateSnapshot(lastSeenMs: number): WorkerState {
+  return {
+    lastSeenMs,
+    pending: Array.from(pendingByUser.values()),
+    pendingOpenProfileCloseConfirmations: Array.from(pendingOpenProfileCloseByUser.values()),
+    pendingNicknameChangeAfterImageConfirmations: Array.from(pendingNicknameChangeAfterImageByUser.values()),
+    recentWelcomeSends: snapshotRecentWelcomeSends(),
+    roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function flushStateNow(): Promise<void> {
+  if (stateSaveInFlight) return;
+  stateSaveInFlight = true;
+  try {
+    await saveState(buildStateSnapshot(currentLastSeenMsRef?.v ?? 0));
+  } catch (e) {
+    logger.warn("[state] save failed", { err: String(e) });
+  } finally {
+    stateSaveInFlight = false;
+  }
+}
+
+function scheduleStateSave(delayMs = 1500): void {
+  if (stateSaveTimer) return;
+  const waitMs = Math.max(200, Math.floor(delayMs));
+  stateSaveTimer = setTimeout(() => {
+    stateSaveTimer = null;
+    void flushStateNow();
+  }, waitMs);
+  try {
+    const t: any = stateSaveTimer as any;
+    if (t && typeof t.unref === "function") t.unref();
+  } catch {}
 }
 
 async function updateStatus(partial: Record<string, unknown>): Promise<void> {
@@ -703,20 +872,23 @@ function buildVars(entrants: WelcomeEntrant[], roomName: string): Record<string,
   return vars;
 }
 
-function renderWelcomeText(templateText: string, entrants: WelcomeEntrant[], roomName: string): { text: string; hasMention: boolean } {
+function renderWelcomeText(templateText: string, entrants: WelcomeEntrant[], roomName: string): string {
   const vars = buildVars(entrants, roomName);
   let out = safeString(templateText || "");
 
-  // Multi-entrant: replace @-placeholders for entrance/entrant/userName to mention all entrants.
+  // Multi-entrant: replace placeholders for entrance/entrant/userName to address all entrants in plain text.
   if (entrants.length > 1) {
     const names = entrants.map((e) => safeString(e?.name) || "Guest");
-    const mentionPlain = names.map((n) => `@${n}`).join(", ");
-    const mentionWithNim = `${mentionPlain} 님`;
-    out = out.replace(/@\{(?:entrant|entrance|userName)\}님/g, mentionWithNim);
-    out = out.replace(/@\{(?:entrant|entrance|userName)\}/g, mentionPlain);
+    const plain = names.join(", ");
+    const withNimEach = names.map((n) => `${n}님`).join(", ");
+    out = out.replace(/@\{(?:entrant|entrance|userName)\}\s*님/g, withNimEach);
+    out = out.replace(/@\{(?:entrant|entrance|userName)\}/g, plain);
+    out = out.replace(/\{\{\s*(?:entrant|entrance|userName)\s*\}\}\s*님/g, withNimEach);
+    out = out.replace(/\{\{\s*(?:entrant|entrance|userName)\s*\}\}/g, plain);
+    out = out.replace(/\{(?:entrant|entrance|userName)\}\s*님/g, withNimEach);
+    out = out.replace(/\{(?:entrant|entrance|userName)\}/g, plain);
   }
 
-  let hasMention = false;
   const isOptionalIndexed = (key: string) => /^(entrance|entrant)\d+$/.test(key);
 
   out = out.replace(/@\{([^}]+)\}/g, (_m, k) => {
@@ -724,12 +896,11 @@ function renderWelcomeText(templateText: string, entrants: WelcomeEntrant[], roo
     const aliases = key === "entrant" || key === "entrance" ? [key, "userName"] : [key];
     for (const a of aliases) {
       if (vars[a]) {
-        hasMention = true;
-        return "@" + vars[a];
+        return String(vars[a]);
       }
     }
     if (isOptionalIndexed(key)) return "";
-    return "@{" + key + "}";
+    return "{" + key + "}";
   });
 
   out = out.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_m, k) => {
@@ -745,11 +916,7 @@ function renderWelcomeText(templateText: string, entrants: WelcomeEntrant[], roo
     return "{" + key + "}";
   });
 
-  // Mention list inserted as plain @name tokens should still be treated as "hasMention"
-  if (!hasMention && entrants.some((e) => out.includes("@" + safeString(e?.name)))) {
-    hasMention = true;
-  }
-  return { text: out, hasMention };
+  return out;
 }
 
 function normalizeEntrantsFromEntry(e: StreamEntry): WelcomeEntrant[] {
@@ -765,7 +932,7 @@ function normalizeEntrantsFromEntry(e: StreamEntry): WelcomeEntrant[] {
     }
   }
   if (list.length > 0) {
-    // senderId가 없는 항목은 제거(멘션/트래킹 불가)
+    // senderId가 없는 항목은 제거(대상 식별/트래킹 불가)
     return list.filter((x) => x.senderId);
   }
   const senderId = safeString(e.senderId);
@@ -1078,6 +1245,7 @@ async function queryOpenChatMemberProfile(
 
 const HANGUL_RE = /[\uAC00-\uD7A3]/;
 const BASE64ISH_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const DIGITS_ONLY_RE = /^\d+$/;
 
 function normalizeNameForMention(raw: string): string {
   return String(raw || "")
@@ -1092,6 +1260,8 @@ function isSafeMentionNickname(raw: string): boolean {
   const s = normalizeNameForMention(raw);
   if (!s) return false;
   if (s.length > 40) return false;
+  // senderName 누락 시 숫자 senderId가 흘러들어오는 케이스 방어(userId 노출/오판정 방지)
+  if (DIGITS_ONLY_RE.test(s) && s.length >= 7) return false;
   if (!HANGUL_RE.test(s) && BASE64ISH_RE.test(s) && s.length >= 16) return false;
   return true;
 }
@@ -1192,12 +1362,13 @@ function buildOpenProfileGuideDedupKey(roomId: string, userId: string, joinedAtR
   return ja ? `${rid}:${uid}:${ja}` : `${rid}:${uid}`;
 }
 
-function ensureEntranceMentionTemplate(raw: string): string {
+function ensureEntranceNameTemplate(raw: string): string {
   const t = safeString(raw);
   if (!t) return "";
   if (/@\{(?:entrant|entrance|userName)\}/.test(t)) return t;
-  if (t.includes("@")) return t;
-  return `@{entrance} 님 ${t}`;
+  if (/\{\{\s*(?:entrant|entrance|userName)\s*\}\}/.test(t)) return t;
+  if (/\{(?:entrant|entrance|userName)\}/.test(t)) return t;
+  return `{entrance}님 ${t}`;
 }
 
 async function sendOpenProfileCloseGuideForEntrant(
@@ -1217,24 +1388,18 @@ async function sendOpenProfileCloseGuideForEntrant(
   if (OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) return false;
 
   const targets = [entrant];
-  const { text: message, hasMention } = renderWelcomeText(ensureEntranceMentionTemplate(cfg.text), targets, roomName);
-  const mentionees = targets
-    .map((e) => ({ name: e.name, userId: e.senderId }))
-    .filter((m) => m.userId && m.name && message.includes("@" + m.name));
-  const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+  const message = renderWelcomeText(ensureEntranceNameTemplate(cfg.text), targets, roomName);
 
-  let okTalk = false;
-  let okIris = false;
+  let ok = false;
   try {
-    okTalk = await tryServerTalkApiDispatch(logger, roomId, message, hasMention && capped.length ? capped : [], 12000);
+    ok = await tryServerIrisReplyText(logger, roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
   } catch (e) {
-    okTalk = false;
-    logger.warn("[welcome-open-profile] dispatch threw", { roomId, err: String(e) });
+    ok = false;
+    logger.warn("[welcome-open-profile] send threw", { roomId, err: String(e) });
   }
-  if (!okTalk) {
-    const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
-    okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
-  }
+
+  // If the guide text is not delivered, skip image to avoid confusing "image-only" messages.
+  if (!ok) return false;
 
   const imageUrls = resolveWorkerImageUrls(cfg.images || []);
   if (imageUrls.length > 0) {
@@ -1282,7 +1447,6 @@ async function sendOpenProfileCloseGuideForEntrant(
 
   OPEN_PROFILE_GUIDE_DEDUP.mark(dedupKey);
 
-  const ok = okTalk || okIris;
   await updateStatus({
     lastOpenProfileCloseGuideAttemptTs: new Date().toISOString(),
     lastOpenProfileCloseGuideRoomId: roomId,
@@ -1353,7 +1517,7 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
     return;
   }
 
-  const defaultNickRegexes = compileDefaultNickRegexes(runtime);
+  const defaultNickRegexes = resolveDefaultNicknameRegexesForClassification(runtime);
 
   const now = Date.now();
   const maxPerTick = 25;
@@ -1415,27 +1579,20 @@ async function processOpenProfileCloseConfirmations(runtime: RuntimeConfig): Pro
     }
 
     const isDefaultNickname = isKakaoDefaultNickname(entrant.name, defaultNickRegexes) === true;
-    const confirmTemplate = ensureEntranceMentionTemplate(
+    const confirmTemplate = ensureEntranceNameTemplate(
       isDefaultNickname && cfg.confirmTextKakaoDefaultNickname ? cfg.confirmTextKakaoDefaultNickname : cfg.confirmText,
     );
 
-    const { text: message, hasMention } = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
-    const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter((m) => m.userId && m.name && message.includes("@" + m.name));
+    const message = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
 
-    let okTalk = false;
-    let okIris = false;
+    let ok = false;
     try {
-      okTalk = await tryServerTalkApiDispatch(logger, p.roomId, message, hasMention && mentionees.length ? mentionees : [], 12000);
+      ok = await tryServerIrisReplyText(logger, p.roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
     } catch (e) {
-      okTalk = false;
-      logger.warn("[welcome-open-profile-confirm] dispatch threw", { roomId: p.roomId, err: String(e) });
-    }
-    if (!okTalk) {
-      const fallbackText = hasMention && mentionees.length ? stripAtMentionsForFallback(message, mentionees) : message;
-      okIris = await tryServerIrisReplyText(logger, p.roomId, fallbackText, 12000);
+      ok = false;
+      logger.warn("[welcome-open-profile-confirm] send threw", { roomId: p.roomId, err: String(e) });
     }
 
-    const ok = okTalk || okIris;
     await updateStatus({
       lastOpenProfileCloseConfirmAttemptTs: new Date().toISOString(),
       lastOpenProfileCloseConfirmRoomId: p.roomId,
@@ -1497,7 +1654,7 @@ async function processNicknameChangeAfterImageConfirmations(runtime: RuntimeConf
     return;
   }
 
-  const defaultNickRegexes = compileDefaultNickRegexes(runtime);
+  const defaultNickRegexes = resolveDefaultNicknameRegexesForClassification(runtime);
 
   const now = Date.now();
   const maxPerTick = 25;
@@ -1557,7 +1714,7 @@ async function processNicknameChangeAfterImageConfirmations(runtime: RuntimeConf
       continue;
     }
 
-    // 닉네임 변경 완료: confirmText를 일반 멘션으로 마무리 (Reply X)
+    // 닉네임 변경 완료: confirmText를 "이름 언급"으로 마무리 (Reply X)
     let ok = false;
 
     const entrant: WelcomeEntrant = {
@@ -1566,25 +1723,15 @@ async function processNicknameChangeAfterImageConfirmations(runtime: RuntimeConf
       joinedAt: Number(p.requestSentAt || 0) || now,
     };
 
-    const confirmTemplate = ensureEntranceMentionTemplate(cfg.confirmText);
-    const { text: message, hasMention } = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
-    const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter((m) => m.userId && m.name && message.includes("@" + m.name));
-    const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+    const confirmTemplate = ensureEntranceNameTemplate(cfg.confirmText);
+    const message = renderWelcomeText(confirmTemplate, [entrant], safeString(p.roomName) || p.roomId);
 
-    let okTalk = false;
-    let okIris = false;
     try {
-      okTalk = await tryServerTalkApiDispatch(logger, p.roomId, message, hasMention && capped.length ? capped : [], 12000);
+      ok = await tryServerIrisReplyText(logger, p.roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
     } catch (e) {
-      okTalk = false;
-      logger.warn("[nickname-change-after-image] dispatch threw", { roomId: p.roomId, err: String(e) });
+      ok = false;
+      logger.warn("[nickname-change-after-image] send threw", { roomId: p.roomId, err: String(e) });
     }
-    if (!okTalk) {
-      const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
-      okIris = await tryServerIrisReplyText(logger, p.roomId, fallbackText, 12000);
-    }
-
-    ok = okTalk || okIris;
 
     await updateStatus({
       lastNicknameChangeAfterImageThankAttemptTs: new Date().toISOString(),
@@ -1639,24 +1786,18 @@ async function maybeSendOpenProfileCloseGuide(
 
   if (!targets.length) return;
 
-  const { text: message, hasMention } = renderWelcomeText(ensureEntranceMentionTemplate(cfg.text), targets, roomName);
-  const mentionees = targets
-    .map((e) => ({ name: e.name, userId: e.senderId }))
-    .filter((m) => m.userId && m.name && message.includes("@" + m.name));
-  const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+  const message = renderWelcomeText(ensureEntranceNameTemplate(cfg.text), targets, roomName);
 
-  let okTalk = false;
-  let okIris = false;
+  let ok = false;
   try {
-    okTalk = await tryServerTalkApiDispatch(logger, roomId, message, hasMention && capped.length ? capped : [], 12000);
+    ok = await tryServerIrisReplyText(logger, roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
   } catch (e) {
-    okTalk = false;
-    logger.warn("[welcome-open-profile] dispatch threw", { roomId, err: String(e) });
+    ok = false;
+    logger.warn("[welcome-open-profile] send threw", { roomId, err: String(e) });
   }
-  if (!okTalk) {
-    const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
-    okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
-  }
+
+  // If the guide text is not delivered, skip image to avoid confusing "image-only" messages.
+  if (!ok) return;
 
   const imageUrls = resolveWorkerImageUrls(cfg.images || []);
   if (imageUrls.length > 0) {
@@ -1712,7 +1853,7 @@ async function maybeSendOpenProfileCloseGuide(
   await updateStatus({
     lastOpenProfileCloseGuideAttemptTs: new Date().toISOString(),
     lastOpenProfileCloseGuideRoomId: roomId,
-    lastOpenProfileCloseGuideOk: okTalk || okIris,
+    lastOpenProfileCloseGuideOk: ok,
     lastOpenProfileCloseGuideCount: targets.length,
   });
 }
@@ -1853,32 +1994,105 @@ async function flushWelcome(roomId: string): Promise<void> {
     return;
   }
 
-  let selection: Awaited<ReturnType<typeof resolveWelcomeTemplateSelection>> = null;
-  try {
-    const hint = pickTemplateSelectionHint(entrants, runtime);
-    selection = await resolveWelcomeTemplateSelection({ userName: hint.name || "", senderId: hint.senderId });
-  } catch (e) {
-    logger.error("[welcome] template selection failed; skip", { roomId, err: String(e) });
+  if (isPintServiceRoomWelcomeOnlyEnabled(runtime, roomId)) {
+    logger.info("[welcome] dedicated room-only welcome enabled", { roomId, template: PINT_SERVICE_ROOM_WELCOME_TEMPLATE });
+
+    let templateNameUsed = `${PINT_SERVICE_ROOM_WELCOME_TEMPLATE}:dynamic`;
+    let templateText = "";
+    const dynamicSeed =
+      entrants
+        .map((entrant) => {
+          const senderId = safeString(entrant?.senderId);
+          const joinedAt = Number.isFinite(Number(entrant?.joinedAt)) ? String(Math.floor(Number(entrant?.joinedAt))) : "";
+          const fallbackName = safeString(entrant?.name);
+          return [senderId || fallbackName, joinedAt].filter(Boolean).join(":");
+        })
+        .filter(Boolean)
+        .join("|") || `${roomId}:${batch.createdAt}`;
+    try {
+      templateText = buildPintServiceRoomWelcomeMessage({ now: new Date(), seedKey: dynamicSeed });
+    } catch (e) {
+      logger.warn("[welcome] dedicated dynamic welcome build failed; fallback to template", {
+        roomId,
+        template: PINT_SERVICE_ROOM_WELCOME_TEMPLATE,
+        err: String(e),
+      });
+    }
+
+    if (!templateText) {
+      try {
+        const tpl = await loadWelcomeTemplate(PINT_SERVICE_ROOM_WELCOME_TEMPLATE);
+        templateText = tpl.text;
+        templateNameUsed = PINT_SERVICE_ROOM_WELCOME_TEMPLATE;
+      } catch (e) {
+        logger.warn("[welcome] dedicated room template load failed; skip", {
+          roomId,
+          template: PINT_SERVICE_ROOM_WELCOME_TEMPLATE,
+          err: String(e),
+        });
+        return;
+      }
+    }
+
+    const message = renderWelcomeText(templateText, entrants, batch.roomName);
+    let ok = false;
+    try {
+      ok = await tryServerIrisReplyText(logger, roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
+    } catch (e) {
+      logger.warn("[welcome] dedicated room dispatch threw", { roomId, err: String(e) });
+    }
+
+    await updateStatus({
+      lastWelcomeAttemptTs: new Date().toISOString(),
+      lastWelcomeRoomId: roomId,
+      lastWelcomeOk: ok,
+      lastWelcomeTemplate: templateNameUsed,
+    });
+
+    if (ok) {
+      const sentAt = Date.now();
+      for (const entrant of entrants) {
+        const userId = safeString(entrant?.senderId);
+        const joinedAt = Number(entrant?.joinedAt || 0);
+        if (!userId || !Number.isFinite(joinedAt) || joinedAt <= 0) continue;
+        markRecentWelcomeSend(roomId, userId, joinedAt, sentAt);
+      }
+      scheduleStateSave();
+    }
+
+    if (!ok) {
+      await sendOpsAlertOnce(`welcome:text_failed:${roomId}`, [
+        `[운영 알림] "${batch.roomName}" welcome 멘트 발신이 실패했어요`,
+        `- 템플릿: ${PINT_SERVICE_ROOM_WELCOME_TEMPLATE}`,
+        `- 확인: IRIS 상태/발신 계정/allowlist`,
+      ]);
+    }
     return;
   }
-  if (!selection?.templateName) {
-    logger.warn("[welcome] no template configured; skip", { roomId });
+
+  let selectedTemplateName = "";
+  try {
+    const hint = pickTemplateSelectionHint(entrants, runtime);
+    const selection = await resolveWelcomeTemplateSelection({ userName: hint.name || "", senderId: hint.senderId });
+    if (!selection?.templateName) {
+      logger.warn("[welcome] no template configured; skip", { roomId });
+      return;
+    }
+    selectedTemplateName = selection.templateName;
+  } catch (e) {
+    logger.error("[welcome] template selection failed; skip", { roomId, err: String(e) });
     return;
   }
 
   let tpl: { text: string; images: string[] };
   try {
-    tpl = await loadWelcomeTemplate(selection.templateName);
+    tpl = await loadWelcomeTemplate(selectedTemplateName);
   } catch (e) {
-    logger.warn("[welcome] template load failed; skip", { roomId, template: selection.templateName, err: String(e) });
+    logger.warn("[welcome] template load failed; skip", { roomId, template: selectedTemplateName, err: String(e) });
     return;
   }
 
-  const { text: message, hasMention } = renderWelcomeText(tpl.text, entrants, batch.roomName);
-  const mentionees = entrants
-    .map((e) => ({ name: e.name, userId: e.senderId }))
-    .filter((m) => m.userId && m.name && message.includes("@" + m.name));
-  const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
+  const message = renderWelcomeText(tpl.text, entrants, batch.roomName);
   const imageUrls = resolveWorkerImageUrls(tpl.images || []);
 
   if (imageUrls.length > 0) {
@@ -1886,66 +2100,77 @@ async function flushWelcome(roomId: string): Promise<void> {
     logger.info("[welcome] template images detected", {
       roomId,
       images: imageUrls.length,
-      template: selection.templateName,
+      template: selectedTemplateName,
     });
   }
 
-  let okTalk = false;
-  let okIris = false;
+  let ok = false;
   try {
-    if (hasMention && capped.length) {
-      okTalk = await tryServerTalkApiDispatch(logger, roomId, message, capped, 12000);
-    } else {
-      okTalk = await tryServerTalkApiDispatch(logger, roomId, message, [], 12000);
-    }
+    ok = await tryServerIrisReplyText(logger, roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
   } catch (e) {
-    okTalk = false;
     logger.warn("[welcome] dispatch threw", { roomId, err: String(e) });
   }
 
-  if (!okTalk) {
-    // Talk-API가 불안정할 때 운영 연속성을 위해 IRIS /reply(text)로 대체 발신한다.
-    // (멘션/Reply는 불가, 단순 텍스트만)
-    const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(message, capped) : message;
-    okIris = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
-  }
-
-  const ok = okTalk || okIris;
   await updateStatus({
     lastWelcomeAttemptTs: new Date().toISOString(),
     lastWelcomeRoomId: roomId,
     lastWelcomeOk: ok,
-    lastWelcomeTemplate: selection.templateName,
+    lastWelcomeTemplate: selectedTemplateName,
   });
 
-  if (!ok) return;
+  if (ok) {
+    const sentAt = Date.now();
+    for (const entrant of entrants) {
+      const userId = safeString(entrant?.senderId);
+      const joinedAt = Number(entrant?.joinedAt || 0);
+      if (!userId || !Number.isFinite(joinedAt) || joinedAt <= 0) continue;
+      markRecentWelcomeSend(roomId, userId, joinedAt, sentAt);
+    }
+    scheduleStateSave();
+  }
+
+  if (!ok) {
+    await sendOpsAlertOnce(`welcome:text_failed:${roomId}`, [
+      `[운영 알림] "${batch.roomName}" welcome 멘트 발신이 실패했어요`,
+      `- 템플릿: ${selectedTemplateName}`,
+      `- 확인: IRIS 상태/발신 계정/allowlist`,
+    ]);
+    return;
+  }
 
   // Follow-up tracking starts after welcome text sent (ADR-0026 Decision A).
   const cfgRes = parseFollowUpConfig(runtime);
-  if (!cfgRes.ok) return;
-  const cfg = cfgRes.cfg;
-  if (!cfg.enabled) return;
-  if (!isWelcomeFollowUpEnabledForRoom(runtime, roomId)) return;
+  if (!cfgRes.ok) {
+    logger.warn("[welcome] follow-up config invalid; skip follow-up", { roomId, err: cfgRes.error });
+    await sendOpsAlertOnce(`welcome:followup_config_invalid:${roomId}`, [
+      `[운영 알림] "${batch.roomName}" welcome 후속 설정이 없어 후속 로직을 스킵했어요.`,
+      `- 사유: ${cfgRes.error}`,
+      `- 조치: runtime.json welcome.followUp 설정 확인`,
+    ]);
+  }
 
-  const now = Date.now();
-  const current = countPendingByRoom(roomId);
-  let roomPending = current;
-  for (const e of entrants) {
-    if (roomPending >= cfg.maxPendingPerRoom) break;
-    const userId = safeString(e.senderId);
-    if (!userId) continue;
-    const key = `${roomId}:${userId}`;
-    const expiresAt = (Number(e.joinedAt || 0) || now) + cfg.windowMs;
-    if (expiresAt <= now) continue;
-    pendingByUser.set(key, {
-      roomId,
-      userId,
-      userName: safeString(e.name) || "Guest",
-      joinedAt: Number(e.joinedAt || 0) || now,
-      welcomeSentAt: now,
-      expiresAt,
-    });
-    roomPending += 1;
+  if (cfgRes.ok && cfgRes.cfg.enabled && isWelcomeFollowUpEnabledForRoom(runtime, roomId)) {
+    const cfg = cfgRes.cfg;
+    const now = Date.now();
+    const current = countPendingByRoom(roomId);
+    let roomPending = current;
+    for (const e of entrants) {
+      if (roomPending >= cfg.maxPendingPerRoom) break;
+      const userId = safeString(e.senderId);
+      if (!userId) continue;
+      const key = `${roomId}:${userId}`;
+      const expiresAt = (Number(e.joinedAt || 0) || now) + cfg.windowMs;
+      if (expiresAt <= now) continue;
+      pendingByUser.set(key, {
+        roomId,
+        userId,
+        userName: safeString(e.name) || "Guest",
+        joinedAt: Number(e.joinedAt || 0) || now,
+        welcomeSentAt: now,
+        expiresAt,
+      });
+      roomPending += 1;
+    }
   }
 
   // Image send failure must not block follow-up tracking (aligned with legacy bot path).
@@ -1960,24 +2185,32 @@ async function flushWelcome(roomId: string): Promise<void> {
       }
     }
     if (imagesBase64.length > 0) {
-      const okImg = await tryServerIrisReplyMedia(logger, roomId, imagesBase64, 90_000);
+      // Give IRIS a brief settle window after the verified text send before switching to media upload.
+      await sleepMs(WELCOME_MEDIA_AFTER_TEXT_DELAY_MS);
+      const okImg = await tryServerIrisReplyMedia(
+        logger,
+        roomId,
+        imagesBase64,
+        IRIS_REPLY_MEDIA_TIMEOUT_MS,
+        IRIS_REPLY_MEDIA_VERIFY,
+      );
       await updateStatus({
         lastWelcomeImageAttemptTs: new Date().toISOString(),
         lastWelcomeImageRoomId: roomId,
         lastWelcomeImageOk: okImg,
-        lastWelcomeImageTemplate: selection.templateName,
+        lastWelcomeImageTemplate: selectedTemplateName,
         lastWelcomeImageCount: imagesBase64.length,
       });
       if (!okImg) {
-        logger.warn("[welcome] image send failed", { roomId, template: selection.templateName, count: imagesBase64.length });
+        logger.warn("[welcome] image send failed", { roomId, template: selectedTemplateName, count: imagesBase64.length });
         await sendOpsAlertOnce(`welcome:image_failed:${roomId}`, [
           `[운영 알림] "${batch.roomName}" welcome 이미지 발신이 실패했어요`,
-          `- 템플릿: ${selection.templateName}`,
+          `- 템플릿: ${selectedTemplateName}`,
           `- 확인: IRIS 상태/카카오톡 이미지 전송 설정(원본)`,
         ]);
       }
     } else {
-      logger.warn("[welcome] no images downloaded; skip send", { roomId, template: selection.templateName, count: imageUrls.length });
+      logger.warn("[welcome] no images downloaded; skip send", { roomId, template: selectedTemplateName, count: imageUrls.length });
     }
   }
 
@@ -2044,16 +2277,20 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
     const joinedAt = Number(pending.joinedAt || 0) || now;
     const dedupKey = buildOpenProfileGuideDedupKey(roomId, senderId, joinedAt);
     if (!OPEN_PROFILE_GUIDE_DEDUP.has(dedupKey)) {
-      const prof = await queryOpenChatMemberProfile(roomId, senderId, 8000);
+          const prof = await queryOpenChatMemberProfile(roomId, senderId, 8000);
       const profileLinkId = safeString(prof?.profileLinkId ?? "");
       const profileType = safeString(prof?.profileType ?? "");
-      if (profileLinkId && profileType && isProfileLinkIdMatch(opCfgRes.cfg.match, profileLinkId, profileType)) {
-        const roomName = safeString(entry.roomName) || roomId;
-        const entrant: WelcomeEntrant = {
-          name: safeString(entry.senderName) || safeString(pending.userName) || "Guest",
-          senderId,
-          joinedAt,
-        };
+        if (profileLinkId && profileType && isProfileLinkIdMatch(opCfgRes.cfg.match, profileLinkId, profileType)) {
+          const roomName = safeString(entry.roomName) || roomId;
+          const entryName = safeString(entry.senderName || entry.sender);
+          const pendingName = safeString(pending.userName);
+          let resolvedName = isSafeMentionNickname(entryName) ? entryName : "";
+          if (!resolvedName && isSafeMentionNickname(pendingName)) resolvedName = pendingName;
+          const entrant: WelcomeEntrant = {
+            name: resolvedName || "Guest",
+            senderId,
+            joinedAt,
+          };
 
         let okGuide = false;
         try {
@@ -2080,57 +2317,52 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
   }
 
   // 신규 요구: 첫 이미지(하트스샷) 업로드 시점에 "기본닉"이면
-  // 감사 Reply 대신 "닉네임 변경 요청" Reply를 1회 보내고,
-  // 요청 발신 시점부터 15분 내 닉네임이 바뀌면 감사 Reply를 1회 발신한다.
+  // 감사(Reply) 대신 "닉네임 변경 요청"을 1회 보내고,
+  // 요청 발신 시점부터 15분 내 닉네임이 바뀌면 감사 메시지를 1회 발신한다.
   const ncRes = parseNicknameChangeAfterImageConfig(runtime);
   if (ncRes.ok && ncRes.cfg.enabled) {
-    const defaultNickRegexes = compileDefaultNickRegexes(runtime);
+      const defaultNickRegexes = resolveDefaultNicknameRegexesForClassification(runtime);
 
-    let nameNow = safeString(entry.senderName) || safeString(pending.userName) || "Guest";
-    if (!isSafeMentionNickname(nameNow)) {
+      // Zero-false-positive policy:
+      // - Never send nickname-change request based on join-time(pending) name.
+      // - If any reliable source says "custom", skip request.
+      // - Only send request when event-name or profile-cache clearly says "default".
+      const entryNameRaw = safeString(entry.senderName || entry.sender);
+      const eventName = isSafeMentionNickname(entryNameRaw) ? entryNameRaw : "";
+
+      const cachedNick = getRecentProfileNicknameRecord(roomId, senderId);
+      const cachedName =
+        cachedNick && cachedNick.nickName && isSafeMentionNickname(cachedNick.nickName) ? cachedNick.nickName : "";
+
+      // DB name is used only as an extra "custom" evidence (to prevent stale event/cache).
+      // If DB is stale (default) while user already changed nickname, event/cache should show "custom" and will veto.
       const dbNick = await queryOpenChatMemberNickname(roomId, senderId, 5000).catch(() => null);
-      if (dbNick && isSafeMentionNickname(dbNick)) nameNow = dbNick;
-    }
+      const dbName = dbNick && isSafeMentionNickname(dbNick) ? dbNick : "";
 
-    const isDefaultNicknameNow = isKakaoDefaultNickname(nameNow, defaultNickRegexes) === true;
-    if (isDefaultNicknameNow) {
-      const roomName = safeString(entry.roomName) || roomId;
-      const entrant: WelcomeEntrant = {
-        name: nameNow || "Guest",
-        senderId,
-        joinedAt: Number(pending.joinedAt || 0) || now,
-      };
+      const klassEvent = eventName ? isKakaoDefaultNickname(eventName, defaultNickRegexes) : null;
+      const klassCache = cachedName ? isKakaoDefaultNickname(cachedName, defaultNickRegexes) : null;
+      const klassDb = dbName ? isKakaoDefaultNickname(dbName, defaultNickRegexes) : null;
 
-      const { text: reqMessage, hasMention } = renderWelcomeText(ncRes.cfg.requestText, [entrant], roomName);
-      const mentionees = [{ name: entrant.name, userId: entrant.senderId }].filter(
-        (m) => m.userId && m.name && reqMessage.includes("@" + m.name),
-      );
-      const capped = mentionees.length > 15 ? mentionees.slice(0, 15) : mentionees;
-      const talkMentionees = hasMention && capped.length ? capped : [];
+      const hasCustomEvidence = klassEvent === false || klassCache === false || klassDb === false;
+      const shouldRequest = !hasCustomEvidence && (klassEvent === true || klassCache === true);
+      const nameForRequest = klassEvent === true ? eventName : klassCache === true ? cachedName : "";
 
-      const photoLogId = safeString(entry.mid);
-      const srcLinkId = await resolveOpenLinkIdForRoom(roomId);
-      const srcMessage = safeString(entry.text) || "사진";
-      const srcType = safeString(Math.floor(normalizedType || 0));
-
-      let okReq = false;
-      if (srcLinkId && photoLogId) {
-        const replyAttachment: Record<string, unknown> = {
-          src_logId: photoLogId,
-          src_userId: senderId,
-          src_linkId: srcLinkId,
-          src_type: srcType,
-          src_message: srcMessage,
+      if (shouldRequest && nameForRequest) {
+        const roomName = safeString(entry.roomName) || roomId;
+        const entrant: WelcomeEntrant = {
+          name: nameForRequest,
+          senderId,
+          joinedAt: Number(pending.joinedAt || 0) || now,
         };
+
+        const reqMessage = renderWelcomeText(ncRes.cfg.requestText, [entrant], roomName);
+
+        let okReq = false;
         try {
-          okReq = await tryServerTalkApiDispatchRaw(logger, roomId, reqMessage, 26, replyAttachment, 12000, talkMentionees);
+          okReq = await tryServerIrisReplyText(logger, roomId, reqMessage, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
         } catch (e) {
           okReq = false;
-          logger.warn("[nickname-change-after-image] request dispatch_raw threw", { roomId, userId: senderId, err: String(e) });
-        }
-        if (!okReq) {
-          const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(reqMessage, capped) : reqMessage;
-          okReq = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
+          logger.warn("[nickname-change-after-image] request send threw", { roomId, userId: senderId, err: String(e) });
         }
 
         if (okReq) {
@@ -2147,57 +2379,18 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
               nextCheckAt: reqAt + 5000,
               expiresAt,
               attempts: 0,
-              srcLogId: photoLogId,
-              srcType: Number(normalizedType || 0) || 2,
-              srcMessage,
-              srcLinkId,
             });
           }
-        }
-      } else {
-        // Reply 메타(src_linkId/src_logId)가 없으면 Reply는 불가하므로, 최소한 텍스트로만 요청한다.
-        try {
-          okReq = await tryServerTalkApiDispatch(logger, roomId, reqMessage, talkMentionees, 12000);
-        } catch (e) {
-          okReq = false;
-          logger.warn("[nickname-change-after-image] request dispatch threw", { roomId, userId: senderId, err: String(e) });
-        }
-        if (!okReq) {
-          const fallbackText = hasMention && capped.length ? stripAtMentionsForFallback(reqMessage, capped) : reqMessage;
-          okReq = await tryServerIrisReplyText(logger, roomId, fallbackText, 12000);
         }
 
-        if (okReq) {
-          const key2 = `${roomId}:${senderId}`;
-          const reqAt = Date.now();
-          const expiresAt = reqAt + Math.max(0, Math.floor(ncRes.cfg.confirmWindowMs || 0));
-          if (expiresAt > reqAt) {
-            pendingNicknameChangeAfterImageByUser.set(key2, {
-              roomId,
-              roomName,
-              userId: senderId,
-              userName: entrant.name || "Guest",
-              requestSentAt: reqAt,
-              nextCheckAt: reqAt + 5000,
-              expiresAt,
-              attempts: 0,
-              srcLogId: safeString(entry.mid),
-              srcType: Number(normalizedType || 0) || 2,
-              srcMessage,
-              srcLinkId: srcLinkId || undefined,
-            });
-          }
-        }
+        pendingByUser.delete(key);
+        await updateStatus({
+          lastNicknameChangeAfterImageRequestAttemptTs: new Date().toISOString(),
+          lastNicknameChangeAfterImageRequestRoomId: roomId,
+          lastNicknameChangeAfterImageRequestOk: okReq,
+        });
+        return;
       }
-
-      pendingByUser.delete(key);
-      await updateStatus({
-        lastNicknameChangeAfterImageRequestAttemptTs: new Date().toISOString(),
-        lastNicknameChangeAfterImageRequestRoomId: roomId,
-        lastNicknameChangeAfterImageRequestOk: okReq,
-      });
-      return;
-    }
   }
 
   const replyText = pickRandom(cfg.replies);
@@ -2206,44 +2399,26 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
     return;
   }
 
-  const srcLinkId = await resolveOpenLinkIdForRoom(roomId);
-  if (!srcLinkId) {
-    // IRIS /query가 일시적으로 느리거나 죽으면 Reply(26)가 막혀 "첫 이미지 답장"이 체감상 고장난 것으로 보인다.
-    // 이 경우에는 Reply 대신 일반 메시지로라도 후속 안내를 보낸다.
-    let okFallback = false;
-    try {
-      okFallback = await tryServerTalkApiDispatch(logger, roomId, replyText, [], 12000);
-      if (!okFallback) okFallback = await tryServerIrisReplyText(logger, roomId, replyText, 12000);
-    } catch (e) {
-      okFallback = false;
-      logger.warn("[followup] fallback dispatch threw", { roomId, userId: senderId, err: String(e) });
-    } finally {
-      pendingByUser.delete(key);
-    }
-    await updateStatus({
-      lastFollowUpAttemptTs: new Date().toISOString(),
-      lastFollowUpRoomId: roomId,
-      lastFollowUpOk: okFallback,
-      lastFollowUpReason: "NO_LINK_ID_FALLBACK",
-    });
-    return;
-  }
+  const roomName = safeString(entry.roomName) || roomId;
+  const entryName = safeString(entry.senderName || entry.sender);
+  const pendingName = safeString(pending.userName);
+  let resolvedName = isSafeMentionNickname(entryName) ? entryName : "";
+  if (!resolvedName && isSafeMentionNickname(pendingName)) resolvedName = pendingName;
 
-  const srcMessage = safeString(entry.text) || "사진";
-  const replyAttachment: Record<string, unknown> = {
-    src_logId: photoLogId,
-    src_userId: senderId,
-    src_linkId: srcLinkId,
-    src_type: safeString(Math.floor(normalizedType || 0)),
-    src_message: srcMessage,
+  const entrant: WelcomeEntrant = {
+    name: resolvedName || "참여자",
+    senderId,
+    joinedAt: Number(pending.joinedAt || 0) || now,
   };
+
+  const message = renderWelcomeText(ensureEntranceNameTemplate(replyText), [entrant], roomName);
 
   let ok = false;
   try {
-    ok = await tryServerTalkApiDispatchRaw(logger, roomId, replyText, 26, replyAttachment, 12000);
+    ok = await tryServerIrisReplyText(logger, roomId, message, IRIS_REPLY_TEXT_TIMEOUT_MS, IRIS_REPLY_TEXT_VERIFY);
   } catch (e) {
     ok = false;
-    logger.warn("[followup] dispatch_raw threw", { roomId, userId: senderId, err: String(e) });
+    logger.warn("[followup] send threw", { roomId, userId: senderId, err: String(e) });
   } finally {
     pendingByUser.delete(key);
   }
@@ -2255,8 +2430,8 @@ async function handleFollowUpMessage(entry: StreamEntry): Promise<void> {
   });
 }
 
-async function expirePendingFollowUpsAndMaybeTimeoutMention(_runtime: RuntimeConfig): Promise<void> {
-  // ADR-0045: 리마인더(만료 멘션) 제거. 만료된 pending만 정리한다.
+async function expirePendingFollowUpsAndCleanupTimeouts(_runtime: RuntimeConfig): Promise<void> {
+  // ADR-0045: 리마인더(만료 안내) 제거. 만료된 pending만 정리한다.
   const now = Date.now();
   for (const [k, v] of pendingByUser.entries()) {
     if (!v || typeof v.expiresAt !== "number" || now >= v.expiresAt) {
@@ -2270,7 +2445,10 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
   if (!roomId) return;
 
   const tsMs = tsToMs(entry.ts);
-  if (tsMs && tsMs > lastSeenMsRef.v) lastSeenMsRef.v = tsMs;
+  if (tsMs && tsMs > lastSeenMsRef.v) {
+    lastSeenMsRef.v = tsMs;
+    scheduleStateSave();
+  }
 
   const senderNameLower = safeString(entry.senderName || entry.sender).toLowerCase();
 
@@ -2279,14 +2457,28 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
   if (EVENT_DEDUP.isDuplicate(dedupKey)) return;
 
   if (payloadType === "member_joined") {
-    // Guard: ignore self-join events (prevents Iris welcoming itself)
-    if (senderNameLower === "iris") return;
     const roomName = safeString(entry.roomName) || roomId;
-    const entrants = normalizeEntrantsFromEntry(entry);
+    const entrantsRaw = normalizeEntrantsFromEntry(entry);
+    const entrants = filterIgnoredEntrants(entrantsRaw);
+    if (entrantsRaw.length && !entrants.length) {
+      logSkipOnce(roomId, "SELF_JOIN", { entrants: entrantsRaw.length });
+      return;
+    }
     if (entrants.length) {
+      const entrantsToWelcome = filterRecentlyWelcomedEntrants(
+        roomId,
+        entrants,
+        snapshotRecentWelcomeSends(),
+        Date.now(),
+        RECENT_WELCOME_SEND_TTL_MS,
+      );
+      if (!entrantsToWelcome.length) {
+        logSkipOnce(roomId, "RECENT_WELCOME_SENT", { entrants: entrants.length });
+        return;
+      }
       const joinKey = buildJoinDedupKey(roomId, safeString(entry.mid), entrants, tsMs);
       if (JOIN_DEDUP.isDuplicate(joinKey)) return;
-      await enqueueWelcome(roomId, roomName, entrants);
+      await enqueueWelcome(roomId, roomName, entrantsToWelcome);
     }
     return;
   }
@@ -2297,14 +2489,28 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
     // 이 때는 join(feedType=4) 메시지를 직접 파싱해 welcome을 트리거한다.
     const normalizedType = normalizeKakaoMessageType(entry.messageType);
     if (normalizedType === 0) {
-      const entrants = parseJoinFeedEntrantsFromMessageText(safeString(entry.text), tsMs || Date.now());
-      if (entrants.length) {
-        // Guard: ignore self-join feed events (prevents Iris welcoming itself)
-        if (senderNameLower === "iris") return;
+      const entrantsRaw = parseJoinFeedEntrantsFromMessageText(safeString(entry.text), tsMs || Date.now());
+      if (entrantsRaw.length) {
+        const entrants = filterIgnoredEntrants(entrantsRaw);
+        if (!entrants.length) {
+          logSkipOnce(roomId, "SELF_JOIN", { entrants: entrantsRaw.length });
+          return;
+        }
+        const entrantsToWelcome = filterRecentlyWelcomedEntrants(
+          roomId,
+          entrants,
+          snapshotRecentWelcomeSends(),
+          Date.now(),
+          RECENT_WELCOME_SEND_TTL_MS,
+        );
+        if (!entrantsToWelcome.length) {
+          logSkipOnce(roomId, "RECENT_WELCOME_SENT", { entrants: entrants.length });
+          return;
+        }
         const roomName = safeString(entry.roomName) || roomId;
         const joinKey = buildJoinDedupKey(roomId, safeString(entry.mid), entrants, tsMs);
         if (!JOIN_DEDUP.isDuplicate(joinKey)) {
-          await enqueueWelcome(roomId, roomName, entrants);
+          await enqueueWelcome(roomId, roomName, entrantsToWelcome);
         }
         return;
       }
@@ -2329,12 +2535,61 @@ async function processEntry(entry: StreamEntry, lastSeenMsRef: { v: number }): P
   }
 }
 
+function isWelcomeStartupBackfillCandidate(entry: StreamEntry): boolean {
+  const payloadType = safeString(entry.payloadType);
+  if (payloadType === "member_joined") return true;
+  if (payloadType !== "message") return false;
+
+  const normalizedType = normalizeKakaoMessageType(entry.messageType);
+  if (normalizedType !== 0) return false;
+
+  const tsMs = tsToMs(entry.ts);
+  return parseJoinFeedEntrantsFromMessageText(safeString(entry.text), tsMs || Date.now()).length > 0;
+}
+
+async function fetchStartupBackfillEntries(
+  base: string,
+  rooms: string[],
+  sinceMs: number,
+  limit: number,
+): Promise<StreamEntry[]> {
+  const roomIds = Array.from(new Set((rooms || []).map((x) => safeString(x)).filter(Boolean)));
+  if (!roomIds.length || !Number.isFinite(sinceMs) || sinceMs <= 0) return [];
+
+  const cappedLimit = Math.max(20, Math.min(Math.floor(limit || 0) || STARTUP_BACKFILL_LIMIT, 500));
+  const url = `${base}/logs/bulk?rooms=${encodeURIComponent(roomIds.join(","))}&limit=${cappedLimit}&all=1`;
+  const res = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
+  if (!res.ok) throw new Error(`http_${res.status}`);
+
+  const payload = (await res.json()) as any;
+  const recent = Array.isArray(payload?.all) ? (payload.all as any[]) : [];
+  const roomSet = new Set(roomIds);
+  const entries: StreamEntry[] = [];
+
+  for (const raw of recent) {
+    if (!raw || typeof raw !== "object") continue;
+    const roomId = safeString((raw as any).roomId);
+    if (!roomId || !roomSet.has(roomId)) continue;
+
+    const entry = { ...(raw as any), roomId } as StreamEntry;
+    const tsMs = tsToMs(entry.ts);
+    if (!tsMs || tsMs <= sinceMs) continue;
+    if (!isWelcomeStartupBackfillCandidate(entry)) continue;
+    entries.push(entry);
+  }
+
+  entries.sort((a, b) => tsToMs(a.ts) - tsToMs(b.ts));
+  return entries;
+}
+
 async function connectAndRun(): Promise<void> {
   const state = await loadState();
+  restoreRecentWelcomeSends(state.recentWelcomeSends);
   // restore pending entries (within TTL)
   const now = Date.now();
   for (const p of state.pending || []) {
     if (!p || !p.roomId || !p.userId) continue;
+    if (isIgnoredWelcomeIdentity(safeString((p as any).userId), safeString((p as any).userName))) continue;
     if (typeof p.expiresAt === "number" && p.expiresAt > now) {
       pendingByUser.set(`${p.roomId}:${p.userId}`, p);
     }
@@ -2342,6 +2597,7 @@ async function connectAndRun(): Promise<void> {
   // restore open-profile close confirmations (within TTL)
   for (const p of state.pendingOpenProfileCloseConfirmations || []) {
     if (!p || !p.roomId || !p.userId) continue;
+    if (isIgnoredWelcomeIdentity(safeString((p as any).userId), safeString((p as any).userName))) continue;
     const roomId = safeString(p.roomId);
     const userId = safeString(p.userId);
     if (!roomId || !userId) continue;
@@ -2367,6 +2623,7 @@ async function connectAndRun(): Promise<void> {
   // restore nickname-change-after-image confirmations (within TTL)
   for (const p of state.pendingNicknameChangeAfterImageConfirmations || []) {
     if (!p || !p.roomId || !p.userId) continue;
+    if (isIgnoredWelcomeIdentity(safeString((p as any).userId), safeString((p as any).userName))) continue;
     const roomId = safeString(p.roomId);
     const userId = safeString(p.userId);
     if (!roomId || !userId) continue;
@@ -2377,7 +2634,6 @@ async function connectAndRun(): Promise<void> {
     const nextCheckAt = Number((p as any).nextCheckAt);
     const requestSentAt = Number((p as any).requestSentAt);
     const attempts = Number((p as any).attempts);
-    const srcType = Number((p as any).srcType);
     pendingNicknameChangeAfterImageByUser.set(`${roomId}:${userId}`, {
       roomId,
       roomName: safeString((p as any).roomName) || roomId,
@@ -2387,10 +2643,6 @@ async function connectAndRun(): Promise<void> {
       nextCheckAt: Number.isFinite(nextCheckAt) && nextCheckAt > 0 ? nextCheckAt : now + 5000,
       expiresAt,
       attempts: Number.isFinite(attempts) && attempts >= 0 ? attempts : 0,
-      srcLogId: safeString((p as any).srcLogId),
-      srcType: Number.isFinite(srcType) && srcType > 0 ? srcType : 2,
-      srcMessage: safeString((p as any).srcMessage) || "사진",
-      srcLinkId: safeString((p as any).srcLinkId) || undefined,
     });
   }
   // restore link_id cache (best-effort)
@@ -2406,6 +2658,13 @@ async function connectAndRun(): Promise<void> {
 
   let lastSeenMs = state.lastSeenMs || 0;
   const lastSeenMsRef = { v: lastSeenMs };
+  currentLastSeenMsRef = lastSeenMsRef;
+  const startupBackfillSince = resolveStartupBackfillSince(
+    state.lastSeenMs,
+    state.updatedAt,
+    Date.now(),
+    Math.max(10_000, STARTUP_BACKFILL_MAX_AGE_MS),
+  );
 
   // status heartbeat
   const startedAt = new Date().toISOString();
@@ -2435,16 +2694,8 @@ async function connectAndRun(): Promise<void> {
 	        const runtime = await loadRuntime();
 	        await processOpenProfileCloseConfirmations(runtime);
 	        await processNicknameChangeAfterImageConfirmations(runtime);
-	        await expirePendingFollowUpsAndMaybeTimeoutMention(runtime);
-	        const snapshot: WorkerState = {
-	          lastSeenMs: lastSeenMsRef.v,
-	          pending: Array.from(pendingByUser.values()),
-	          pendingOpenProfileCloseConfirmations: Array.from(pendingOpenProfileCloseByUser.values()),
-	          pendingNicknameChangeAfterImageConfirmations: Array.from(pendingNicknameChangeAfterImageByUser.values()),
-	          roomLinkIds: Object.fromEntries(linkIdByRoom.entries()),
-	          updatedAt: new Date().toISOString(),
-	        };
-	        await saveState(snapshot);
+	        await expirePendingFollowUpsAndCleanupTimeouts(runtime);
+	        await flushStateNow();
       } catch (e) {
         logger.warn("[state] tick failed", { err: String(e) });
       } finally {
@@ -2458,6 +2709,12 @@ async function connectAndRun(): Promise<void> {
   } catch {}
 
   // reconnect loop
+  // NOTE: 워커 재기동 시 "마지막 커서(lastSeenMs)"를 그대로 쓰면,
+  // 워커가 꺼져 있던 동안(LogStore는 살아있던 동안) 누적된 과거 이벤트를 append로 한꺼번에 받아
+  // welcome 발신이 폭주할 수 있다. (운영 이슈)
+  // 따라서 첫 연결은 since=0(live)로 시작하고, 연결이 한 번이라도 성립된 이후에만 lastSeenMs 기반 resume를 허용한다.
+  let streamEstablished = false;
+  let startupBackfillDone = false;
   while (true) {
     const runtime = await loadRuntime();
     const rooms = Array.isArray(runtime.allowedRoomIds)
@@ -2471,7 +2728,28 @@ async function connectAndRun(): Promise<void> {
     }
 
     const base = safeString(process.env.REALTIME_API_BASE || "http://127.0.0.1:8650").replace(/\/+$/, "");
-    const since = Math.max(0, Math.floor(lastSeenMsRef.v > 0 ? lastSeenMsRef.v - 1000 : 0));
+    if (!streamEstablished && !startupBackfillDone && startupBackfillSince !== null) {
+      try {
+        const entries = await fetchStartupBackfillEntries(base, rooms, startupBackfillSince, STARTUP_BACKFILL_LIMIT);
+        for (const entry of entries) {
+          await processEntry(entry, lastSeenMsRef);
+        }
+        logger.info("[startup-backfill] processed", {
+          sinceMs: startupBackfillSince,
+          rooms: rooms.length,
+          entries: entries.length,
+          lastSeenMs: lastSeenMsRef.v,
+        });
+        await flushStateNow();
+      } catch (e) {
+        logger.warn("[startup-backfill] failed", { sinceMs: startupBackfillSince, err: String(e) });
+      } finally {
+        startupBackfillDone = true;
+      }
+    }
+
+    const resumeFromLastSeen = streamEstablished || (startupBackfillDone && startupBackfillSince !== null);
+    const since = resumeFromLastSeen ? Math.max(0, Math.floor(lastSeenMsRef.v > 0 ? lastSeenMsRef.v - 1000 : 0)) : 0;
     const url = `${base}/logs/stream?rooms=${encodeURIComponent(rooms.join(","))}&limit=200&since=${since}&interval=1000`;
     logger.info("[stream] connect", { url });
 
@@ -2496,6 +2774,7 @@ async function connectAndRun(): Promise<void> {
         await new Promise((r) => setTimeout(r, 2000));
         continue;
       }
+      streamEstablished = true;
 
       const reader = (res.body as any).getReader();
       const decoder = new TextDecoder("utf-8");

@@ -2,9 +2,11 @@ import type { Logger } from "@tsuki-chat/node-iris";
 
 export type IrisReplyVerifyOptions = {
   echoTimeoutMs?: number;
+  dbEchoTimeoutMs?: number;
   sendlogTimeoutMs?: number;
   maxRetries?: number;
   retryDelayMs?: number;
+  fallbackToImage?: boolean;
 };
 
 export async function tryServerIrisReplyText(
@@ -21,9 +23,12 @@ export async function tryServerIrisReplyText(
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const body: any = { roomId, text };
     if (verify && typeof verify === "object") {
+      if (Number.isFinite(Number(verify.echoTimeoutMs))) body.echoTimeoutMs = Number(verify.echoTimeoutMs);
+      if (Number.isFinite(Number(verify.dbEchoTimeoutMs))) body.dbEchoTimeoutMs = Number(verify.dbEchoTimeoutMs);
       if (Number.isFinite(Number(verify.sendlogTimeoutMs))) body.sendlogTimeoutMs = Number(verify.sendlogTimeoutMs);
       if (Number.isFinite(Number(verify.maxRetries))) body.maxRetries = Number(verify.maxRetries);
       if (Number.isFinite(Number(verify.retryDelayMs))) body.retryDelayMs = Number(verify.retryDelayMs);
+      if (typeof verify.fallbackToImage === "boolean") body.fallbackToImage = verify.fallbackToImage;
     }
     const res = await fetch(url, {
       method: "POST",
@@ -39,9 +44,15 @@ export async function tryServerIrisReplyText(
     const len = typeof text === "string" ? text.length : 0;
     const attempt = data?.attempt;
     const irisHttp = data?.iris?.httpStatus ?? res.status;
+    const echoOk = data?.echo?.ok;
+    const echoWaitMs = data?.echo?.waitMs;
+    const dbEchoOk = data?.dbEcho?.ok;
+    const dbEchoWaitMs = data?.dbEcho?.waitMs;
     const sendlogOk = data?.sendlog?.ok;
     const sendlogWaitMs = data?.sendlog?.waitMs;
     const sendlogErr = data?.sendlog?.error ?? data?.sendlog?.err ?? data?.detail;
+    const fallbackUsed = data?.fallback?.used === true;
+    const fallbackOk = data?.fallback?.ok;
 
     if (!res.ok || !data?.ok) {
       logger.warn("[iris] reply_text failed", {
@@ -50,14 +61,20 @@ export async function tryServerIrisReplyText(
         irisHttpStatus: irisHttp,
         ok: data?.ok,
         attempt,
+        echoOk,
+        echoWaitMs,
+        dbEchoOk,
+        dbEchoWaitMs,
         sendlogOk,
         sendlogWaitMs,
         sendlogErr,
+        fallbackUsed,
+        fallbackOk,
         len,
       });
       return false;
     }
-    logger.info("[iris] reply_text ok", { roomId, len, attempt, sendlogWaitMs });
+    logger.info("[iris] reply_text ok", { roomId, len, attempt, echoWaitMs, dbEchoWaitMs, sendlogWaitMs, fallbackUsed });
     return true;
   } catch (e) {
     logger.warn("[iris] reply_text error", { roomId, err: String(e) });
@@ -103,6 +120,9 @@ export async function tryServerIrisReplyMedia(
     const sendlogOk = data?.sendlog?.ok;
     const sendlogWaitMs = data?.sendlog?.waitMs;
     const sendlogErr = data?.sendlog?.error ?? data?.sendlog?.err ?? data?.detail;
+    const fileEchoOk = data?.fileEcho?.ok;
+    const fileEchoWaitMs = data?.fileEcho?.waitMs;
+    const verificationBasis = data?.verification?.basis;
 
     if (!res.ok || !data?.ok) {
       logger.warn("[iris] reply_media failed", {
@@ -116,15 +136,25 @@ export async function tryServerIrisReplyMedia(
         sendlogOk,
         sendlogWaitMs,
         sendlogErr,
+        fileEchoOk,
+        fileEchoWaitMs,
+        verificationBasis,
         count,
       });
       return false;
     }
-    logger.info("[iris] reply_media ok", { roomId, count: data?.sent?.count ?? count, attempt, echoWaitMs, sendlogWaitMs });
+    logger.info("[iris] reply_media ok", {
+      roomId,
+      count: data?.sent?.count ?? count,
+      attempt,
+      echoWaitMs,
+      sendlogWaitMs,
+      fileEchoWaitMs,
+      verificationBasis,
+    });
     return true;
   } catch (e) {
     logger.warn("[iris] reply_media error", { roomId, err: String(e) });
     return false;
   }
 }
-
